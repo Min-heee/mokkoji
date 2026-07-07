@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "엔빵",
+    "slug": "nbbang",
+    "version": "0.1.0",
+    "scheme": "nbbang",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.minheee.nbbang"
+    },
+    "android": {
+      "package": "com.minheee.nbbang",
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": ["expo-router"]
+  }
+}

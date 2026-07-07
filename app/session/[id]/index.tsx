@@ -1,0 +1,192 @@
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useState } from 'react';
+import { Alert, StyleSheet, Text, View } from 'react-native';
+
+import { roundTotal } from '@/domain/settlement';
+import { formatKrw, genId } from '@/domain/format';
+import { KIND_EMOJI } from '@/domain/shareText';
+import type { Round } from '@/domain/types';
+import { useSessions } from '@/state/SessionsContext';
+import {
+  Card,
+  Chip,
+  EmptyState,
+  LoadingState,
+  PrimaryButton,
+  Row,
+  Screen,
+  SectionTitle,
+  TextField,
+} from '@/ui/components';
+import { colors, fontSize, spacing } from '@/ui/theme';
+
+export default function SessionDetailScreen() {
+  const params = useLocalSearchParams<{ id: string }>();
+  const id = typeof params.id === 'string' ? params.id : params.id?.[0] ?? '';
+  const router = useRouter();
+  const { loading, getSession, updateSession, addRound } = useSessions();
+  const [newName, setNewName] = useState('');
+
+  if (loading) {
+    return (
+      <Screen>
+        <LoadingState />
+      </Screen>
+    );
+  }
+
+  const session = getSession(id);
+  if (!session) {
+    return (
+      <Screen>
+        <EmptyState emoji="🤔" title="모임을 찾을 수 없어요" />
+      </Screen>
+    );
+  }
+
+  const nameOf = (personId: string) =>
+    session.people.find((p) => p.id === personId)?.name ?? '?';
+
+  const grandTotal = session.rounds.reduce((sum, r) => sum + roundTotal(r), 0);
+
+  const handleAddPerson = () => {
+    const name = newName.trim();
+    if (!name) return;
+    if (session.people.some((p) => p.name === name)) {
+      setNewName('');
+      return;
+    }
+    updateSession(session.id, (s) => ({
+      ...s,
+      people: [...s.people, { id: genId('p'), name }],
+    }));
+    setNewName('');
+  };
+
+  const handleAddRound = () => {
+    const round = addRound(session.id);
+    if (round) {
+      router.push(`/session/${session.id}/round/${round.id}`);
+    }
+  };
+
+  const handleDeleteRound = (round: Round) => {
+    Alert.alert('차수 삭제', `'${round.title}' 차수를 삭제할까요?`, [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '삭제',
+        style: 'destructive',
+        onPress: () =>
+          updateSession(session.id, (s) => ({
+            ...s,
+            rounds: s.rounds.filter((r) => r.id !== round.id),
+          })),
+      },
+    ]);
+  };
+
+  return (
+    <Screen
+      footer={
+        <PrimaryButton
+          label="정산하기"
+          disabled={session.rounds.length === 0 || grandTotal === 0}
+          onPress={() => router.push(`/session/${session.id}/result`)}
+        />
+      }
+    >
+      <Stack.Screen options={{ title: session.title }} />
+
+      <SectionTitle>참가자</SectionTitle>
+      <Card>
+        <Row>
+          {session.people.map((person) => (
+            <Chip key={person.id} label={person.name} selected={false} />
+          ))}
+        </Row>
+        <TextField
+          label="이름"
+          value={newName}
+          onChangeText={setNewName}
+          placeholder="새 참가자 이름"
+          onSubmitEditing={handleAddPerson}
+          keepFocusOnSubmit
+        />
+        <PrimaryButton label="추가" variant="ghost" onPress={handleAddPerson} />
+      </Card>
+
+      <SectionTitle>차수</SectionTitle>
+      {session.rounds.length === 0 ? (
+        <EmptyState
+          emoji="🍻"
+          title="차수를 추가해보세요"
+          hint="1차 카페, 2차 밥, 3차 술..."
+        />
+      ) : (
+        session.rounds.map((round) => (
+          <Card
+            key={round.id}
+            onPress={() => router.push(`/session/${session.id}/round/${round.id}`)}
+            onLongPress={() => handleDeleteRound(round)}
+          >
+            <View style={styles.roundRow}>
+              <View style={styles.roundInfo}>
+                <Text style={styles.roundTitle}>
+                  {KIND_EMOJI[round.kind]} {round.title}
+                </Text>
+                <Text style={styles.roundSubtitle}>
+                  결제 {nameOf(round.payerId)} ·{' '}
+                  {round.mode === 'even' ? '균등 n빵' : '항목별'}
+                </Text>
+              </View>
+              <Text style={styles.roundAmount}>{formatKrw(roundTotal(round))}</Text>
+            </View>
+          </Card>
+        ))
+      )}
+      <PrimaryButton label="+ 차수 추가" variant="ghost" onPress={handleAddRound} />
+
+      <Card>
+        <Text style={styles.totalLabel}>총 지출</Text>
+        <Text style={styles.totalAmount}>{formatKrw(grandTotal)}</Text>
+      </Card>
+    </Screen>
+  );
+}
+
+const styles = StyleSheet.create({
+  roundRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  roundInfo: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  roundTitle: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  roundSubtitle: {
+    fontSize: fontSize.sm,
+    color: colors.subtext,
+  },
+  roundAmount: {
+    fontSize: fontSize.md,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  totalLabel: {
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+    color: colors.subtext,
+  },
+  totalAmount: {
+    fontSize: fontSize.xl,
+    fontWeight: '700',
+    color: colors.text,
+  },
+});

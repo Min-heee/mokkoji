@@ -1,0 +1,92 @@
+export type PersonId = string;
+
+export interface Person {
+  id: PersonId;
+  name: string;
+}
+
+export type RoundKind = 'cafe' | 'meal' | 'drinks' | 'etc';
+
+export type RoundMode = 'itemized' | 'even';
+
+export interface Item {
+  id: string;
+  name: string;
+  /** 단가 (원) */
+  unitPrice: number;
+  quantity: number;
+  /**
+   * 이 항목을 먹은/마신 사람들.
+   * 비어 있으면 차수 참가자 전원이 나눈 것으로 간주한다.
+   */
+  eaterIds: PersonId[];
+}
+
+export interface Round {
+  id: string;
+  /** 예: "1차 카페" */
+  title: string;
+  kind: RoundKind;
+  /** 이 차수를 결제한 사람 */
+  payerId: PersonId;
+  mode: RoundMode;
+  /** 이 차수에 있었던 사람들 (2차부터 합류한 사람 등 반영) */
+  participantIds: PersonId[];
+  /** mode === 'even' 일 때 차수 전체 금액 */
+  totalAmount: number;
+  /** mode === 'itemized' 일 때 항목 목록 */
+  items: Item[];
+  /**
+   * 이 차수에서 부담을 면제받는 사람 (생일자 등).
+   * 이들의 몫은 나머지 참가자들이 균등하게 나눠 부담한다.
+   */
+  exemptIds: PersonId[];
+}
+
+export interface SessionSettings {
+  /** 송금액 반올림 단위 (원) */
+  roundingUnit: 1 | 10 | 100 | 1000;
+}
+
+export interface Session {
+  id: string;
+  title: string;
+  createdAt: string;
+  people: Person[];
+  rounds: Round[];
+  settings: SessionSettings;
+}
+
+export interface PersonSettlement {
+  personId: PersonId;
+  /** 먹은/부담해야 할 총액 (원, 소수 가능) */
+  consumed: number;
+  /** 결제한 총액 (원) */
+  paid: number;
+  /** paid - consumed. 양수면 받을 돈, 음수면 보낼 돈 */
+  net: number;
+}
+
+export interface Transfer {
+  fromId: PersonId;
+  toId: PersonId;
+  /** 반올림 단위가 적용된 정수 금액 (원) */
+  amount: number;
+}
+
+export interface RoundSummary {
+  roundId: string;
+  title: string;
+  kind: RoundKind;
+  payerId: PersonId;
+  total: number;
+  /** 사람별 부담액 (소수 가능) */
+  shares: Record<PersonId, number>;
+}
+
+export interface SettlementResult {
+  perRound: RoundSummary[];
+  persons: PersonSettlement[];
+  transfers: Transfer[];
+  grandTotal: number;
+}
