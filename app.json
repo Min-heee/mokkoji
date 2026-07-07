@@ -7,18 +7,40 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#3182F6"
+    },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.minheee.nbbang"
+      "bundleIdentifier": "com.minheee.nbbang",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.minheee.nbbang",
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#3182F6"
+      }
     },
     "web": {
       "bundler": "metro",
       "output": "single"
     },
-    "plugins": ["expo-router"]
+    "plugins": [
+      "expo-router"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "95aba195-94f4-4191-bcae-c7d104fd5327"
+      }
+    },
+    "owner": "untitled98"
   }
 }
