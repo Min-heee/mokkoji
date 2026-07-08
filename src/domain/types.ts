@@ -5,7 +5,17 @@ export interface Person {
   name: string;
 }
 
-export type RoundKind = 'cafe' | 'meal' | 'drinks' | 'etc';
+export type SessionType = 'moim' | 'travel';
+
+export type RoundKind =
+  | 'cafe'
+  | 'meal'
+  | 'drinks'
+  | 'lodging'
+  | 'transport'
+  | 'activity'
+  | 'shopping'
+  | 'etc';
 
 export type RoundMode = 'itemized' | 'even';
 
@@ -41,20 +51,37 @@ export interface Round {
    * 이들의 몫은 나머지 참가자들이 균등하게 나눠 부담한다.
    */
   exemptIds: PersonId[];
+  /** 이 지출의 결제 통화 (ISO 코드, 기본 KRW) */
+  currency: string;
+  /**
+   * 현금 결제 시 환율: 1 currency = fxRate 원.
+   * currency가 KRW면 무시된다.
+   */
+  fxRate: number | null;
+  /**
+   * 카드 결제 시 실제 청구된 원화 총액.
+   * 설정되면 fxRate 대신 이 값으로 환산한다 (카드사 환율·수수료 반영).
+   */
+  billedBaseAmount: number | null;
 }
 
 export interface SessionSettings {
   /** 송금액 반올림 단위 (원) */
   roundingUnit: 1 | 10 | 100 | 1000;
+  /** 정산 기준 통화 (현재 KRW 고정) */
+  baseCurrency: string;
 }
 
 export interface Session {
   id: string;
   title: string;
   createdAt: string;
+  type: SessionType;
   people: Person[];
   rounds: Round[];
   settings: SessionSettings;
+  /** 통화별 마지막 사용 환율 — 새 지출의 기본값으로 재사용 */
+  lastFxRates?: Record<string, number>;
 }
 
 export interface PersonSettlement {
@@ -79,8 +106,15 @@ export interface RoundSummary {
   title: string;
   kind: RoundKind;
   payerId: PersonId;
+  /** 기준통화(원) 환산 총액. 환율 미입력이면 0 */
   total: number;
-  /** 사람별 부담액 (소수 가능) */
+  /** 결제 통화 */
+  currency: string;
+  /** 결제 통화 기준 총액 */
+  currencyTotal: number;
+  /** 외화인데 환율 정보가 없어 정산에서 제외됨 */
+  missingFx: boolean;
+  /** 사람별 부담액 (기준통화 원, 소수 가능) */
   shares: Record<PersonId, number>;
 }
 
@@ -89,4 +123,6 @@ export interface SettlementResult {
   persons: PersonSettlement[];
   transfers: Transfer[];
   grandTotal: number;
+  /** 환율 미입력으로 제외된 지출이 하나라도 있으면 true */
+  hasMissingFx: boolean;
 }

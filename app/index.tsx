@@ -3,7 +3,7 @@ import React from 'react';
 import { Alert, StyleSheet, Text } from 'react-native';
 
 import { formatKrw } from '@/domain/format';
-import { roundTotal } from '@/domain/settlement';
+import { roundBaseTotal } from '@/domain/settlement';
 import type { Session } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
 import {
@@ -74,14 +74,17 @@ export default function HomeScreen() {
         />
       ) : (
         sessions.map((s) => {
-          const total = s.rounds.reduce((sum, r) => sum + roundTotal(r), 0);
+          const total = s.rounds.reduce((sum, r) => sum + roundBaseTotal(r), 0);
           return (
             <Card
               key={s.id}
               onPress={() => router.push('/session/' + s.id)}
               onLongPress={() => confirmDelete(s)}
             >
-              <Text style={styles.title}>{s.title}</Text>
+              <Text style={styles.title}>
+                {s.type === 'travel' ? '✈️ ' : ''}
+                {s.title}
+              </Text>
               <Text style={styles.meta}>{formatDate(s.createdAt)}</Text>
               <Text style={styles.meta}>{peopleSummary(s)}</Text>
               <Text style={styles.meta}>

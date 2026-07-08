@@ -2,7 +2,8 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { Alert, StyleSheet, Text, View } from 'react-native';
 
-import { roundTotal } from '@/domain/settlement';
+import { formatMoney } from '@/domain/currency';
+import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
 import { formatKrw, genId } from '@/domain/format';
 import { KIND_EMOJI } from '@/domain/shareText';
 import type { Round } from '@/domain/types';
@@ -47,7 +48,11 @@ export default function SessionDetailScreen() {
   const nameOf = (personId: string) =>
     session.people.find((p) => p.id === personId)?.name ?? '?';
 
-  const grandTotal = session.rounds.reduce((sum, r) => sum + roundTotal(r), 0);
+  const grandTotal = session.rounds.reduce(
+    (sum, r) => sum + roundBaseTotal(r),
+    0,
+  );
+  const isTravel = session.type === 'travel';
 
   const handleAddPerson = () => {
     const name = newName.trim();
@@ -90,7 +95,7 @@ export default function SessionDetailScreen() {
       footer={
         <PrimaryButton
           label="정산하기"
-          disabled={session.rounds.length === 0 || grandTotal === 0}
+          disabled={session.rounds.length === 0}
           onPress={() => router.push(`/session/${session.id}/result`)}
         />
       }
@@ -115,12 +120,14 @@ export default function SessionDetailScreen() {
         <PrimaryButton label="추가" variant="ghost" onPress={handleAddPerson} />
       </Card>
 
-      <SectionTitle>차수</SectionTitle>
+      <SectionTitle>{isTravel ? '지출' : '차수'}</SectionTitle>
       {session.rounds.length === 0 ? (
         <EmptyState
-          emoji="🍻"
-          title="차수를 추가해보세요"
-          hint="1차 카페, 2차 밥, 3차 술..."
+          emoji={isTravel ? '🧳' : '🍻'}
+          title={isTravel ? '첫 지출을 추가해보세요' : '차수를 추가해보세요'}
+          hint={
+            isTravel ? '숙소, 밥, 교통, 액티비티...' : '1차 카페, 2차 밥, 3차 술...'
+          }
         />
       ) : (
         session.rounds.map((round) => (
@@ -139,12 +146,33 @@ export default function SessionDetailScreen() {
                   {round.mode === 'even' ? '균등 n빵' : '항목별'}
                 </Text>
               </View>
-              <Text style={styles.roundAmount}>{formatKrw(roundTotal(round))}</Text>
+              {(round.currency || 'KRW') === 'KRW' ? (
+                <Text style={styles.roundAmount}>
+                  {formatKrw(roundBaseTotal(round))}
+                </Text>
+              ) : (
+                <View style={styles.roundAmountCol}>
+                  <Text style={styles.roundAmount}>
+                    {formatMoney(roundTotal(round), round.currency)}
+                  </Text>
+                  {roundFxFactor(round) == null ? (
+                    <Text style={styles.fxMissing}>환율 필요</Text>
+                  ) : (
+                    <Text style={styles.fxConverted}>
+                      ≈ {formatKrw(roundBaseTotal(round))}
+                    </Text>
+                  )}
+                </View>
+              )}
             </View>
           </Card>
         ))
       )}
-      <PrimaryButton label="+ 차수 추가" variant="ghost" onPress={handleAddRound} />
+      <PrimaryButton
+        label={isTravel ? '+ 지출 추가' : '+ 차수 추가'}
+        variant="ghost"
+        onPress={handleAddRound}
+      />
 
       <Card>
         <Text style={styles.totalLabel}>총 지출</Text>
@@ -178,6 +206,19 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     fontWeight: '700',
     color: colors.text,
+  },
+  roundAmountCol: {
+    alignItems: 'flex-end',
+    gap: spacing.xs,
+  },
+  fxMissing: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+    color: colors.danger,
+  },
+  fxConverted: {
+    fontSize: fontSize.xs,
+    color: colors.subtext,
   },
   totalLabel: {
     fontSize: fontSize.sm,

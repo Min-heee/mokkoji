@@ -3,6 +3,7 @@ import { useLocalSearchParams } from 'expo-router';
 import React, { useMemo } from 'react';
 import { Alert, Share, StyleSheet, Text, View } from 'react-native';
 
+import { BASE_CURRENCY, formatMoney } from '@/domain/currency';
 import { formatKrw } from '@/domain/format';
 import { computeSettlement } from '@/domain/settlement';
 import { buildShareText, KIND_EMOJI } from '@/domain/shareText';
@@ -61,6 +62,9 @@ export default function ResultScreen() {
   const nameOf = (personId: PersonId) =>
     session.people.find((p) => p.id === personId)?.name ?? '?';
 
+  const isTravel = session.type === 'travel';
+  const missingFxRounds = result.perRound.filter((r) => r.missingFx);
+
   const involvedPersons = result.persons.filter(
     (p) => p.consumed > 0 || p.paid > 0,
   );
@@ -94,11 +98,29 @@ export default function ResultScreen() {
         </>
       }
     >
+      {result.hasMissingFx && (
+        <Card style={styles.warnCard}>
+          <Text style={styles.warnTitle}>
+            ⚠️ 환율이 없는 지출 {missingFxRounds.length}건이 정산에서 빠졌어요
+          </Text>
+          {missingFxRounds.map((r) => (
+            <Text key={r.roundId} style={styles.warnItem}>
+              · {r.title}
+            </Text>
+          ))}
+          <Text style={styles.warnHint}>
+            지출 편집에서 환율이나 카드 청구액을 입력해주세요
+          </Text>
+        </Card>
+      )}
+
       <Card>
         <Text style={styles.summaryLabel}>총 지출</Text>
         <Text style={styles.summaryTotal}>{formatKrw(result.grandTotal)}</Text>
         <Text style={styles.summarySub}>
-          차수 {session.rounds.length}개 · 참가자 {session.people.length}명
+          {isTravel
+            ? `지출 ${session.rounds.length}건 · 참가자 ${session.people.length}명`
+            : `차수 ${session.rounds.length}개 · 참가자 ${session.people.length}명`}
         </Text>
       </Card>
 
@@ -152,7 +174,7 @@ export default function ResultScreen() {
         </Card>
       ))}
 
-      <SectionTitle>차수별 지출</SectionTitle>
+      <SectionTitle>{isTravel ? '지출별 내역' : '차수별 지출'}</SectionTitle>
       {result.perRound.map((r) => (
         <Card key={r.roundId} style={styles.roundCard}>
           <View style={styles.rowBetween}>
@@ -162,7 +184,23 @@ export default function ResultScreen() {
               </Text>
               <Text style={styles.personDetail}>{nameOf(r.payerId)} 결제</Text>
             </View>
-            <Text style={styles.roundTotal}>{formatKrw(r.total)}</Text>
+            {r.missingFx ? (
+              <View style={styles.roundAmountCol}>
+                <Text style={styles.roundTotal}>
+                  {formatMoney(r.currencyTotal, r.currency)}
+                </Text>
+                <Text style={styles.roundExcluded}>제외됨</Text>
+              </View>
+            ) : r.currency !== BASE_CURRENCY ? (
+              <View style={styles.roundAmountCol}>
+                <Text style={styles.roundTotal}>
+                  {formatMoney(r.currencyTotal, r.currency)}
+                </Text>
+                <Text style={styles.roundApprox}>≈ {formatKrw(r.total)}</Text>
+              </View>
+            ) : (
+              <Text style={styles.roundTotal}>{formatKrw(r.total)}</Text>
+            )}
           </View>
         </Card>
       ))}
@@ -171,6 +209,23 @@ export default function ResultScreen() {
 }
 
 const styles = StyleSheet.create({
+  warnCard: {
+    backgroundColor: colors.dangerDim,
+    gap: spacing.xs,
+  },
+  warnTitle: {
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+    color: colors.danger,
+  },
+  warnItem: {
+    fontSize: fontSize.sm,
+    color: colors.text,
+  },
+  warnHint: {
+    fontSize: fontSize.xs,
+    color: colors.subtext,
+  },
   summaryLabel: {
     fontSize: fontSize.sm,
     fontWeight: '700',
@@ -245,5 +300,18 @@ const styles = StyleSheet.create({
     fontSize: fontSize.md,
     fontWeight: '700',
     color: colors.text,
+  },
+  roundAmountCol: {
+    alignItems: 'flex-end',
+    gap: spacing.xs,
+  },
+  roundExcluded: {
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+    color: colors.danger,
+  },
+  roundApprox: {
+    fontSize: fontSize.xs,
+    color: colors.subtext,
   },
 });

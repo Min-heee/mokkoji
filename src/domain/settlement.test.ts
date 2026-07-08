@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { computeRoundShares, computeSettlement, computeTransfers, roundTotal } from './settlement';
+import {
+  computeRoundShares,
+  computeSettlement,
+  computeTransfers,
+  roundBaseTotal,
+  roundFxFactor,
+  roundTotal,
+} from './settlement';
 import type { Round, Session, Transfer } from './types';
 
 const A = 'p_a';
@@ -20,8 +27,9 @@ function makeSession(rounds: Round[], overrides?: Partial<Session>): Session {
       { id: C, name: '다' },
       { id: D, name: '라' },
     ],
+    type: 'moim',
     rounds,
-    settings: { roundingUnit: 1 },
+    settings: { roundingUnit: 1, baseCurrency: 'KRW' },
     ...overrides,
   };
 }
@@ -37,6 +45,9 @@ function evenRound(partial: Partial<Round>): Round {
     totalAmount: 30000,
     items: [],
     exemptIds: [],
+    currency: 'KRW',
+    fxRate: null,
+    billedBaseAmount: null,
     ...partial,
   };
 }
@@ -52,6 +63,9 @@ function itemizedRound(partial: Partial<Round>): Round {
     totalAmount: 0,
     items: [],
     exemptIds: [],
+    currency: 'KRW',
+    fxRate: null,
+    billedBaseAmount: null,
     ...partial,
   };
 }
@@ -209,7 +223,7 @@ describe('computeSettlement', () => {
 describe('computeTransfers 반올림', () => {
   it('100원 단위: 송금액이 전부 100의 배수, 자투리는 최대 채권자가 흡수', () => {
     const session = makeSession([evenRound({ totalAmount: 10000 })], undefined);
-    session.settings = { roundingUnit: 100 };
+    session.settings = { roundingUnit: 100, baseCurrency: 'KRW' };
     const result = computeSettlement(session);
     for (const t of result.transfers) {
       assert.equal(t.amount % 100, 0);
@@ -235,7 +249,7 @@ describe('computeTransfers 반올림', () => {
       }),
       evenRound({ id: 'r3', payerId: C, participantIds: [B, C, D], totalAmount: 45001 }),
     ]);
-    session.settings = { roundingUnit: 10 };
+    session.settings = { roundingUnit: 10, baseCurrency: 'KRW' };
     const result = computeSettlement(session);
 
     const balance: Record<string, number> = {};
@@ -359,5 +373,131 @@ describe('computeTransfers 반올림', () => {
     const map = transferMap(transfers);
     assert.equal(map[`${B}->${A}`], 10000);
     assert.equal(map[`${C}->${A}`], 10000);
+  });
+});
+
+describe('다중 통화 (여행 정산)', () => {
+  it('현금 환율: 엔화 지출이 원화로 환산돼 정산된다', () => {
+    // A가 라멘집 계산 (¥10,000). A는 ¥6,000, B는 ¥4,000 어치. 환율 9.2원/¥
+    const session = makeSession([
+      itemizedRound({
+        payerId: A,
+        participantIds: [A, B],
+        currency: 'JPY',
+        fxRate: 9.2,
+        items: [
+          { id: 'i1', name: '라멘A', unitPrice: 3000, quantity: 2, eaterIds: [A] },
+          { id: 'i2', name: '라멘B', unitPrice: 4000, quantity: 1, eaterIds: [B] },
+        ],
+      }),
+    ]);
+    const result = computeSettlement(session);
+    assert.equal(result.grandTotal, 92000);
+    assert.equal(result.hasMissingFx, false);
+    const map = transferMap(result.transfers);
+    assert.equal(map[`${B}->${A}`], 36800); // 4000 × 9.2
+  });
+
+  it('카드 실청구액: 총액이 청구액과 정확히 일치하고 비율대로 분배된다', () => {
+    // 항목 합계 ¥10,000인데 카드에는 92,300원 청구 (수수료 포함)
+    const session = makeSession([
+      itemizedRound({
+        payerId: A,
+        participantIds: [A, B],
+        currency: 'JPY',
+        fxRate: null,
+        billedBaseAmount: 92300,
+        items: [
+          { id: 'i1', name: 'A몫', unitPrice: 6000, quantity: 1, eaterIds: [A] },
+          { id: 'i2', name: 'B몫', unitPrice: 4000, quantity: 1, eaterIds: [B] },
+        ],
+      }),
+    ]);
+    const result = computeSettlement(session);
+    assert.ok(Math.abs(result.grandTotal - 92300) < 1e-6);
+    const b = result.persons.find((p) => p.personId === B)!;
+    assert.ok(Math.abs(b.consumed - 36920) < 1e-6); // 92300 × 0.4
+    const map = transferMap(result.transfers);
+    assert.equal(map[`${B}->${A}`], 36920);
+  });
+
+  it('환율 미입력 지출은 정산에서 제외되고 hasMissingFx가 켜진다', () => {
+    const session = makeSession([
+      evenRound({ id: 'r1', payerId: A, participantIds: [A, B], totalAmount: 20000 }),
+      evenRound({
+        id: 'r2',
+        payerId: B,
+        participantIds: [A, B],
+        currency: 'THB',
+        totalAmount: 1000,
+        fxRate: null,
+      }),
+    ]);
+    const result = computeSettlement(session);
+    assert.equal(result.hasMissingFx, true);
+    // 바트 지출은 빠지고 KRW 지출만 정산
+    assert.equal(result.grandTotal, 20000);
+    const map = transferMap(result.transfers);
+    assert.equal(map[`${B}->${A}`], 10000);
+    // 잔액 합계는 여전히 0
+    const totalNet = result.persons.reduce((s, p) => s + p.net, 0);
+    assert.ok(Math.abs(totalNet) < 1e-6);
+    const thb = result.perRound.find((r) => r.roundId === 'r2')!;
+    assert.equal(thb.missingFx, true);
+    assert.equal(thb.total, 0);
+    assert.equal(thb.currencyTotal, 1000);
+  });
+
+  it('even 모드 외화 + KRW 지출 혼합 정산', () => {
+    // 방콕: 택시 300바트(균등, 환율 38.5) + 한국에서 산 유심 30,000원
+    const session = makeSession([
+      evenRound({
+        id: 'r1',
+        payerId: A,
+        participantIds: [A, B, C],
+        currency: 'THB',
+        totalAmount: 300,
+        fxRate: 38.5,
+      }),
+      evenRound({ id: 'r2', payerId: B, participantIds: [A, B, C], totalAmount: 30000 }),
+    ]);
+    const result = computeSettlement(session);
+    assert.ok(Math.abs(result.grandTotal - (300 * 38.5 + 30000)) < 1e-6);
+    // A: 부담 3850+10000, 결제 11550 → net -2300
+    // B: 부담 13850, 결제 30000 → net +16150 / C: -13850
+    const map = transferMap(result.transfers);
+    assert.equal(map[`${C}->${B}`], 13850);
+    assert.equal(map[`${A}->${B}`], 2300);
+  });
+
+  it('roundFxFactor/roundBaseTotal 계약', () => {
+    const krw = evenRound({ totalAmount: 5000 });
+    assert.equal(roundFxFactor(krw), 1);
+    assert.equal(roundBaseTotal(krw), 5000);
+
+    const jpyCash = evenRound({ currency: 'JPY', totalAmount: 1000, fxRate: 9.2 });
+    assert.equal(roundFxFactor(jpyCash), 9.2);
+    assert.equal(roundBaseTotal(jpyCash), 9200);
+
+    const jpyCard = evenRound({
+      currency: 'JPY',
+      totalAmount: 1000,
+      fxRate: 9.2,
+      billedBaseAmount: 9300,
+    });
+    // 카드 청구액이 환율보다 우선
+    assert.equal(roundBaseTotal(jpyCard), 9300);
+
+    const noRate = evenRound({ currency: 'USD', totalAmount: 100, fxRate: null });
+    assert.equal(roundFxFactor(noRate), null);
+    assert.equal(roundBaseTotal(noRate), 0);
+
+    // 카드 청구액만 있고 항목이 아직 0이면 환산 불가로 취급
+    const cardZero = evenRound({
+      currency: 'JPY',
+      totalAmount: 0,
+      billedBaseAmount: 9300,
+    });
+    assert.equal(roundFxFactor(cardZero), null);
   });
 });

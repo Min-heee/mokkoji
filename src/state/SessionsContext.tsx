@@ -7,16 +7,18 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { AppState } from 'react-native';
 
+import { BASE_CURRENCY } from '@/domain/currency';
 import { genId } from '@/domain/format';
-import type { Person, Round, Session } from '@/domain/types';
+import type { Person, Round, Session, SessionType } from '@/domain/types';
 import { loadSessions, saveSessions } from '@/storage/store';
 
 export interface SessionsApi {
   sessions: Session[];
   loading: boolean;
   getSession(id: string): Session | undefined;
-  createSession(title: string, peopleNames: string[]): Session;
+  createSession(title: string, peopleNames: string[], type?: SessionType): Session;
   updateSession(id: string, updater: (session: Session) => Session): void;
   deleteSession(id: string): void;
   /** 기본값으로 새 차수를 만들어 세션에 추가하고 그 차수를 반환 */
@@ -26,22 +28,29 @@ export interface SessionsApi {
 const SessionsContext = createContext<SessionsApi | null>(null);
 
 function makeDefaultRound(session: Session): Round {
-  // 삭제 후에도 "n차" 제목이 중복되지 않도록 기존 제목의 최대 번호를 잇는다
+  // 삭제 후에도 제목 번호가 중복되지 않도록 기존 제목의 최대 번호를 잇는다
+  const pattern = session.type === 'travel' ? /^지출 (\d+)/ : /^(\d+)차/;
   const maxN = session.rounds.reduce((max, r) => {
-    const match = /^(\d+)차/.exec(r.title.trim());
+    const match = pattern.exec(r.title.trim());
     return match ? Math.max(max, Number(match[1])) : max;
   }, session.rounds.length);
   const n = maxN + 1;
+  const title = session.type === 'travel' ? `지출 ${n}` : `${n}차`;
+  const kind =
+    session.type === 'travel' ? 'meal' : n === 1 ? 'meal' : n === 2 ? 'drinks' : 'etc';
   return {
     id: genId('r'),
-    title: `${n}차`,
-    kind: n === 1 ? 'meal' : n === 2 ? 'drinks' : 'etc',
+    title,
+    kind,
     payerId: session.people[0]?.id ?? '',
     mode: 'even',
     participantIds: session.people.map((p) => p.id),
     totalAmount: 0,
     items: [],
     exemptIds: [],
+    currency: BASE_CURRENCY,
+    fxRate: null,
+    billedBaseAmount: null,
   };
 }
 
@@ -87,35 +96,54 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
     }, 400);
   }, [sessions]);
 
-  useEffect(
-    () => () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      if (pendingSave.current) saveSessions(pendingSave.current);
-    },
-    [],
-  );
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (pendingSave.current) {
+      saveSessions(pendingSave.current);
+      pendingSave.current = null;
+    }
+  }, []);
+
+  // RN에서 프로바이더 unmount는 사실상 안 일어나므로,
+  // 앱이 백그라운드로 갈 때 디바운스 대기 중인 변경분을 즉시 저장한다
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') flushSave();
+    });
+    return () => sub.remove();
+  }, [flushSave]);
+
+  useEffect(() => flushSave, [flushSave]);
 
   const getSession = useCallback(
     (id: string) => sessions.find((s) => s.id === id),
     [sessions],
   );
 
-  const createSession = useCallback((title: string, peopleNames: string[]): Session => {
-    const people: Person[] = peopleNames
-      .map((name) => name.trim())
-      .filter((name) => name.length > 0)
-      .map((name) => ({ id: genId('p'), name }));
-    const session: Session = {
-      id: genId('s'),
-      title: title.trim() || '새 모임',
-      createdAt: new Date().toISOString(),
-      people,
-      rounds: [],
-      settings: { roundingUnit: 100 },
-    };
-    setSessions((prev) => [session, ...prev]);
-    return session;
-  }, []);
+  const createSession = useCallback(
+    (title: string, peopleNames: string[], type: SessionType = 'moim'): Session => {
+      const people: Person[] = peopleNames
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0)
+        .map((name) => ({ id: genId('p'), name }));
+      const session: Session = {
+        id: genId('s'),
+        title: title.trim() || (type === 'travel' ? '새 여행' : '새 모임'),
+        createdAt: new Date().toISOString(),
+        type,
+        people,
+        rounds: [],
+        settings: { roundingUnit: 100, baseCurrency: BASE_CURRENCY },
+        lastFxRates: {},
+      };
+      setSessions((prev) => [session, ...prev]);
+      return session;
+    },
+    [],
+  );
 
   const updateSession = useCallback(
     (id: string, updater: (session: Session) => Session) => {

@@ -1,3 +1,4 @@
+import { formatMoney } from './currency';
 import { formatKrw } from './format';
 import type { PersonId, RoundKind, Session, SettlementResult } from './types';
 
@@ -5,6 +6,10 @@ export const KIND_EMOJI: Record<RoundKind, string> = {
   cafe: '☕',
   meal: '🍚',
   drinks: '🍻',
+  lodging: '🏨',
+  transport: '🚕',
+  activity: '🎡',
+  shopping: '🛍️',
   etc: '🧾',
 };
 
@@ -12,7 +17,17 @@ export const KIND_LABEL: Record<RoundKind, string> = {
   cafe: '카페',
   meal: '밥',
   drinks: '술',
+  lodging: '숙소',
+  transport: '교통',
+  activity: '놀이',
+  shopping: '쇼핑',
   etc: '기타',
+};
+
+/** 모임/여행 타입별로 지출 종류 후보 순서가 다르다 */
+export const KINDS_BY_SESSION_TYPE: Record<'moim' | 'travel', RoundKind[]> = {
+  moim: ['cafe', 'meal', 'drinks', 'etc'],
+  travel: ['meal', 'cafe', 'drinks', 'lodging', 'transport', 'activity', 'shopping', 'etc'],
 };
 
 /** 카톡 등에 붙여넣을 정산 요약 텍스트 */
@@ -23,9 +38,22 @@ export function buildShareText(session: Session, result: SettlementResult): stri
   lines.push(`🧾 ${session.title} 정산`);
   lines.push('');
   for (const r of result.perRound) {
-    lines.push(`${KIND_EMOJI[r.kind]} ${r.title} · ${formatKrw(r.total)} (${nameOf(r.payerId)} 결제)`);
+    if (r.missingFx) {
+      lines.push(
+        `${KIND_EMOJI[r.kind]} ${r.title} · ${formatMoney(r.currencyTotal, r.currency)} (환율 미입력 — 정산 제외)`,
+      );
+      continue;
+    }
+    const amount =
+      r.currency === 'KRW'
+        ? formatKrw(r.total)
+        : `${formatMoney(r.currencyTotal, r.currency)} → ${formatKrw(r.total)}`;
+    lines.push(`${KIND_EMOJI[r.kind]} ${r.title} · ${amount} (${nameOf(r.payerId)} 결제)`);
   }
   lines.push(`합계 ${formatKrw(result.grandTotal)}`);
+  if (result.hasMissingFx) {
+    lines.push('⚠️ 환율이 없는 지출은 합계·정산에서 빠져 있어요');
+  }
 
   const involved = result.persons.filter((p) => p.consumed > 0 || p.paid > 0);
   if (involved.length > 0) {

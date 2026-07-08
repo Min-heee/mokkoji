@@ -16,6 +16,8 @@ import {
   type ViewStyle,
 } from 'react-native';
 
+import { parseMoneyText, sanitizeAmountText } from '@/domain/currency';
+
 import { colors, fontSize, radius, spacing } from './theme';
 
 export function Screen({
@@ -207,6 +209,66 @@ export function TextField({
         {suffix ? <Text style={styles.inputSuffix}>{suffix}</Text> : null}
       </View>
     </View>
+  );
+}
+
+/**
+ * 금액 입력 필드. 내부에 입력 텍스트 상태를 따로 들고 있어
+ * "4." 같은 소수점 입력 중 상태와 선행 0 입력이 자연스럽게 동작한다.
+ * decimals=0이면 정수(원화)만, >0이면 해당 자리까지 소수 허용.
+ */
+export function AmountField({
+  label,
+  value,
+  onChangeValue,
+  decimals = 0,
+  suffix,
+  placeholder,
+}: {
+  label?: string;
+  value: number;
+  onChangeValue: (value: number) => void;
+  decimals?: number;
+  suffix?: string;
+  placeholder?: string;
+}) {
+  const [text, setText] = React.useState(value > 0 ? String(value) : '');
+
+  // 외부에서 값이 바뀐 경우(다른 경로의 수정)에만 텍스트를 재동기화한다
+  React.useEffect(() => {
+    const parsed = parseMoneyText(text);
+    if (Math.abs(parsed - value) > 1e-9) {
+      setText(value > 0 ? String(value) : '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  // 정수 필드로 바뀌면(외화→KRW 전환 등) 남아 있던 소수 값·텍스트를 정리해
+  // 다음 키 입력에서 "4.5"가 "45x"로 붙는 왜곡을 막는다
+  React.useEffect(() => {
+    if (decimals === 0 && !Number.isInteger(value)) {
+      const rounded = Math.round(value);
+      onChangeValue(rounded);
+      setText(rounded > 0 ? String(rounded) : '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decimals]);
+
+  const handleChange = (t: string) => {
+    const cleaned = sanitizeAmountText(t, decimals);
+    setText(cleaned);
+    onChangeValue(parseMoneyText(cleaned));
+  };
+
+  return (
+    <TextField
+      label={label}
+      value={text}
+      onChangeText={handleChange}
+      placeholder={placeholder ?? '0'}
+      keyboardType={decimals > 0 ? 'decimal-pad' : 'number-pad'}
+      suffix={suffix}
+    />
   );
 }
 

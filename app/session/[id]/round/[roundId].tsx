@@ -2,12 +2,14 @@ import React from 'react';
 import { Alert, StyleSheet, Text, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
-import { formatKrw, genId, parseAmount } from '@/domain/format';
-import { roundTotal } from '@/domain/settlement';
-import { KIND_EMOJI, KIND_LABEL } from '@/domain/shareText';
+import { CURRENCIES, currencyInfo, formatMoney } from '@/domain/currency';
+import { formatKrw, genId } from '@/domain/format';
+import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
+import { KIND_EMOJI, KIND_LABEL, KINDS_BY_SESSION_TYPE } from '@/domain/shareText';
 import type { Item, PersonId, Round, RoundKind, RoundMode } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
 import {
+  AmountField,
   Card,
   Chip,
   EmptyState,
@@ -20,8 +22,6 @@ import {
 } from '@/ui/components';
 import { colors, fontSize, spacing } from '@/ui/theme';
 
-const KINDS: RoundKind[] = ['cafe', 'meal', 'drinks', 'etc'];
-
 export default function RoundEditScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id: string; roundId: string }>();
@@ -32,6 +32,9 @@ export default function RoundEditScreen() {
 
   const session = sessionId ? getSession(sessionId) : undefined;
   const round = session?.rounds.find((r) => r.id === roundId);
+
+  const isTravel = session?.type === 'travel';
+  const noun = isTravel ? '지출' : '차수';
 
   if (loading) {
     return (
@@ -46,7 +49,7 @@ export default function RoundEditScreen() {
       <Screen scroll={false}>
         <EmptyState
           emoji="🔍"
-          title="차수를 찾을 수 없어요"
+          title={isTravel ? '지출을 찾을 수 없어요' : '차수를 찾을 수 없어요'}
           hint="모임 화면으로 돌아가서 다시 선택해 주세요."
         />
       </Screen>
@@ -73,6 +76,56 @@ export default function RoundEditScreen() {
   const setKind = (kind: RoundKind) => patchRound((r) => ({ ...r, kind }));
   const setMode = (mode: RoundMode) => patchRound((r) => ({ ...r, mode }));
   const setPayer = (payerId: PersonId) => patchRound((r) => ({ ...r, payerId }));
+
+  const applyCurrency = (code: string) => {
+    updateSession(sessionId, (s) => ({
+      ...s,
+      rounds: s.rounds.map((r) =>
+        r.id === roundId
+          ? {
+              ...r,
+              currency: code,
+              fxRate: s.lastFxRates?.[code] ?? null,
+              billedBaseAmount: null,
+            }
+          : r,
+      ),
+    }));
+  };
+
+  const setCurrency = (code: string) => {
+    if (round.currency === code) return;
+    // 통화를 바꾸면 환율·카드 실청구액이 초기화된다.
+    // 잘못 눌러 입력해 둔 값이 소리 없이 사라지지 않도록 확인을 받는다.
+    if (round.fxRate == null && round.billedBaseAmount == null) {
+      applyCurrency(code);
+      return;
+    }
+    Alert.alert(
+      '통화 변경',
+      `통화를 ${currencyInfo(code).label}(${code})로 바꾸면 입력한 환율과 카드 실청구액이 초기화돼요. 바꿀까요?`,
+      [
+        { text: '취소', style: 'cancel' },
+        { text: '변경', style: 'destructive', onPress: () => applyCurrency(code) },
+      ],
+    );
+  };
+
+  const setFxRate = (value: number) => {
+    const code = round.currency;
+    updateSession(sessionId, (s) => ({
+      ...s,
+      rounds: s.rounds.map((r) =>
+        r.id === roundId ? { ...r, fxRate: value > 0 ? value : null } : r,
+      ),
+      lastFxRates:
+        value > 0 ? { ...s.lastFxRates, [code]: value } : s.lastFxRates,
+    }));
+  };
+
+  const setBilledBaseAmount = (value: number) => {
+    patchRound((r) => ({ ...r, billedBaseAmount: value > 0 ? value : null }));
+  };
 
   const toggleParticipant = (pid: PersonId) => {
     patchRound((r) => {
@@ -127,31 +180,37 @@ export default function RoundEditScreen() {
   };
 
   const confirmDeleteRound = () => {
-    Alert.alert('차수 삭제', `'${round.title}' 차수를 삭제할까요?`, [
-      { text: '취소', style: 'cancel' },
-      {
-        text: '삭제',
-        style: 'destructive',
-        onPress: () => {
-          updateSession(sessionId, (s) => ({
-            ...s,
-            rounds: s.rounds.filter((r) => r.id !== roundId),
-          }));
-          router.back();
+    Alert.alert(
+      `${noun} 삭제`,
+      isTravel
+        ? `'${round.title}' 지출을 삭제할까요?`
+        : `'${round.title}' 차수를 삭제할까요?`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '삭제',
+          style: 'destructive',
+          onPress: () => {
+            updateSession(sessionId, (s) => ({
+              ...s,
+              rounds: s.rounds.filter((r) => r.id !== roundId),
+            }));
+            router.back();
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   return (
     <>
-      <Stack.Screen options={{ title: round.title || '차수' }} />
+      <Stack.Screen options={{ title: round.title || noun }} />
       <Screen
         footer={
           <>
             <PrimaryButton label="완료" onPress={() => router.back()} />
             <PrimaryButton
-              label="차수 삭제"
+              label={`${noun} 삭제`}
               variant="danger"
               onPress={confirmDeleteRound}
             />
@@ -167,7 +226,7 @@ export default function RoundEditScreen() {
 
         <SectionTitle>종류</SectionTitle>
         <Row>
-          {KINDS.map((k) => (
+          {KINDS_BY_SESSION_TYPE[session.type].map((k) => (
             <Chip
               key={k}
               label={`${KIND_EMOJI[k]} ${KIND_LABEL[k]}`}
@@ -201,6 +260,43 @@ export default function RoundEditScreen() {
           ))}
         </Row>
 
+        <SectionTitle>통화</SectionTitle>
+        <Row>
+          {CURRENCIES.map((c) => (
+            <Chip
+              key={c.code}
+              label={`${c.symbol} ${c.label}`}
+              selected={round.currency === c.code}
+              onPress={() => setCurrency(c.code)}
+            />
+          ))}
+        </Row>
+
+        {round.currency !== 'KRW' && (
+          <Card style={{ gap: spacing.sm }}>
+            <AmountField
+              label={`환율 (1 ${round.currency} = ? 원)`}
+              value={round.fxRate ?? 0}
+              onChangeValue={setFxRate}
+              decimals={4}
+              suffix="원"
+              placeholder="0"
+            />
+            <AmountField
+              label="카드 실청구액 (선택)"
+              value={round.billedBaseAmount ?? 0}
+              onChangeValue={setBilledBaseAmount}
+              decimals={0}
+              suffix="원"
+              placeholder="0"
+            />
+            <Text style={styles.hint}>
+              카드로 냈다면 실제 청구된 원화를 입력하세요 — 환율 대신 이 금액으로
+              정산해요
+            </Text>
+          </Card>
+        )}
+
         <SectionTitle>정산 방식</SectionTitle>
         <Row>
           <Chip
@@ -216,14 +312,16 @@ export default function RoundEditScreen() {
         </Row>
 
         {round.mode === 'even' ? (
-          <TextField
+          <AmountField
             label="총 금액"
-            value={round.totalAmount ? String(round.totalAmount) : ''}
-            onChangeText={(t) =>
-              patchRound((r) => ({ ...r, totalAmount: parseAmount(t) }))
+            value={round.totalAmount}
+            onChangeValue={(v) =>
+              patchRound((r) => ({ ...r, totalAmount: v }))
             }
-            keyboardType="number-pad"
-            suffix="원"
+            decimals={currencyInfo(round.currency).decimals}
+            suffix={
+              round.currency === 'KRW' ? '원' : currencyInfo(round.currency).symbol
+            }
             placeholder="0"
           />
         ) : (
@@ -241,36 +339,34 @@ export default function RoundEditScreen() {
                     />
                   </View>
                   <Text style={styles.itemTotal}>
-                    {formatKrw(item.unitPrice * item.quantity)}
+                    {formatMoney(item.unitPrice * item.quantity, round.currency)}
                   </Text>
                 </Row>
                 <Row>
                   <View style={{ flex: 2 }}>
-                    <TextField
+                    <AmountField
                       label="단가"
-                      value={item.unitPrice ? String(item.unitPrice) : ''}
-                      onChangeText={(t) =>
-                        patchItem(item.id, (it) => ({
-                          ...it,
-                          unitPrice: parseAmount(t),
-                        }))
+                      value={item.unitPrice}
+                      onChangeValue={(v) =>
+                        patchItem(item.id, (it) => ({ ...it, unitPrice: v }))
                       }
-                      keyboardType="number-pad"
-                      suffix="원"
+                      decimals={currencyInfo(round.currency).decimals}
+                      suffix={
+                        round.currency === 'KRW'
+                          ? '원'
+                          : currencyInfo(round.currency).symbol
+                      }
                       placeholder="0"
                     />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <TextField
+                    <AmountField
                       label="수량"
-                      value={item.quantity ? String(item.quantity) : ''}
-                      onChangeText={(t) =>
-                        patchItem(item.id, (it) => ({
-                          ...it,
-                          quantity: parseAmount(t),
-                        }))
+                      value={item.quantity}
+                      onChangeValue={(v) =>
+                        patchItem(item.id, (it) => ({ ...it, quantity: v }))
                       }
-                      keyboardType="number-pad"
+                      decimals={0}
                       placeholder="0"
                     />
                   </View>
@@ -313,9 +409,21 @@ export default function RoundEditScreen() {
 
         <Card>
           <Row style={{ justifyContent: 'space-between' }}>
-            <Text style={styles.totalLabel}>이 차수 합계</Text>
-            <Text style={styles.totalValue}>{formatKrw(roundTotal(round))}</Text>
+            <Text style={styles.totalLabel}>이 {noun} 합계</Text>
+            <Text style={styles.totalValue}>
+              {formatMoney(roundTotal(round), round.currency)}
+            </Text>
           </Row>
+          {round.currency !== 'KRW' &&
+            (roundFxFactor(round) == null ? (
+              <Text style={styles.fxWarning}>
+                ⚠️ 환율을 입력해야 정산에 포함돼요
+              </Text>
+            ) : (
+              <Text style={styles.fxApprox}>
+                ≈ {formatKrw(roundBaseTotal(round))}
+              </Text>
+            ))}
         </Card>
       </Screen>
     </>
@@ -346,5 +454,16 @@ const styles = StyleSheet.create({
     fontSize: fontSize.lg,
     fontWeight: '700',
     color: colors.primary,
+  },
+  fxWarning: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+    color: colors.danger,
+    textAlign: 'right',
+  },
+  fxApprox: {
+    fontSize: fontSize.sm,
+    color: colors.subtext,
+    textAlign: 'right',
   },
 });

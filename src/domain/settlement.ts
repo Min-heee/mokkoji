@@ -8,10 +8,34 @@ import type {
   Transfer,
 } from './types';
 
-/** 차수 총액. even이면 입력된 totalAmount, itemized면 항목 합계 */
+import { BASE_CURRENCY } from './currency';
+
+/** 차수 총액 (결제 통화 기준). even이면 입력된 totalAmount, itemized면 항목 합계 */
 export function roundTotal(round: Round): number {
   if (round.mode === 'even') return round.totalAmount || 0;
   return round.items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0);
+}
+
+/**
+ * 결제 통화 → 기준통화(원) 환산 계수. null이면 환산 불가(환율 미입력).
+ * - KRW 지출: 1
+ * - 카드 실청구액이 있으면 그걸로 유효 환율을 유도 (수수료 포함, 총액이 정확히 청구액과 일치)
+ * - 아니면 입력된 환율(fxRate)
+ */
+export function roundFxFactor(round: Round): number | null {
+  if ((round.currency || BASE_CURRENCY) === BASE_CURRENCY) return 1;
+  const total = roundTotal(round);
+  if (round.billedBaseAmount != null && round.billedBaseAmount > 0) {
+    return total > 0 ? round.billedBaseAmount / total : null;
+  }
+  if (round.fxRate != null && round.fxRate > 0) return round.fxRate;
+  return null;
+}
+
+/** 차수 총액을 기준통화(원)로 환산. 환율 미입력이면 0 */
+export function roundBaseTotal(round: Round): number {
+  const factor = roundFxFactor(round);
+  return factor == null ? 0 : roundTotal(round) * factor;
 }
 
 /**
@@ -131,14 +155,28 @@ export function computeSettlement(session: Session): SettlementResult {
   });
 
   const perRound: RoundSummary[] = session.rounds.map((round) => {
-    const shares = computeRoundShares(round);
-    const total = roundTotal(round);
-    paid[round.payerId] = (paid[round.payerId] ?? 0) + total;
+    const currencyShares = computeRoundShares(round);
+    const currencyTotal = roundTotal(round);
+    const factor = roundFxFactor(round);
+    const missingFx = factor == null;
+
+    // 환율 미입력 지출은 결제·부담 모두에서 제외해 잔액 합계 0을 유지한다.
+    // (UI가 hasMissingFx로 경고를 띄운다)
+    const fx = factor ?? 0;
+    const total = currencyTotal * fx;
+
+    // 사람별 부담액을 기준통화로 환산
+    const shares: Record<PersonId, number> = {};
     let shared = 0;
-    for (const [id, amount] of Object.entries(shares)) {
-      consumed[id] = (consumed[id] ?? 0) + amount;
-      shared += amount;
+    for (const [id, amount] of Object.entries(currencyShares)) {
+      const base = amount * fx;
+      shares[id] = base;
+      consumed[id] = (consumed[id] ?? 0) + base;
+      shared += base;
     }
+
+    paid[round.payerId] = (paid[round.payerId] ?? 0) + total;
+
     // 부담할 사람이 아무도 없어 분배되지 못한 금액은 결제자가 흡수한다
     // (computeRoundShares 계약). 결제자 부담으로 잡아 잔액 합계를 0으로 유지해
     // computeTransfers의 자투리 로직이 순수 반올림 오차만 다루게 한다.
@@ -152,6 +190,9 @@ export function computeSettlement(session: Session): SettlementResult {
       kind: round.kind,
       payerId: round.payerId,
       total,
+      currency: round.currency || 'KRW',
+      currencyTotal,
+      missingFx,
       shares,
     };
   });
@@ -172,6 +213,7 @@ export function computeSettlement(session: Session): SettlementResult {
 
   const transfers = computeTransfers(persons, session.settings.roundingUnit);
   const grandTotal = perRound.reduce((sum, r) => sum + r.total, 0);
+  const hasMissingFx = perRound.some((r) => r.missingFx);
 
-  return { perRound, persons, transfers, grandTotal };
+  return { perRound, persons, transfers, grandTotal, hasMissingFx };
 }

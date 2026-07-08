@@ -2,7 +2,13 @@
   "expo": {
     "name": "엔빵",
     "slug": "nbbang",
-    "version": "0.1.0",
+    "version": "0.2.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/95aba195-94f4-4191-bcae-c7d104fd5327"
+    },
     "scheme": "nbbang",
     "orientation": "portrait",
     "userInterfaceStyle": "light",

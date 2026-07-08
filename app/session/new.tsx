@@ -2,6 +2,7 @@ import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import type { SessionType } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
 import {
   Chip,
@@ -17,6 +18,7 @@ export default function NewSessionScreen() {
   const router = useRouter();
   const { createSession } = useSessions();
 
+  const [type, setType] = useState<SessionType>('moim');
   const [title, setTitle] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [names, setNames] = useState<string[]>([]);
@@ -42,9 +44,11 @@ export default function NewSessionScreen() {
     pendingName && !names.includes(pendingName) ? [...names, pendingName] : names;
 
   const create = () => {
-    const session = createSession(title, effectiveNames);
+    const session = createSession(title, effectiveNames, type);
     router.replace('/session/' + session.id);
   };
+
+  const isTravel = type === 'travel';
 
   return (
     <Screen
@@ -56,11 +60,25 @@ export default function NewSessionScreen() {
         />
       }
     >
+      <SectionTitle>어떤 정산인가요?</SectionTitle>
+      <Row>
+        <Chip
+          label="🍻 모임"
+          selected={type === 'moim'}
+          onPress={() => setType('moim')}
+        />
+        <Chip
+          label="✈️ 여행"
+          selected={type === 'travel'}
+          onPress={() => setType('travel')}
+        />
+      </Row>
+
       <TextField
-        label="모임 이름"
+        label={isTravel ? '여행 이름' : '모임 이름'}
         value={title}
         onChangeText={setTitle}
-        placeholder="예: 금요일 회식"
+        placeholder={isTravel ? '예: 오사카 여행' : '예: 금요일 회식'}
         autoFocus
       />
 
