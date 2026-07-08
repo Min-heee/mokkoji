@@ -153,11 +153,31 @@ export async function getFxRates(options?: { forceRefresh?: boolean }): Promise<
   }
 }
 
-/** 고시 시각 표시용: "7/8 09:02" */
-export function formatFxTimestamp(ms: number): string {
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return '';
-  const hh = `${d.getHours()}`.padStart(2, '0');
-  const mm = `${d.getMinutes()}`.padStart(2, '0');
-  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+/**
+ * 고시 시각 표시용 — 항상 한국시간(KST, UTC+9 고정) 기준.
+ * 해외 여행 중 기기 시간대가 바뀌어도 표시가 흔들리지 않는다.
+ * 오늘/어제는 "오늘 09:02", 그 이전은 "7/6 09:02".
+ */
+export function formatFxTimestamp(ms: number, nowMs: number = Date.now()): string {
+  if (!Number.isFinite(ms)) return '';
+  const kst = new Date(ms + KST_OFFSET_MS);
+  if (Number.isNaN(kst.getTime())) return '';
+  const hh = `${kst.getUTCHours()}`.padStart(2, '0');
+  const mm = `${kst.getUTCMinutes()}`.padStart(2, '0');
+
+  const sameKstDay = (a: Date, b: Date) =>
+    a.getUTCFullYear() === b.getUTCFullYear() &&
+    a.getUTCMonth() === b.getUTCMonth() &&
+    a.getUTCDate() === b.getUTCDate();
+  const nowKst = new Date(nowMs + KST_OFFSET_MS);
+  const yesterdayKst = new Date(nowMs - 24 * 60 * 60 * 1000 + KST_OFFSET_MS);
+
+  const day = sameKstDay(kst, nowKst)
+    ? '오늘'
+    : sameKstDay(kst, yesterdayKst)
+      ? '어제'
+      : `${kst.getUTCMonth() + 1}/${kst.getUTCDate()}`;
+  return `${day} ${hh}:${mm}`;
 }

@@ -85,13 +85,34 @@ describe('isFresh', () => {
   });
 });
 
-describe('formatFxTimestamp', () => {
-  it('M/D HH:mm 형식', () => {
-    const d = new Date(2026, 6, 8, 9, 2); // 7/8 09:02 로컬
-    assert.equal(formatFxTimestamp(d.getTime()), '7/8 09:02');
+describe('formatFxTimestamp (한국시간 고정)', () => {
+  // API 고시: 2026-07-08 00:02 UTC = 한국시간 7/8 09:02
+  const published = Date.UTC(2026, 6, 8, 0, 2, 32);
+
+  it('같은 날(KST)이면 "오늘 09:02"', () => {
+    const now = Date.UTC(2026, 6, 8, 11, 21); // KST 7/8 20:21
+    assert.equal(formatFxTimestamp(published, now), '오늘 09:02');
   });
+
+  it('하루 지나면 "어제 09:02"', () => {
+    const now = Date.UTC(2026, 6, 9, 3, 0); // KST 7/9 12:00
+    assert.equal(formatFxTimestamp(published, now), '어제 09:02');
+  });
+
+  it('더 오래되면 "7/8 09:02"', () => {
+    const now = Date.UTC(2026, 6, 12, 3, 0);
+    assert.equal(formatFxTimestamp(published, now), '7/8 09:02');
+  });
+
+  it('날짜 경계는 기기 시간대가 아니라 KST 기준', () => {
+    // UTC 7/8 16:30 = KST 7/9 01:30 — UTC 기준으론 아직 7/8이지만 KST로는 다음날
+    const lateNight = Date.UTC(2026, 6, 8, 16, 30);
+    const now = Date.UTC(2026, 6, 8, 17, 0); // KST 7/9 02:00
+    assert.equal(formatFxTimestamp(lateNight, now), '오늘 01:30');
+  });
+
   it('잘못된 값은 빈 문자열', () => {
-    assert.equal(formatFxTimestamp(NaN), '');
+    assert.equal(formatFxTimestamp(NaN, Date.UTC(2026, 6, 8)), '');
   });
 });
 

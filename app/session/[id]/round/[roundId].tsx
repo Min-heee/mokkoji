@@ -339,7 +339,7 @@ export default function RoundEditScreen() {
             ) : (
               <Row>
                 <Text style={styles.fxStatus}>
-                  {`실시간 환율 1 ${round.currency} = ${liveRate}원 · ${formatFxTimestamp(fxSnapshot.publishedAt)} 기준${fx.result?.stale ? ' (오프라인 캐시)' : ''}`}
+                  {`실시간 환율 1 ${round.currency} = ${liveRate}원 · ${formatFxTimestamp(fxSnapshot.publishedAt)} 고시 (한국시간)${fx.result?.stale ? ' (오프라인 캐시)' : ''}`}
                 </Text>
                 <Chip
                   label="적용"
