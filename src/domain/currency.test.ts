@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { formatMoney, parseMoneyText, sanitizeAmountText } from './currency';
+import { invertRate } from '../services/fxRates';
+import {
+  formatMoney,
+  fxRateInputDecimals,
+  parseMoneyText,
+  sanitizeAmountText,
+} from './currency';
 
 describe('formatMoney', () => {
   it('KRW는 원화 표기', () => {
@@ -57,6 +63,57 @@ describe('sanitizeAmountText', () => {
 
   it('정수 모드: 쉼표는 여전히 제거만 된다', () => {
     assert.equal(sanitizeAmountText('1,25', 0), '125');
+  });
+});
+
+describe('fxRateInputDecimals', () => {
+  it('기본은 4자리 — 환율이 없거나 4자리로 충분하면 그대로', () => {
+    assert.equal(fxRateInputDecimals(), 4);
+    assert.equal(fxRateInputDecimals(null, undefined), 4);
+    assert.equal(fxRateInputDecimals(0, -1, NaN, Infinity), 4);
+    // JPY 9.3691, USD 1517.5, THB 41.946 — 모두 4자리 이내
+    assert.equal(fxRateInputDecimals(9.3691, 1517.5), 4);
+    assert.equal(fxRateInputDecimals(41.946), 4);
+  });
+
+  it('VND처럼 0.1 미만 환율은 필요한 자릿수만큼 넓어진다', () => {
+    // invertRate(17.242653) = 0.057996 — 소수 6자리
+    assert.equal(fxRateInputDecimals(0.057996), 6);
+    assert.equal(fxRateInputDecimals(null, 0.054054), 6);
+    // 저장값·실시간 환율 중 더 넓은 쪽을 따른다
+    assert.equal(fxRateInputDecimals(9.3691, 0.057996), 6);
+  });
+
+  it('지수 표기로 떨어지는 아주 작은 환율도 처리한다', () => {
+    assert.equal(fxRateInputDecimals(5.4e-7), 8);
+    // 상한 10자리 — 필드가 무한정 넓어지지는 않는다
+    assert.equal(fxRateInputDecimals(1.2345e-9), 10);
+  });
+
+  it('회귀: 실시간 VND 환율이 입력 필드를 그대로 통과한다', () => {
+    // 서비스가 실제로 만들어내는 값(유효숫자 5자리)으로 왕복 검증
+    const rate = invertRate(17.242653);
+    assert.equal(rate, 0.057996);
+    const decimals = fxRateInputDecimals(null, rate);
+
+    // (1) 화면에 표시된 "0.057996"을 한 글자씩 입력해도 잘리지 않는다
+    let text = '';
+    for (const ch of String(rate)) {
+      text = sanitizeAmountText(text + ch, decimals);
+    }
+    assert.equal(text, '0.057996');
+    assert.equal(parseMoneyText(text), 0.057996);
+
+    // (2) 적용된 값에서 백스페이스 한 번 → 마지막 한 자리만 사라진다
+    const applied = String(rate);
+    const afterBackspace = sanitizeAmountText(
+      applied.slice(0, -1),
+      fxRateInputDecimals(rate, rate),
+    );
+    assert.equal(afterBackspace, '0.05799');
+
+    // 기존 4자리 고정이 일으키던 손상: 0.057996 → 0.0579 (960원/천만동 오차)
+    assert.equal(sanitizeAmountText(applied, 4), '0.0579');
   });
 });
 

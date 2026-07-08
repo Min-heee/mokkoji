@@ -2,12 +2,19 @@ import React from 'react';
 import { Alert, StyleSheet, Text, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
-import { CURRENCIES, currencyInfo, formatMoney } from '@/domain/currency';
+import {
+  CURRENCIES,
+  currencyInfo,
+  formatMoney,
+  fxRateInputDecimals,
+} from '@/domain/currency';
 import { formatKrw, genId } from '@/domain/format';
 import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
 import { KIND_EMOJI, KIND_LABEL, KINDS_BY_SESSION_TYPE } from '@/domain/shareText';
 import type { Item, PersonId, Round, RoundKind, RoundMode } from '@/domain/types';
+import { formatFxTimestamp } from '@/services/fxRates';
 import { useSessions } from '@/state/SessionsContext';
+import { useFxRates } from '@/state/useFxRates';
 import {
   AmountField,
   Card,
@@ -26,6 +33,10 @@ export default function RoundEditScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id: string; roundId: string }>();
   const { loading, getSession, updateSession } = useSessions();
+  const fx = useFxRates();
+  // Alert 콜백 등 뒤늦게 실행되는 클로저가 항상 최신 환율을 보도록 ref로도 노출
+  const fxRef = React.useRef(fx);
+  fxRef.current = fx;
 
   const sessionId = typeof params.id === 'string' ? params.id : '';
   const roundId = typeof params.roundId === 'string' ? params.roundId : '';
@@ -35,6 +46,32 @@ export default function RoundEditScreen() {
 
   const isTravel = session?.type === 'travel';
   const noun = isTravel ? '지출' : '차수';
+
+  // 실시간 환율 자동 채움: 통화가 바뀌었거나 스냅샷이 처음 도착한 시점에
+  // fxRate가 비어 있으면 한 번만 채운다. (통화+고시시각) 키를 ref로 기억해
+  // 같은 키로는 두 번 채우지 않으므로, 사용자가 지운 값을 즉시 되채우는
+  // 루프가 생기지 않는다.
+  const fxAutoFillKey = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!session || !round || round.currency === 'KRW') return;
+    const snapshot = fx.result?.snapshot;
+    if (!snapshot) return;
+    const code = round.currency;
+    const rate = fx.rateFor(code);
+    if (rate == null) return;
+    const key = `${code}@${snapshot.publishedAt}`;
+    if (fxAutoFillKey.current === key) return;
+    fxAutoFillKey.current = key;
+    if (round.fxRate != null) return;
+    updateSession(sessionId, (s) => ({
+      ...s,
+      rounds: s.rounds.map((r) =>
+        r.id === roundId ? { ...r, fxRate: rate } : r,
+      ),
+      lastFxRates: { ...s.lastFxRates, [code]: rate },
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fx.result, round?.currency, round?.fxRate]);
 
   if (loading) {
     return (
@@ -85,7 +122,9 @@ export default function RoundEditScreen() {
           ? {
               ...r,
               currency: code,
-              fxRate: s.lastFxRates?.[code] ?? null,
+              // 라이브 환율이 있으면 그걸 기본값으로, 없으면 마지막 사용 환율.
+              // 확인 Alert를 거쳐 늦게 실행돼도 최신 환율을 쓰도록 ref 경유.
+              fxRate: fxRef.current.rateFor(code) ?? s.lastFxRates?.[code] ?? null,
               billedBaseAmount: null,
             }
           : r,
@@ -202,6 +241,9 @@ export default function RoundEditScreen() {
     );
   };
 
+  const fxSnapshot = fx.result?.snapshot ?? null;
+  const liveRate = fx.rateFor(round.currency);
+
   return (
     <>
       <Stack.Screen options={{ title: round.title || noun }} />
@@ -278,10 +320,35 @@ export default function RoundEditScreen() {
               label={`환율 (1 ${round.currency} = ? 원)`}
               value={round.fxRate ?? 0}
               onChangeValue={setFxRate}
-              decimals={4}
+              // VND처럼 0.1 미만 환율은 소수 4자리로 부족하다 — 저장된 값과
+              // 실시간 환율이 잘리지 않는 자릿수를 그때그때 계산한다
+              decimals={fxRateInputDecimals(round.fxRate, liveRate)}
               suffix="원"
               placeholder="0"
             />
+            {fx.loading ? (
+              <Text style={styles.fxStatus}>환율 불러오는 중...</Text>
+            ) : fxSnapshot == null ? (
+              <Text style={styles.fxStatusDanger}>
+                환율을 불러올 수 없어요 — 직접 입력해주세요
+              </Text>
+            ) : liveRate == null ? (
+              <Text style={styles.fxStatus}>
+                이 통화는 실시간 환율이 없어요 — 직접 입력해주세요
+              </Text>
+            ) : (
+              <Row>
+                <Text style={styles.fxStatus}>
+                  {`실시간 환율 1 ${round.currency} = ${liveRate}원 · ${formatFxTimestamp(fxSnapshot.publishedAt)} 기준${fx.result?.stale ? ' (오프라인 캐시)' : ''}`}
+                </Text>
+                <Chip
+                  label="적용"
+                  selected={false}
+                  onPress={() => setFxRate(liveRate)}
+                />
+                <Chip label="새로고침" selected={false} onPress={fx.refresh} />
+              </Row>
+            )}
             <AmountField
               label="카드 실청구액 (선택)"
               value={round.billedBaseAmount ?? 0}
@@ -294,6 +361,7 @@ export default function RoundEditScreen() {
               카드로 냈다면 실제 청구된 원화를 입력하세요 — 환율 대신 이 금액으로
               정산해요
             </Text>
+            <Text style={styles.fxSource}>환율 출처 open.er-api.com</Text>
           </Card>
         )}
 
@@ -454,6 +522,20 @@ const styles = StyleSheet.create({
     fontSize: fontSize.lg,
     fontWeight: '700',
     color: colors.primary,
+  },
+  fxStatus: {
+    fontSize: fontSize.xs,
+    color: colors.subtext,
+    flexShrink: 1,
+  },
+  fxStatusDanger: {
+    fontSize: fontSize.xs,
+    fontWeight: '600',
+    color: colors.danger,
+  },
+  fxSource: {
+    fontSize: 10,
+    color: colors.subtext,
   },
   fxWarning: {
     fontSize: fontSize.xs,

@@ -95,3 +95,40 @@ export function parseMoneyText(text: string): number {
   const n = Number(text);
   return Number.isFinite(n) ? n : 0;
 }
+
+/** 숫자를 그대로 표현하는 데 필요한 소수 자릿수. "5.4e-7" 같은 지수 표기도 처리 */
+function decimalPlacesOf(n: number): number {
+  const s = String(n);
+  const eIdx = s.indexOf('e');
+  if (eIdx === -1) {
+    const dot = s.indexOf('.');
+    return dot === -1 ? 0 : s.length - dot - 1;
+  }
+  const mantissa = s.slice(0, eIdx);
+  const exp = Number(s.slice(eIdx + 1));
+  const dot = mantissa.indexOf('.');
+  const mantissaDecimals = dot === -1 ? 0 : mantissa.length - dot - 1;
+  return Math.max(0, mantissaDecimals - exp);
+}
+
+export const FX_RATE_MIN_DECIMALS = 4;
+export const FX_RATE_MAX_DECIMALS = 10;
+
+/**
+ * 환율 입력 필드의 소수 자릿수 상한.
+ *
+ * 고정 4자리는 VND 같은 0.1 미만 환율(예: 0.057996, 유효숫자 5자리 = 소수
+ * 6자리)을 소리 없이 잘라 정산액을 왜곡시켰다. 필드가 표현해야 하는
+ * 환율들(저장된 값 + 실시간 환율)을 받아, 그 값을 손실 없이 담을 수 있는
+ * 자릿수를 돌려준다 (최소 4, 과도한 입력 방지를 위해 최대 10).
+ */
+export function fxRateInputDecimals(
+  ...rates: Array<number | null | undefined>
+): number {
+  let decimals = FX_RATE_MIN_DECIMALS;
+  for (const rate of rates) {
+    if (rate == null || !Number.isFinite(rate) || rate <= 0) continue;
+    decimals = Math.max(decimals, decimalPlacesOf(rate));
+  }
+  return Math.min(decimals, FX_RATE_MAX_DECIMALS);
+}
