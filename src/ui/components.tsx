@@ -4,7 +4,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -32,12 +31,12 @@ export function Screen({
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
   return (
-    // iOS는 키보드가 화면을 리사이즈하지 않으므로 padding으로 밀어 올려
-    // 포커스된 입력과 footer 버튼이 가려지지 않게 한다.
-    // Android는 adjustResize가 처리하므로 behavior 없이 일반 View처럼 동작.
+    // 키보드가 열리면 padding으로 밀어 올려 포커스된 입력과 footer 버튼이
+    // 가려지지 않게 한다. Android도 edge-to-edge(app.json edgeToEdgeEnabled)
+    // 에서는 adjustResize가 동작하지 않으므로 iOS와 같은 padding 방식을 쓴다.
     <KeyboardAvoidingView
       style={styles.screen}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
       keyboardVerticalOffset={headerHeight}
     >
       {scroll ? (
