@@ -108,7 +108,13 @@ export default function RoundEditScreen() {
     session.people.find((p) => p.id === pid)?.name ?? '?';
 
   const setKind = (kind: RoundKind) => patchRound((r) => ({ ...r, kind }));
-  const setMode = (mode: RoundMode) => patchRound((r) => ({ ...r, mode }));
+  const setMode = (mode: RoundMode) =>
+    patchRound((r) =>
+      // 차수 내기(round.bet)의 몰빵 금액은 바뀌기 전 총액 기준이라
+      // 모드를 바꾸면 무의미해진다. 정산에서 조용히 무시되거나 항목별
+      // 분배를 덮어쓰지 않도록 모드 변경 시 차수 내기를 해제한다.
+      r.mode === mode ? r : { ...r, mode, bet: null },
+    );
   const setPayer = (payerId: PersonId) => patchRound((r) => ({ ...r, payerId }));
 
   const applyCurrency = (code: string) => {
@@ -175,6 +181,9 @@ export default function RoundEditScreen() {
           items: r.items.map((it) => ({
             ...it,
             eaterIds: it.eaterIds.filter((x) => x !== pid),
+            // 참가에서 빠진 사람이 몰빵으로 걸려 있으면 내기를 함께 해제한다.
+            // (안 그러면 카드엔 몰빵이 남지만 정산은 조용히 원래 방식으로 되돌아 모순)
+            betLoserId: it.betLoserId === pid ? null : it.betLoserId,
           })),
         };
       }
@@ -193,7 +202,13 @@ export default function RoundEditScreen() {
   const toggleEater = (itemId: string, pid: PersonId) => {
     patchItem(itemId, (it) =>
       it.eaterIds.includes(pid)
-        ? { ...it, eaterIds: it.eaterIds.filter((x) => x !== pid) }
+        ? {
+            ...it,
+            eaterIds: it.eaterIds.filter((x) => x !== pid),
+            // 먹은 사람에서 빠진 사람이 몰빵으로 걸려 있으면 내기를 해제한다.
+            // (몰빵은 eaterIds를 무시하므로 그대로 두면 뺐는데도 계속 물린다)
+            betLoserId: it.betLoserId === pid ? null : it.betLoserId,
+          }
         : { ...it, eaterIds: [...it.eaterIds, pid] },
     );
   };
@@ -303,7 +318,10 @@ export default function RoundEditScreen() {
             <Row style={{ justifyContent: 'space-between' }}>
               <Text style={styles.betResultText}>
                 🎲 {nameOf(round.bet.loserId)} 몰빵 ·{' '}
-                {formatMoney(round.bet.amount, round.currency)}
+                {formatMoney(
+                  Math.min(round.bet.amount, roundTotal(round)),
+                  round.currency,
+                )}
               </Text>
               <Text
                 style={styles.betCancel}

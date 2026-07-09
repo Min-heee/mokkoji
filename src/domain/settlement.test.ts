@@ -592,4 +592,68 @@ describe('내기 (betting) 정산', () => {
     assert.equal(shares[B], 10000);
     assert.equal(shares[C], 10000);
   });
+
+  it('차수 내기 금액이 NaN이면 무시하고 정상 분배 (정산이 죽지 않는다)', () => {
+    const round = evenRound({
+      participantIds: [A, B, C],
+      totalAmount: 30000,
+      bet: { loserId: B, amount: NaN },
+    });
+    const shares = computeRoundShares(round);
+    // NaN 내기는 반영되지 않고 그냥 균등 분배로 남는다
+    assert.equal(shares[A], 10000);
+    assert.equal(shares[B], 10000);
+    assert.equal(shares[C], 10000);
+
+    // 정산 전체도 NaN에 오염되지 않고 송금이 정상 생성된다
+    const result = computeSettlement(makeSession([round]));
+    for (const p of result.persons) {
+      assert.ok(Number.isFinite(p.consumed));
+      assert.ok(Number.isFinite(p.net));
+    }
+    const map = transferMap(result.transfers);
+    assert.equal(map[`${B}->${A}`], 10000);
+    assert.equal(map[`${C}->${A}`], 10000);
+    assert.equal(result.transfers.length, 2);
+    assert.equal(result.grandTotal, 30000);
+  });
+
+  it('전원 면제 차수의 내기는 무시된다 (면제자를 강제로 물리지 않는다)', () => {
+    // 전원 면제면 사전 부담액이 모두 0 → 나머지를 나눌 담당자가 없다.
+    // 내기를 반영하면 진 사람(면제자)만 물게 되므로 내기를 건너뛰어야 한다.
+    const round = evenRound({
+      participantIds: [A, B, C],
+      totalAmount: 30000,
+      exemptIds: [A, B, C],
+      bet: { loserId: B, amount: 10000 },
+    });
+    const shares = computeRoundShares(round);
+    // 내기 없는 기준선과 동일: 전원 0 (결제자가 흡수)
+    assert.equal(shares[A], 0);
+    assert.equal(shares[B], 0);
+    assert.equal(shares[C], 0);
+
+    // 통합 정산도 내기 없는 기준선과 동일: 송금 없음, 결제자 net 0
+    const result = computeSettlement(makeSession([round]));
+    assert.equal(result.transfers.length, 0);
+    const payer = result.persons.find((p) => p.personId === A)!;
+    assert.equal(payer.net, 0);
+    const loser = result.persons.find((p) => p.personId === B)!;
+    assert.equal(loser.net, 0);
+  });
+
+  it('itemized 전원 면제 차수의 내기도 무시된다', () => {
+    const round = itemizedRound({
+      participantIds: [A, B, C],
+      exemptIds: [A, B, C],
+      bet: { loserId: B, amount: 10000 },
+      items: [
+        { id: 'i1', name: '케이크', unitPrice: 30000, quantity: 1, eaterIds: [A, B, C] },
+      ],
+    });
+    const shares = computeRoundShares(round);
+    assert.equal(shares[A], 0);
+    assert.equal(shares[B], 0);
+    assert.equal(shares[C], 0);
+  });
 })

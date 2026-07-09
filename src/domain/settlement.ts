@@ -116,10 +116,17 @@ function applyRoundBet(round: Round, shares: Record<PersonId, number>): void {
   const bet = round.bet;
   if (!bet) return;
   const total = roundTotal(round);
-  if (total <= 0) return;
+  if (!Number.isFinite(total) || total <= 0) return;
   if (!round.participantIds.includes(bet.loserId)) return;
+  if (!Number.isFinite(bet.amount)) return;
   const amount = Math.max(0, Math.min(bet.amount, total));
   if (amount <= 0) return;
+
+  // 부담할 사람이 아무도 없어 사전 부담액 합이 0이면 (전원 면제 등)
+  // 나눌 나머지의 담당자가 없어 내기를 반영할 수 없다. 결제자 흡수 계약에
+  // 맡기고 내기를 건너뛴다 (면제자를 강제로 물리지 않는다).
+  const preBetSum = Object.values(shares).reduce((sum, v) => sum + v, 0);
+  if (preBetSum <= 0) return;
 
   const scale = (total - amount) / total;
   for (const id of Object.keys(shares)) {
