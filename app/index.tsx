@@ -83,7 +83,6 @@ export default function HomeScreen() {
             >
               <View style={styles.headerRow}>
                 <Text style={styles.title} numberOfLines={1}>
-                  {s.type === 'travel' ? '✈️ ' : ''}
                   {s.title}
                 </Text>
                 <Pressable
@@ -100,8 +99,7 @@ export default function HomeScreen() {
               <Text style={styles.meta}>{formatDate(s.createdAt)}</Text>
               <Text style={styles.meta}>{peopleSummary(s)}</Text>
               <Text style={styles.meta}>
-                {s.type === 'travel' ? '지출' : '차수'} {s.rounds.length}개 ·{' '}
-                {formatKrw(total)}
+                차수 {s.rounds.length}개 · {formatKrw(total)}
               </Text>
             </Card>
           );

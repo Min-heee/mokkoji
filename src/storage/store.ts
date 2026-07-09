@@ -35,7 +35,6 @@ export function normalizeSession(raw: Partial<Session> & { id: string }): Sessio
     id: raw.id,
     title: raw.title ?? '모임',
     createdAt: raw.createdAt ?? new Date(0).toISOString(),
-    type: raw.type ?? 'moim',
     people: asArray(raw.people),
     rounds,
     settings: {

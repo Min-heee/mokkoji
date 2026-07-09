@@ -5,8 +5,6 @@ export interface Person {
   name: string;
 }
 
-export type SessionType = 'moim' | 'travel';
-
 export type RoundKind =
   | 'cafe'
   | 'meal'
@@ -76,7 +74,6 @@ export interface Session {
   id: string;
   title: string;
   createdAt: string;
-  type: SessionType;
   people: Person[];
   rounds: Round[];
   settings: SessionSettings;

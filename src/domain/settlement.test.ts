@@ -27,7 +27,6 @@ function makeSession(rounds: Round[], overrides?: Partial<Session>): Session {
       { id: C, name: '다' },
       { id: D, name: '라' },
     ],
-    type: 'moim',
     rounds,
     settings: { roundingUnit: 1, baseCurrency: 'KRW' },
     ...overrides,

@@ -11,14 +11,14 @@ import { AppState } from 'react-native';
 
 import { BASE_CURRENCY } from '@/domain/currency';
 import { genId } from '@/domain/format';
-import type { Person, Round, Session, SessionType } from '@/domain/types';
+import type { Person, Round, Session } from '@/domain/types';
 import { loadSessions, saveSessions } from '@/storage/store';
 
 export interface SessionsApi {
   sessions: Session[];
   loading: boolean;
   getSession(id: string): Session | undefined;
-  createSession(title: string, peopleNames: string[], type?: SessionType): Session;
+  createSession(title: string, peopleNames: string[]): Session;
   updateSession(id: string, updater: (session: Session) => Session): void;
   deleteSession(id: string): void;
   /** 기본값으로 새 차수를 만들어 세션에 추가하고 그 차수를 반환 */
@@ -28,19 +28,16 @@ export interface SessionsApi {
 const SessionsContext = createContext<SessionsApi | null>(null);
 
 function makeDefaultRound(session: Session): Round {
-  // 삭제 후에도 제목 번호가 중복되지 않도록 기존 제목의 최대 번호를 잇는다
-  const pattern = session.type === 'travel' ? /^지출 (\d+)/ : /^(\d+)차/;
+  // 삭제 후에도 "N차" 제목 번호가 중복되지 않도록 기존 제목의 최대 번호를 잇는다
   const maxN = session.rounds.reduce((max, r) => {
-    const match = pattern.exec(r.title.trim());
+    const match = /^(\d+)차/.exec(r.title.trim());
     return match ? Math.max(max, Number(match[1])) : max;
   }, session.rounds.length);
   const n = maxN + 1;
-  const title = session.type === 'travel' ? `지출 ${n}` : `${n}차`;
-  const kind =
-    session.type === 'travel' ? 'meal' : n === 1 ? 'meal' : n === 2 ? 'drinks' : 'etc';
+  const kind = n === 1 ? 'meal' : n === 2 ? 'drinks' : 'etc';
   return {
     id: genId('r'),
-    title,
+    title: `${n}차`,
     kind,
     payerId: session.people[0]?.id ?? '',
     mode: 'even',
@@ -124,16 +121,15 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createSession = useCallback(
-    (title: string, peopleNames: string[], type: SessionType = 'moim'): Session => {
+    (title: string, peopleNames: string[]): Session => {
       const people: Person[] = peopleNames
         .map((name) => name.trim())
         .filter((name) => name.length > 0)
         .map((name) => ({ id: genId('p'), name }));
       const session: Session = {
         id: genId('s'),
-        title: title.trim() || (type === 'travel' ? '새 여행' : '새 모임'),
+        title: title.trim() || '새 모임',
         createdAt: new Date().toISOString(),
-        type,
         people,
         rounds: [],
         settings: { roundingUnit: 100, baseCurrency: BASE_CURRENCY },

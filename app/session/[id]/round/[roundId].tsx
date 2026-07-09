@@ -10,7 +10,7 @@ import {
 } from '@/domain/currency';
 import { formatKrw, genId } from '@/domain/format';
 import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
-import { KIND_EMOJI, KIND_LABEL, KINDS_BY_SESSION_TYPE } from '@/domain/shareText';
+import { KIND_EMOJI, KIND_LABEL, KINDS } from '@/domain/shareText';
 import type { Item, PersonId, Round, RoundKind, RoundMode } from '@/domain/types';
 import { formatFxTimestamp } from '@/services/fxRates';
 import { useSessions } from '@/state/SessionsContext';
@@ -43,9 +43,6 @@ export default function RoundEditScreen() {
 
   const session = sessionId ? getSession(sessionId) : undefined;
   const round = session?.rounds.find((r) => r.id === roundId);
-
-  const isTravel = session?.type === 'travel';
-  const noun = isTravel ? '지출' : '차수';
 
   // 실시간 환율 자동 채움: 통화가 바뀌었거나 스냅샷이 처음 도착한 시점에
   // fxRate가 비어 있으면 한 번만 채운다. (통화+고시시각) 키를 ref로 기억해
@@ -86,7 +83,7 @@ export default function RoundEditScreen() {
       <Screen scroll={false}>
         <EmptyState
           emoji="🔍"
-          title={isTravel ? '지출을 찾을 수 없어요' : '차수를 찾을 수 없어요'}
+          title="차수를 찾을 수 없어요"
           hint="모임 화면으로 돌아가서 다시 선택해 주세요."
         />
       </Screen>
@@ -220,10 +217,8 @@ export default function RoundEditScreen() {
 
   const confirmDeleteRound = () => {
     Alert.alert(
-      `${noun} 삭제`,
-      isTravel
-        ? `'${round.title}' 지출을 삭제할까요?`
-        : `'${round.title}' 차수를 삭제할까요?`,
+      '차수 삭제',
+      `'${round.title}' 차수를 삭제할까요?`,
       [
         { text: '취소', style: 'cancel' },
         {
@@ -246,13 +241,13 @@ export default function RoundEditScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: round.title || noun }} />
+      <Stack.Screen options={{ title: round.title || '차수' }} />
       <Screen
         footer={
           <>
             <PrimaryButton label="완료" onPress={() => router.back()} />
             <PrimaryButton
-              label={`${noun} 삭제`}
+              label="차수 삭제"
               variant="danger"
               onPress={confirmDeleteRound}
             />
@@ -268,7 +263,7 @@ export default function RoundEditScreen() {
 
         <SectionTitle>종류</SectionTitle>
         <Row>
-          {KINDS_BY_SESSION_TYPE[session.type].map((k) => (
+          {KINDS.map((k) => (
             <Chip
               key={k}
               label={`${KIND_EMOJI[k]} ${KIND_LABEL[k]}`}
@@ -477,7 +472,7 @@ export default function RoundEditScreen() {
 
         <Card>
           <Row style={{ justifyContent: 'space-between' }}>
-            <Text style={styles.totalLabel}>이 {noun} 합계</Text>
+            <Text style={styles.totalLabel}>이 차수 합계</Text>
             <Text style={styles.totalValue}>
               {formatMoney(roundTotal(round), round.currency)}
             </Text>

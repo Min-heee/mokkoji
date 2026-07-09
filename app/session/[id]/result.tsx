@@ -62,7 +62,6 @@ export default function ResultScreen() {
   const nameOf = (personId: PersonId) =>
     session.people.find((p) => p.id === personId)?.name ?? '?';
 
-  const isTravel = session.type === 'travel';
   const missingFxRounds = result.perRound.filter((r) => r.missingFx);
 
   const involvedPersons = result.persons.filter(
@@ -118,9 +117,7 @@ export default function ResultScreen() {
         <Text style={styles.summaryLabel}>총 지출</Text>
         <Text style={styles.summaryTotal}>{formatKrw(result.grandTotal)}</Text>
         <Text style={styles.summarySub}>
-          {isTravel
-            ? `지출 ${session.rounds.length}건 · 참가자 ${session.people.length}명`
-            : `차수 ${session.rounds.length}개 · 참가자 ${session.people.length}명`}
+          차수 {session.rounds.length}개 · 참가자 {session.people.length}명
         </Text>
       </Card>
 
@@ -174,7 +171,7 @@ export default function ResultScreen() {
         </Card>
       ))}
 
-      <SectionTitle>{isTravel ? '지출별 내역' : '차수별 지출'}</SectionTitle>
+      <SectionTitle>차수별 지출</SectionTitle>
       {result.perRound.map((r) => (
         <Card key={r.roundId} style={styles.roundCard}>
           <View style={styles.rowBetween}>

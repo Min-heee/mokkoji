@@ -92,7 +92,7 @@ describe('normalizeSession', () => {
     assert.deepEqual(s.rounds[0].exemptIds, []);
   });
 
-  it('구버전(통화 개념 이전) 데이터는 KRW/moim으로 정규화된다', () => {
+  it('구버전(통화 개념 이전) 데이터는 KRW 기본값으로 정규화된다', () => {
     const s = normalizeSession({
       id: 's1',
       title: '옛 모임',
@@ -110,7 +110,6 @@ describe('normalizeSession', () => {
         },
       ],
     } as never);
-    assert.equal(s.type, 'moim');
     assert.equal(s.settings.roundingUnit, 100);
     assert.equal(s.settings.baseCurrency, 'KRW');
     assert.equal(s.rounds[0].currency, 'KRW');

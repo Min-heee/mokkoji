@@ -24,11 +24,17 @@ export const KIND_LABEL: Record<RoundKind, string> = {
   etc: '기타',
 };
 
-/** 모임/여행 타입별로 지출 종류 후보 순서가 다르다 */
-export const KINDS_BY_SESSION_TYPE: Record<'moim' | 'travel', RoundKind[]> = {
-  moim: ['cafe', 'meal', 'drinks', 'etc'],
-  travel: ['meal', 'cafe', 'drinks', 'lodging', 'transport', 'activity', 'shopping', 'etc'],
-};
+/** 지출 종류 후보 (모임·여행 공통, 자주 쓰는 순) */
+export const KINDS: RoundKind[] = [
+  'meal',
+  'cafe',
+  'drinks',
+  'lodging',
+  'transport',
+  'activity',
+  'shopping',
+  'etc',
+];
 
 /** 카톡 등에 붙여넣을 정산 요약 텍스트 */
 export function buildShareText(session: Session, result: SettlementResult): string {

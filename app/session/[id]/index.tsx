@@ -52,7 +52,6 @@ export default function SessionDetailScreen() {
     (sum, r) => sum + roundBaseTotal(r),
     0,
   );
-  const isTravel = session.type === 'travel';
 
   const handleAddPerson = () => {
     const name = newName.trim();
@@ -120,14 +119,12 @@ export default function SessionDetailScreen() {
         <PrimaryButton label="추가" variant="ghost" onPress={handleAddPerson} />
       </Card>
 
-      <SectionTitle>{isTravel ? '지출' : '차수'}</SectionTitle>
+      <SectionTitle>차수</SectionTitle>
       {session.rounds.length === 0 ? (
         <EmptyState
-          emoji={isTravel ? '🧳' : '🍻'}
-          title={isTravel ? '첫 지출을 추가해보세요' : '차수를 추가해보세요'}
-          hint={
-            isTravel ? '숙소, 밥, 교통, 액티비티...' : '1차 카페, 2차 밥, 3차 술...'
-          }
+          emoji="🍻"
+          title="차수를 추가해보세요"
+          hint="1차 카페, 2차 밥, 3차 술, 숙소, 교통..."
         />
       ) : (
         session.rounds.map((round) => (
@@ -168,11 +165,7 @@ export default function SessionDetailScreen() {
           </Card>
         ))
       )}
-      <PrimaryButton
-        label={isTravel ? '+ 지출 추가' : '+ 차수 추가'}
-        variant="ghost"
-        onPress={handleAddRound}
-      />
+      <PrimaryButton label="+ 차수 추가" variant="ghost" onPress={handleAddRound} />
 
       <Card>
         <Text style={styles.totalLabel}>총 지출</Text>
