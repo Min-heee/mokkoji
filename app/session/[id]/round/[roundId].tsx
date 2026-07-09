@@ -458,13 +458,6 @@ export default function RoundEditScreen() {
                 />
               </Card>
             ))}
-            <PrimaryButton
-              label="📷 영수증 스캔"
-              variant="ghost"
-              onPress={() =>
-                router.push('/session/' + sessionId + '/round/' + roundId + '/scan')
-              }
-            />
             <PrimaryButton label="+ 항목 추가" variant="ghost" onPress={addItem} />
           </>
         )}
