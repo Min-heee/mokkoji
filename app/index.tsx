@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, StyleSheet, Text } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatKrw } from '@/domain/format';
 import { roundBaseTotal } from '@/domain/settlement';
@@ -81,14 +81,27 @@ export default function HomeScreen() {
               onPress={() => router.push('/session/' + s.id)}
               onLongPress={() => confirmDelete(s)}
             >
-              <Text style={styles.title}>
-                {s.type === 'travel' ? '✈️ ' : ''}
-                {s.title}
-              </Text>
+              <View style={styles.headerRow}>
+                <Text style={styles.title} numberOfLines={1}>
+                  {s.type === 'travel' ? '✈️ ' : ''}
+                  {s.title}
+                </Text>
+                <Pressable
+                  onPress={() => confirmDelete(s)}
+                  hitSlop={12}
+                  style={({ pressed }) => [
+                    styles.deleteButton,
+                    pressed && { opacity: 0.6 },
+                  ]}
+                >
+                  <Text style={styles.deleteLabel}>삭제</Text>
+                </Pressable>
+              </View>
               <Text style={styles.meta}>{formatDate(s.createdAt)}</Text>
               <Text style={styles.meta}>{peopleSummary(s)}</Text>
               <Text style={styles.meta}>
-                차수 {s.rounds.length}개 · {formatKrw(total)}
+                {s.type === 'travel' ? '지출' : '차수'} {s.rounds.length}개 ·{' '}
+                {formatKrw(total)}
               </Text>
             </Card>
           );
@@ -99,10 +112,28 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   title: {
+    flex: 1,
     fontSize: fontSize.lg,
     fontWeight: '700',
     color: colors.text,
+  },
+  deleteButton: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: colors.dangerDim,
+  },
+  deleteLabel: {
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+    color: colors.danger,
   },
   meta: {
     fontSize: fontSize.sm,
