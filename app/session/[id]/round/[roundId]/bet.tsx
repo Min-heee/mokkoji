@@ -24,19 +24,21 @@ type Phase = 'pick' | 'play' | 'result';
 
 export default function BetScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id: string; roundId: string }>();
+  const params = useLocalSearchParams<{ id: string; roundId: string; itemId?: string }>();
   const sessionId = typeof params.id === 'string' ? params.id : '';
   const roundId = typeof params.roundId === 'string' ? params.roundId : '';
+  const itemId = typeof params.itemId === 'string' ? params.itemId : '';
   const { getSession } = useSessions();
 
   const session = sessionId ? getSession(sessionId) : undefined;
   const round = session?.rounds.find((r) => r.id === roundId);
+  const item = itemId ? round?.items.find((it) => it.id === itemId) : undefined;
 
   const [phase, setPhase] = React.useState<Phase>('pick');
   const [game, setGame] = React.useState<BetGameId>('draw');
   const [loserId, setLoserId] = React.useState<PersonId | null>(null);
 
-  if (!session || !round) {
+  if (!session || !round || (itemId && !item)) {
     return (
       <Screen scroll={false}>
         <EmptyState emoji="🎲" title="내기를 열 수 없어요" hint="차수로 돌아가 주세요." />
@@ -46,7 +48,12 @@ export default function BetScreen() {
 
   const nameOf = (pid: PersonId) =>
     session.people.find((p) => p.id === pid)?.name ?? '?';
-  const players = round.participantIds;
+
+  // 항목 내기면 그 항목을 먹은 사람들끼리 (아무도 없으면 차수 참가자 전원).
+  // 차수 내기면 차수 참가자 전원.
+  const players =
+    item && item.eaterIds.length > 0 ? item.eaterIds : round.participantIds;
+  const betLabel = item ? `${item.name || '항목'} 내기` : `${round.title} 내기`;
 
   const startAgain = () => {
     setLoserId(null);
@@ -61,7 +68,11 @@ export default function BetScreen() {
           <EmptyState
             emoji="🙋"
             title="참가자가 2명 이상 있어야 해요"
-            hint="차수에서 '함께한 사람'을 먼저 골라주세요."
+            hint={
+              item
+                ? "이 항목을 '먹은 사람'이 2명 이상이어야 해요."
+                : "차수에서 '함께한 사람'을 먼저 골라주세요."
+            }
           />
         </Screen>
       </>
@@ -70,7 +81,7 @@ export default function BetScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: `${round.title} 내기` }} />
+      <Stack.Screen options={{ title: betLabel }} />
       {phase === 'pick' ? (
         <Screen
           footer={
@@ -81,7 +92,7 @@ export default function BetScreen() {
           }
         >
           <Card>
-            <Text style={styles.betTitle}>🎲 {round.title} 내기</Text>
+            <Text style={styles.betTitle}>🎲 {betLabel}</Text>
             <Text style={styles.betSub}>
               {players.map(nameOf).join(', ')} · {players.length}명 중 한 명이 당첨돼요
             </Text>

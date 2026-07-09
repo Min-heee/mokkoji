@@ -458,11 +458,31 @@ export default function RoundEditScreen() {
                   ))}
                 </Row>
                 <Text style={styles.hint}>아무도 선택 안 하면 전원이 나눠요</Text>
-                <PrimaryButton
-                  label="항목 삭제"
-                  variant="danger"
-                  onPress={() => removeItem(item.id)}
-                />
+                <Row>
+                  <View style={{ flex: 1 }}>
+                    <PrimaryButton
+                      label="🎲 이거 내기"
+                      variant="ghost"
+                      onPress={() =>
+                        router.push(
+                          '/session/' +
+                            sessionId +
+                            '/round/' +
+                            roundId +
+                            '/bet?itemId=' +
+                            item.id,
+                        )
+                      }
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <PrimaryButton
+                      label="항목 삭제"
+                      variant="danger"
+                      onPress={() => removeItem(item.id)}
+                    />
+                  </View>
+                </Row>
               </Card>
             ))}
             <PrimaryButton label="+ 항목 추가" variant="ghost" onPress={addItem} />
