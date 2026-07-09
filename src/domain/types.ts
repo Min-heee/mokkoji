@@ -28,6 +28,19 @@ export interface Item {
    * 비어 있으면 차수 참가자 전원이 나눈 것으로 간주한다.
    */
   eaterIds: PersonId[];
+  /**
+   * 이 항목에 내기가 걸려 진 사람 (몰빵). 설정되면 eaterIds와 무관하게
+   * 이 사람이 항목 전액을 부담한다. null이면 내기 없음.
+   */
+  betLoserId?: PersonId | null;
+}
+
+/** 차수 단위 내기 결과 */
+export interface RoundBet {
+  /** 내기에 진 사람 (몰빵) */
+  loserId: PersonId;
+  /** 몰빵 금액 (결제 통화 기준). 나머지 금액은 원래 방식대로 나눈다 */
+  amount: number;
 }
 
 export interface Round {
@@ -61,6 +74,11 @@ export interface Round {
    * 설정되면 fxRate 대신 이 값으로 환산한다 (카드사 환율·수수료 반영).
    */
   billedBaseAmount: number | null;
+  /**
+   * 차수 전체에 걸린 내기 결과. 진 사람이 amount를 몰빵하고
+   * 나머지 (총액 - amount)는 원래 방식대로 나눈다. null이면 내기 없음.
+   */
+  bet?: RoundBet | null;
 }
 
 export interface SessionSettings {

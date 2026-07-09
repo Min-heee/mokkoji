@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { BASE_CURRENCY } from '@/domain/currency';
-import type { Round, Session } from '@/domain/types';
+import type { Item, Round, Session } from '@/domain/types';
 
 const STORAGE_KEY = 'nbbang.sessions.v1';
 
@@ -24,11 +24,19 @@ export function normalizeSession(raw: Partial<Session> & { id: string }): Sessio
       mode: r.mode ?? 'even',
       participantIds: asArray(r.participantIds),
       totalAmount: r.totalAmount ?? 0,
-      items: asArray(r.items),
+      items: asArray<Partial<Item> & { id: string }>(r.items).map((it) => ({
+        id: it.id,
+        name: it.name ?? '',
+        unitPrice: it.unitPrice ?? 0,
+        quantity: it.quantity ?? 1,
+        eaterIds: asArray(it.eaterIds),
+        betLoserId: it.betLoserId ?? null,
+      })),
       exemptIds: asArray(r.exemptIds),
       currency: r.currency ?? BASE_CURRENCY,
       fxRate: r.fxRate ?? null,
       billedBaseAmount: r.billedBaseAmount ?? null,
+      bet: r.bet ?? null,
     }),
   );
   return {

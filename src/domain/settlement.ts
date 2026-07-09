@@ -63,13 +63,24 @@ export function computeRoundShares(round: Round): Record<PersonId, number> {
       const each = total / payersOfShare.length;
       payersOfShare.forEach((id) => add(id, each));
     }
+    applyRoundBet(round, shares);
     return shares;
   }
 
   for (const item of round.items) {
     const line = item.unitPrice * item.quantity;
     if (line <= 0) continue;
-    const eaters = item.eaterIds.length > 0 ? item.eaterIds : participants;
+    // 내기에 걸린 항목은 진 사람이 전액 부담 (eaterIds 무시).
+    // 진 사람이 참가자가 아니면(빠졌으면) 원래 방식으로 되돌린다.
+    const betLoser =
+      item.betLoserId && participants.includes(item.betLoserId)
+        ? item.betLoserId
+        : null;
+    const eaters = betLoser
+      ? [betLoser]
+      : item.eaterIds.length > 0
+        ? item.eaterIds
+        : participants;
     if (eaters.length === 0) continue;
     const each = line / eaters.length;
     eaters.forEach((id) => add(id, each));
@@ -90,7 +101,31 @@ export function computeRoundShares(round: Round): Record<PersonId, number> {
     }
   }
 
+  applyRoundBet(round, shares);
+
   return shares;
+}
+
+/**
+ * 차수 내기를 부담액에 반영한다.
+ * 몰빵 금액 A는 진 사람이 전부 내고, 나머지 (총액 - A)는 이미 계산된
+ * 부담 비율 그대로 나눈다. 즉 기존 부담액을 (총액-A)/총액로 축소한 뒤
+ * 진 사람에게 A를 더한다. A=총액이면 진 사람이 전액을 쓴다.
+ */
+function applyRoundBet(round: Round, shares: Record<PersonId, number>): void {
+  const bet = round.bet;
+  if (!bet) return;
+  const total = roundTotal(round);
+  if (total <= 0) return;
+  if (!round.participantIds.includes(bet.loserId)) return;
+  const amount = Math.max(0, Math.min(bet.amount, total));
+  if (amount <= 0) return;
+
+  const scale = (total - amount) / total;
+  for (const id of Object.keys(shares)) {
+    shares[id] *= scale;
+  }
+  shares[bet.loserId] = (shares[bet.loserId] ?? 0) + amount;
 }
 
 /**

@@ -8,9 +8,12 @@ import {
   randomBombDurationMs,
   type BetGameId,
 } from '@/domain/betting';
+import { currencyInfo, formatMoney } from '@/domain/currency';
+import { roundTotal } from '@/domain/settlement';
 import type { PersonId } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
 import {
+  AmountField,
   Card,
   EmptyState,
   PrimaryButton,
@@ -28,7 +31,7 @@ export default function BetScreen() {
   const sessionId = typeof params.id === 'string' ? params.id : '';
   const roundId = typeof params.roundId === 'string' ? params.roundId : '';
   const itemId = typeof params.itemId === 'string' ? params.itemId : '';
-  const { getSession } = useSessions();
+  const { getSession, updateSession } = useSessions();
 
   const session = sessionId ? getSession(sessionId) : undefined;
   const round = session?.rounds.find((r) => r.id === roundId);
@@ -37,6 +40,10 @@ export default function BetScreen() {
   const [phase, setPhase] = React.useState<Phase>('pick');
   const [game, setGame] = React.useState<BetGameId>('draw');
   const [loserId, setLoserId] = React.useState<PersonId | null>(null);
+  // 차수 내기의 몰빵 금액 (기본: 차수 전액). 항목 내기는 항목 금액 고정.
+  const [betAmount, setBetAmount] = React.useState<number>(() =>
+    round && !item ? roundTotal(round) : 0,
+  );
 
   if (!session || !round || (itemId && !item)) {
     return (
@@ -55,9 +62,41 @@ export default function BetScreen() {
     item && item.eaterIds.length > 0 ? item.eaterIds : round.participantIds;
   const betLabel = item ? `${item.name || '항목'} 내기` : `${round.title} 내기`;
 
+  const currency = round.currency || 'KRW';
+  const itemAmount = item ? item.unitPrice * item.quantity : 0;
+  const appliedAmount = item ? itemAmount : betAmount;
+
   const startAgain = () => {
     setLoserId(null);
     setPhase('pick');
+  };
+
+  // 내기 결과를 정산에 반영: 진 사람에게 금액을 붙인다.
+  const applyResult = () => {
+    if (!loserId) return;
+    if (item) {
+      updateSession(sessionId, (s) => ({
+        ...s,
+        rounds: s.rounds.map((r) =>
+          r.id === roundId
+            ? {
+                ...r,
+                items: r.items.map((it) =>
+                  it.id === itemId ? { ...it, betLoserId: loserId } : it,
+                ),
+              }
+            : r,
+        ),
+      }));
+    } else {
+      updateSession(sessionId, (s) => ({
+        ...s,
+        rounds: s.rounds.map((r) =>
+          r.id === roundId ? { ...r, bet: { loserId, amount: betAmount } } : r,
+        ),
+      }));
+    }
+    router.back();
   };
 
   if (players.length < 2) {
@@ -97,6 +136,28 @@ export default function BetScreen() {
               {players.map(nameOf).join(', ')} · {players.length}명 중 한 명이 당첨돼요
             </Text>
           </Card>
+
+          {item ? (
+            <Card>
+              <Text style={styles.amountLine}>
+                진 사람이 {formatMoney(itemAmount, currency)} 몰빵
+              </Text>
+            </Card>
+          ) : (
+            <>
+              <SectionTitle>몰빵 금액</SectionTitle>
+              <AmountField
+                value={betAmount}
+                onChangeValue={setBetAmount}
+                decimals={currencyInfo(currency).decimals}
+                suffix={currency === 'KRW' ? '원' : currencyInfo(currency).symbol}
+                placeholder="0"
+              />
+              <Text style={styles.betSub}>
+                이 금액을 진 사람이 다 내고, 나머지 {formatMoney(Math.max(0, roundTotal(round) - betAmount), currency)}는 원래대로 나눠요 (기본값은 차수 전액)
+              </Text>
+            </>
+          )}
 
           <SectionTitle>게임 고르기</SectionTitle>
           {BET_GAMES.map((g) => (
@@ -144,21 +205,23 @@ export default function BetScreen() {
           scroll={false}
           footer={
             <>
-              <PrimaryButton label="🔁 한 판 더" onPress={startAgain} />
               <PrimaryButton
-                label="닫기"
-                variant="ghost"
-                onPress={() => router.back()}
+                label={`✅ ${loserId ? nameOf(loserId) : ''}가 내는 걸로 (정산 반영)`}
+                onPress={applyResult}
               />
+              <PrimaryButton label="🔁 한 판 더" variant="ghost" onPress={startAgain} />
             </>
           }
         >
           <View style={styles.resultWrap}>
             <Text style={styles.resultBoom}>💥</Text>
             <Text style={styles.resultName}>{loserId ? nameOf(loserId) : '?'}</Text>
-            <Text style={styles.resultLabel}>당첨! 몰빵이에요</Text>
+            <Text style={styles.resultLabel}>당첨!</Text>
+            <Text style={styles.resultAmount}>
+              {formatMoney(appliedAmount, currency)} 몰빵
+            </Text>
             <Text style={styles.resultHint}>
-              이 판은 {loserId ? nameOf(loserId) : '?'}님이 내는 걸로 🫡
+              정산에 반영하면 이 금액이 {loserId ? nameOf(loserId) : '?'}님 부담으로 붙어요 🫡
             </Text>
           </View>
         </Screen>
@@ -332,5 +395,18 @@ const styles = StyleSheet.create({
   resultBoom: { fontSize: 80 },
   resultName: { fontSize: fontSize.xl, fontWeight: '800', color: colors.danger },
   resultLabel: { fontSize: fontSize.lg, fontWeight: '700', color: colors.text },
-  resultHint: { fontSize: fontSize.sm, color: colors.subtext, marginTop: spacing.sm },
+  resultAmount: {
+    fontSize: fontSize.lg,
+    fontWeight: '800',
+    color: colors.primary,
+    marginTop: spacing.xs,
+  },
+  resultHint: {
+    fontSize: fontSize.sm,
+    color: colors.subtext,
+    marginTop: spacing.sm,
+    textAlign: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  amountLine: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
 });

@@ -27,7 +27,7 @@ import {
   SectionTitle,
   TextField,
 } from '@/ui/components';
-import { colors, fontSize, spacing } from '@/ui/theme';
+import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 export default function RoundEditScreen() {
   const router = useRouter();
@@ -298,8 +298,24 @@ export default function RoundEditScreen() {
         </Row>
 
         <SectionTitle>내기 🎲</SectionTitle>
+        {round.bet ? (
+          <Card style={styles.betResultCard}>
+            <Row style={{ justifyContent: 'space-between' }}>
+              <Text style={styles.betResultText}>
+                🎲 {nameOf(round.bet.loserId)} 몰빵 ·{' '}
+                {formatMoney(round.bet.amount, round.currency)}
+              </Text>
+              <Text
+                style={styles.betCancel}
+                onPress={() => patchRound((r) => ({ ...r, bet: null }))}
+              >
+                취소
+              </Text>
+            </Row>
+          </Card>
+        ) : null}
         <PrimaryButton
-          label="🎲 내기 돌리기"
+          label={round.bet ? '🎲 내기 다시 돌리기' : '🎲 내기 돌리기'}
           variant="ghost"
           onPress={() =>
             router.push(
@@ -458,10 +474,25 @@ export default function RoundEditScreen() {
                   ))}
                 </Row>
                 <Text style={styles.hint}>아무도 선택 안 하면 전원이 나눠요</Text>
+                {item.betLoserId ? (
+                  <Row style={styles.betResultCard}>
+                    <Text style={styles.betResultText}>
+                      🎲 {nameOf(item.betLoserId)} 몰빵
+                    </Text>
+                    <Text
+                      style={styles.betCancel}
+                      onPress={() =>
+                        patchItem(item.id, (it) => ({ ...it, betLoserId: null }))
+                      }
+                    >
+                      취소
+                    </Text>
+                  </Row>
+                ) : null}
                 <Row>
                   <View style={{ flex: 1 }}>
                     <PrimaryButton
-                      label="🎲 이거 내기"
+                      label={item.betLoserId ? '🎲 다시' : '🎲 이거 내기'}
                       variant="ghost"
                       onPress={() =>
                         router.push(
@@ -529,6 +560,25 @@ const styles = StyleSheet.create({
   hint: {
     fontSize: fontSize.xs,
     color: colors.subtext,
+  },
+  betResultCard: {
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: colors.primaryDim,
+    borderRadius: radius.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  betResultText: {
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  betCancel: {
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+    color: colors.danger,
+    paddingHorizontal: spacing.sm,
   },
   fieldLabel: {
     fontSize: fontSize.xs,

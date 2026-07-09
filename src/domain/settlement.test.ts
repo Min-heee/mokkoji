@@ -500,3 +500,96 @@ describe('다중 통화 (여행 정산)', () => {
     assert.equal(roundFxFactor(cardZero), null);
   });
 });
+
+describe('내기 (betting) 정산', () => {
+  it('항목 내기: 진 사람이 그 항목 전액 부담', () => {
+    // 안주 30,000 (A,B,C 먹음)인데 내기로 B가 몰빵
+    const shares = computeRoundShares(
+      itemizedRound({
+        participantIds: [A, B, C],
+        items: [
+          { id: 'i1', name: '안주', unitPrice: 30000, quantity: 1, eaterIds: [A, B, C], betLoserId: B },
+          { id: 'i2', name: '음료', unitPrice: 9000, quantity: 1, eaterIds: [A, B, C] },
+        ],
+      }),
+    );
+    // 안주 30,000은 B 전액, 음료 9,000은 셋이 3,000씩
+    assert.equal(shares[A], 3000);
+    assert.equal(shares[B], 33000);
+    assert.equal(shares[C], 3000);
+  });
+
+  it('항목 내기: 진 사람이 참가자에서 빠지면 원래 방식으로 복귀', () => {
+    const shares = computeRoundShares(
+      itemizedRound({
+        participantIds: [A, B],
+        items: [
+          { id: 'i1', name: '안주', unitPrice: 20000, quantity: 1, eaterIds: [A, B], betLoserId: C },
+        ],
+      }),
+    );
+    // C는 참가자가 아니므로 무시 → A,B가 10,000씩
+    assert.equal(shares[A], 10000);
+    assert.equal(shares[B], 10000);
+  });
+
+  it('차수 내기 전액: 진 사람이 차수 전부, 나머지 0', () => {
+    const shares = computeRoundShares(
+      evenRound({
+        participantIds: [A, B, C],
+        totalAmount: 130000,
+        bet: { loserId: B, amount: 130000 },
+      }),
+    );
+    assert.equal(shares[A], 0);
+    assert.equal(shares[B], 130000);
+    assert.equal(shares[C], 0);
+  });
+
+  it('차수 내기 부분: 13만 중 3만 몰빵, 10만은 n빵', () => {
+    const shares = computeRoundShares(
+      evenRound({
+        participantIds: [A, B, C],
+        totalAmount: 130000,
+        bet: { loserId: B, amount: 30000 },
+      }),
+    );
+    // 나머지 10만 → 각 33,333.33, B는 +30,000
+    assert.ok(Math.abs(shares[A] - 100000 / 3) < 1e-6);
+    assert.ok(Math.abs(shares[C] - 100000 / 3) < 1e-6);
+    assert.ok(Math.abs(shares[B] - (100000 / 3 + 30000)) < 1e-6);
+    // 합계는 총액과 일치
+    assert.ok(Math.abs(shares[A] + shares[B] + shares[C] - 130000) < 1e-6);
+  });
+
+  it('차수 내기 금액이 총액보다 크면 전액으로 클램프', () => {
+    const shares = computeRoundShares(
+      evenRound({
+        participantIds: [A, B],
+        totalAmount: 50000,
+        bet: { loserId: A, amount: 999999 },
+      }),
+    );
+    assert.equal(shares[A], 50000);
+    assert.equal(shares[B], 0);
+  });
+
+  it('차수 내기 통합 정산: 진 사람이 결제자에게 몰빵액을 보낸다', () => {
+    // A가 12만 결제, 3명 참가, B가 내기 져서 전액 몰빵
+    const session = makeSession([
+      evenRound({ id: 'r1', payerId: A, participantIds: [A, B, C], totalAmount: 120000, bet: { loserId: B, amount: 120000 } }),
+    ]);
+    const result = computeSettlement(session);
+    const map = transferMap(result.transfers);
+    // B가 전액 부담, A가 결제 → B → A 120,000. C는 0.
+    assert.equal(map[`${B}->${A}`], 120000);
+    assert.equal(result.transfers.length, 1);
+  });
+
+  it('내기 없는 차수는 영향 없음 (기존 동작 보존)', () => {
+    const shares = computeRoundShares(evenRound({ totalAmount: 30000 }));
+    assert.equal(shares[A], 10000);
+    assert.equal(shares[B], 10000);
+    assert.equal(shares[C], 10000);
+  });
+})
