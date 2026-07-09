@@ -297,6 +297,18 @@ export default function RoundEditScreen() {
           ))}
         </Row>
 
+        <SectionTitle>내기 🎲</SectionTitle>
+        <PrimaryButton
+          label="🎲 내기 돌리기"
+          variant="ghost"
+          onPress={() =>
+            router.push(
+              '/session/' + sessionId + '/round/' + roundId + '/bet',
+            )
+          }
+        />
+        <Text style={styles.hint}>참가자 중 한 명을 게임으로 뽑아 몰빵시켜요</Text>
+
         <SectionTitle>통화</SectionTitle>
         <Row>
           {CURRENCIES.map((c) => (
