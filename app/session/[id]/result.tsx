@@ -121,7 +121,7 @@ export default function ResultScreen() {
         </Text>
       </Card>
 
-      <SectionTitle>💸 이렇게 보내세요</SectionTitle>
+      <SectionTitle>이렇게 보내세요</SectionTitle>
       {result.transfers.length === 0 ? (
         <EmptyState emoji="🎉" title="주고받을 돈이 없어요" />
       ) : (

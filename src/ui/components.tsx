@@ -320,6 +320,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     padding: spacing.lg,
     gap: spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
   },
   sectionTitle: {
     fontSize: fontSize.sm,
@@ -344,9 +346,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
   },
   buttonPrimaryLabel: {
-    color: '#FFFFFF',
+    color: colors.onPrimary,
     fontSize: fontSize.md,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   buttonGhost: {
     backgroundColor: colors.primaryDim,
@@ -368,7 +370,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     paddingVertical: 8,
     paddingHorizontal: 14,
-    backgroundColor: colors.card,
+    backgroundColor: colors.cardAlt,
     borderWidth: 1,
     borderColor: colors.border,
   },
@@ -382,7 +384,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   chipLabelSelected: {
-    color: '#FFFFFF',
+    color: colors.onPrimary,
+    fontWeight: '800',
   },
   fieldLabel: {
     fontSize: fontSize.xs,
@@ -392,7 +395,7 @@ const styles = StyleSheet.create({
   inputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.card,
+    backgroundColor: colors.cardAlt,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,

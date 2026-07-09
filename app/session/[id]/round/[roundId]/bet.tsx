@@ -131,7 +131,7 @@ export default function BetScreen() {
           }
         >
           <Card>
-            <Text style={styles.betTitle}>🎲 {betLabel}</Text>
+            <Text style={styles.betTitle}>{betLabel}</Text>
             <Text style={styles.betSub}>
               {players.map(nameOf).join(', ')} · {players.length}명 중 한 명이 당첨돼요
             </Text>
@@ -206,10 +206,10 @@ export default function BetScreen() {
           footer={
             <>
               <PrimaryButton
-                label={`✅ ${loserId ? nameOf(loserId) : ''}가 내는 걸로 (정산 반영)`}
+                label={`${loserId ? nameOf(loserId) : ''}가 내는 걸로`}
                 onPress={applyResult}
               />
-              <PrimaryButton label="🔁 한 판 더" variant="ghost" onPress={startAgain} />
+              <PrimaryButton label="한 판 더" variant="ghost" onPress={startAgain} />
             </>
           }
         >
@@ -221,7 +221,7 @@ export default function BetScreen() {
               {formatMoney(appliedAmount, currency)} 몰빵
             </Text>
             <Text style={styles.resultHint}>
-              정산에 반영하면 이 금액이 {loserId ? nameOf(loserId) : '?'}님 부담으로 붙어요 🫡
+              정산에 반영하면 이 금액이 {loserId ? nameOf(loserId) : '?'}님 부담으로 붙어요
             </Text>
           </View>
         </Screen>
@@ -345,7 +345,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   radioOn: { borderColor: colors.primary, backgroundColor: colors.primary },
-  radioDot: { color: '#fff', fontSize: fontSize.sm, fontWeight: '800' },
+  radioDot: { color: colors.onPrimary, fontSize: fontSize.sm, fontWeight: '800' },
 
   playTitle: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
   playSub: { fontSize: fontSize.sm, color: colors.subtext },
@@ -370,7 +370,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.xs,
   },
-  cardBack: { color: '#fff', fontSize: fontSize.md, fontWeight: '800' },
+  cardBack: { color: colors.onPrimary, fontSize: fontSize.md, fontWeight: '800' },
   cardSafe: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
   cardBomb: { backgroundColor: colors.dangerDim, borderWidth: 1, borderColor: colors.danger },
   cardFace: { fontSize: 40 },

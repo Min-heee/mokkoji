@@ -312,12 +312,12 @@ export default function RoundEditScreen() {
           ))}
         </Row>
 
-        <SectionTitle>내기 🎲</SectionTitle>
+        <SectionTitle>내기</SectionTitle>
         {round.bet ? (
           <Card style={styles.betResultCard}>
             <Row style={{ justifyContent: 'space-between' }}>
               <Text style={styles.betResultText}>
-                🎲 {nameOf(round.bet.loserId)} 몰빵 ·{' '}
+                {nameOf(round.bet.loserId)} 몰빵 ·{' '}
                 {formatMoney(
                   Math.min(round.bet.amount, roundTotal(round)),
                   round.currency,
@@ -333,7 +333,7 @@ export default function RoundEditScreen() {
           </Card>
         ) : null}
         <PrimaryButton
-          label={round.bet ? '🎲 내기 다시 돌리기' : '🎲 내기 돌리기'}
+          label={round.bet ? '내기 다시 돌리기' : '내기 돌리기'}
           variant="ghost"
           onPress={() =>
             router.push(
@@ -495,7 +495,7 @@ export default function RoundEditScreen() {
                 {item.betLoserId ? (
                   <Row style={styles.betResultCard}>
                     <Text style={styles.betResultText}>
-                      🎲 {nameOf(item.betLoserId)} 몰빵
+                      {nameOf(item.betLoserId)} 몰빵
                     </Text>
                     <Text
                       style={styles.betCancel}
@@ -510,7 +510,7 @@ export default function RoundEditScreen() {
                 <Row>
                   <View style={{ flex: 1 }}>
                     <PrimaryButton
-                      label={item.betLoserId ? '🎲 다시' : '🎲 이거 내기'}
+                      label={item.betLoserId ? '내기 다시' : '이 항목 내기'}
                       variant="ghost"
                       onPress={() =>
                         router.push(

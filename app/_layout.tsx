@@ -7,11 +7,11 @@ import { colors } from '@/ui/theme';
 export default function RootLayout() {
   return (
     <SessionsProvider>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
       <Stack
         screenOptions={{
           headerTintColor: colors.text,
-          headerTitleStyle: { fontWeight: '700' },
+          headerTitleStyle: { fontWeight: '700', color: colors.text },
           headerStyle: { backgroundColor: colors.bg },
           headerShadowVisible: false,
           contentStyle: { backgroundColor: colors.bg },
