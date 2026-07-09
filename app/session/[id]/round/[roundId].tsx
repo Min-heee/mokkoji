@@ -10,7 +10,7 @@ import {
 } from '@/domain/currency';
 import { formatKrw, genId } from '@/domain/format';
 import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
-import { KIND_EMOJI, KIND_LABEL, KINDS } from '@/domain/shareText';
+import { KIND_LABEL, KINDS } from '@/domain/shareText';
 import type { Item, PersonId, Round, RoundKind, RoundMode } from '@/domain/types';
 import { formatFxTimestamp } from '@/services/fxRates';
 import { useSessions } from '@/state/SessionsContext';
@@ -82,8 +82,7 @@ export default function RoundEditScreen() {
     return (
       <Screen scroll={false}>
         <EmptyState
-          emoji="🔍"
-          title="차수를 찾을 수 없어요"
+                    title="차수를 찾을 수 없어요"
           hint="모임 화면으로 돌아가서 다시 선택해 주세요."
         />
       </Screen>
@@ -281,7 +280,7 @@ export default function RoundEditScreen() {
           {KINDS.map((k) => (
             <Chip
               key={k}
-              label={`${KIND_EMOJI[k]} ${KIND_LABEL[k]}`}
+              label={KIND_LABEL[k]}
               selected={round.kind === k}
               onPress={() => setKind(k)}
             />
@@ -311,37 +310,6 @@ export default function RoundEditScreen() {
             />
           ))}
         </Row>
-
-        <SectionTitle>내기</SectionTitle>
-        {round.bet ? (
-          <Card style={styles.betResultCard}>
-            <Row style={{ justifyContent: 'space-between' }}>
-              <Text style={styles.betResultText}>
-                {nameOf(round.bet.loserId)} 몰빵 ·{' '}
-                {formatMoney(
-                  Math.min(round.bet.amount, roundTotal(round)),
-                  round.currency,
-                )}
-              </Text>
-              <Text
-                style={styles.betCancel}
-                onPress={() => patchRound((r) => ({ ...r, bet: null }))}
-              >
-                취소
-              </Text>
-            </Row>
-          </Card>
-        ) : null}
-        <PrimaryButton
-          label={round.bet ? '내기 다시 돌리기' : '내기 돌리기'}
-          variant="ghost"
-          onPress={() =>
-            router.push(
-              '/session/' + sessionId + '/round/' + roundId + '/bet',
-            )
-          }
-        />
-        <Text style={styles.hint}>참가자 중 한 명을 게임으로 뽑아 몰빵시켜요</Text>
 
         <SectionTitle>통화</SectionTitle>
         <Row>

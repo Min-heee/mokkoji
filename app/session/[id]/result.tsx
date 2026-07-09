@@ -6,7 +6,7 @@ import { Alert, Share, StyleSheet, Text, View } from 'react-native';
 import { BASE_CURRENCY, formatMoney } from '@/domain/currency';
 import { formatKrw } from '@/domain/format';
 import { computeSettlement } from '@/domain/settlement';
-import { buildShareText, KIND_EMOJI } from '@/domain/shareText';
+import { buildShareText } from '@/domain/shareText';
 import type { PersonId, SessionSettings } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
 import {
@@ -51,8 +51,7 @@ export default function ResultScreen() {
     return (
       <Screen>
         <EmptyState
-          emoji="🤔"
-          title="모임을 찾을 수 없어요"
+                    title="모임을 찾을 수 없어요"
           hint="목록으로 돌아가서 다시 선택해 주세요"
         />
       </Screen>
@@ -123,7 +122,7 @@ export default function ResultScreen() {
 
       <SectionTitle>이렇게 보내세요</SectionTitle>
       {result.transfers.length === 0 ? (
-        <EmptyState emoji="🎉" title="주고받을 돈이 없어요" />
+        <EmptyState title="주고받을 돈이 없어요" />
       ) : (
         result.transfers.map((t, index) => (
           <Card key={`${t.fromId}-${t.toId}-${index}`}>
@@ -176,9 +175,7 @@ export default function ResultScreen() {
         <Card key={r.roundId} style={styles.roundCard}>
           <View style={styles.rowBetween}>
             <View style={styles.personLeft}>
-              <Text style={styles.roundTitle}>
-                {KIND_EMOJI[r.kind]} {r.title}
-              </Text>
+              <Text style={styles.roundTitle}>{r.title}</Text>
               <Text style={styles.personDetail}>{nameOf(r.payerId)} 결제</Text>
             </View>
             {r.missingFx ? (

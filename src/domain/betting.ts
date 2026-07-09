@@ -8,7 +8,6 @@ export type BetGameId = 'draw' | 'bomb';
 
 export interface BetGameInfo {
   id: BetGameId;
-  emoji: string;
   label: string;
   desc: string;
 }
@@ -16,13 +15,11 @@ export interface BetGameInfo {
 export const BET_GAMES: BetGameInfo[] = [
   {
     id: 'draw',
-    emoji: '🃏',
     label: '제비뽑기',
-    desc: '카드를 뒤집어 💣을 뽑은 사람이 당첨',
+    desc: '카드를 뒤집어 꽝을 뽑은 사람이 당첨',
   },
   {
     id: 'bomb',
-    emoji: '💣',
     label: '폭탄 돌리기',
     desc: '돌리다 터질 때 들고 있던 사람이 당첨',
   },

@@ -48,7 +48,7 @@ export default function BetScreen() {
   if (!session || !round || (itemId && !item)) {
     return (
       <Screen scroll={false}>
-        <EmptyState emoji="🎲" title="내기를 열 수 없어요" hint="차수로 돌아가 주세요." />
+        <EmptyState title="내기를 열 수 없어요" hint="차수로 돌아가 주세요." />
       </Screen>
     );
   }
@@ -105,8 +105,7 @@ export default function BetScreen() {
         <Stack.Screen options={{ title: '내기' }} />
         <Screen scroll={false}>
           <EmptyState
-            emoji="🙋"
-            title="참가자가 2명 이상 있어야 해요"
+                        title="참가자가 2명 이상 있어야 해요"
             hint={
               item
                 ? "이 항목을 '먹은 사람'이 2명 이상이어야 해요."
@@ -125,7 +124,7 @@ export default function BetScreen() {
         <Screen
           footer={
             <PrimaryButton
-              label={`${BET_GAMES.find((g) => g.id === game)?.emoji} 시작하기`}
+              label="시작하기"
               onPress={() => setPhase('play')}
             />
           }
@@ -164,9 +163,7 @@ export default function BetScreen() {
             <Card key={g.id} onPress={() => setGame(g.id)}>
               <Row style={{ justifyContent: 'space-between' }}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.gameLabel}>
-                    {g.emoji} {g.label}
-                  </Text>
+                  <Text style={styles.gameLabel}>{g.label}</Text>
                   <Text style={styles.gameDesc}>{g.desc}</Text>
                 </View>
                 <View style={[styles.radio, game === g.id && styles.radioOn]}>
@@ -214,9 +211,8 @@ export default function BetScreen() {
           }
         >
           <View style={styles.resultWrap}>
-            <Text style={styles.resultBoom}>💥</Text>
+            <Text style={styles.resultKicker}>당첨</Text>
             <Text style={styles.resultName}>{loserId ? nameOf(loserId) : '?'}</Text>
-            <Text style={styles.resultLabel}>당첨!</Text>
             <Text style={styles.resultAmount}>
               {formatMoney(appliedAmount, currency)} 몰빵
             </Text>
@@ -257,8 +253,8 @@ function DrawGame({
   return (
     <Screen>
       <Card>
-        <Text style={styles.playTitle}>🃏 카드를 한 장씩 뒤집어요</Text>
-        <Text style={styles.playSub}>💣을 뒤집은 사람이 당첨!</Text>
+        <Text style={styles.playTitle}>카드를 한 장씩 뒤집어요</Text>
+        <Text style={styles.playSub}>꽝을 뒤집은 사람이 당첨</Text>
       </Card>
       <View style={styles.cardGrid}>
         {players.map((id) => {
@@ -276,7 +272,9 @@ function DrawGame({
             >
               {isFlipped ? (
                 <>
-                  <Text style={styles.cardFace}>{isBomb ? '💣' : '😌'}</Text>
+                  <Text style={[styles.cardFace, isBomb && styles.cardFaceBomb]}>
+                    {isBomb ? '꽝' : '세이프'}
+                  </Text>
                   <Text style={styles.cardName}>{nameOf(id)}</Text>
                 </>
               ) : (
@@ -319,7 +317,7 @@ function BombGame({
   return (
     <Screen scroll={false}>
       <View style={styles.bombWrap}>
-        <Text style={styles.bombEmoji}>🧨</Text>
+        <Text style={styles.bombKicker}>폭탄</Text>
         <Text style={styles.bombHolder}>{nameOf(players[holder])}</Text>
         <Text style={styles.bombHint}>지금 들고 있어요 — 빨리 넘겨요!</Text>
       </View>
@@ -373,7 +371,8 @@ const styles = StyleSheet.create({
   cardBack: { color: colors.onPrimary, fontSize: fontSize.md, fontWeight: '800' },
   cardSafe: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
   cardBomb: { backgroundColor: colors.dangerDim, borderWidth: 1, borderColor: colors.danger },
-  cardFace: { fontSize: 40 },
+  cardFace: { fontSize: fontSize.lg, fontWeight: '800', color: colors.subtext },
+  cardFaceBomb: { color: colors.danger },
   cardName: { fontSize: fontSize.sm, fontWeight: '700', color: colors.text },
 
   bombWrap: {
@@ -382,7 +381,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.md,
   },
-  bombEmoji: { fontSize: 96 },
+  bombKicker: {
+    fontSize: fontSize.md,
+    fontWeight: '800',
+    color: colors.danger,
+    letterSpacing: 4,
+  },
   bombHolder: { fontSize: fontSize.xl, fontWeight: '800', color: colors.text },
   bombHint: { fontSize: fontSize.md, color: colors.danger, fontWeight: '600' },
 
@@ -392,13 +396,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.sm,
   },
-  resultBoom: { fontSize: 80 },
+  resultKicker: {
+    fontSize: fontSize.md,
+    fontWeight: '800',
+    color: colors.danger,
+    letterSpacing: 6,
+  },
   resultName: { fontSize: fontSize.xl, fontWeight: '800', color: colors.danger },
-  resultLabel: { fontSize: fontSize.lg, fontWeight: '700', color: colors.text },
   resultAmount: {
     fontSize: fontSize.lg,
     fontWeight: '800',
-    color: colors.primary,
+    color: colors.text,
     marginTop: spacing.xs,
   },
   resultHint: {

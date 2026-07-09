@@ -272,17 +272,16 @@ export function AmountField({
 }
 
 export function EmptyState({
-  emoji,
   title,
   hint,
 }: {
-  emoji: string;
+  /** @deprecated 이모지는 더 이상 표시하지 않는다 (미니멀). 호출부 호환용 */
+  emoji?: string;
   title: string;
   hint?: string;
 }) {
   return (
     <View style={styles.empty}>
-      <Text style={styles.emptyEmoji}>{emoji}</Text>
       <Text style={styles.emptyTitle}>{title}</Text>
       {hint ? <Text style={styles.emptyHint}>{hint}</Text> : null}
     </View>

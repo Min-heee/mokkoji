@@ -68,8 +68,7 @@ export default function HomeScreen() {
     >
       {sessions.length === 0 ? (
         <EmptyState
-          emoji="🧾"
-          title="아직 모임이 없어요"
+                    title="아직 모임이 없어요"
           hint="새 모임을 만들어 정산을 시작해보세요"
         />
       ) : (

@@ -7,7 +7,7 @@ import { colors } from '@/ui/theme';
 export default function RootLayout() {
   return (
     <SessionsProvider>
-      <StatusBar style="light" />
+      <StatusBar style="dark" />
       <Stack
         screenOptions={{
           headerTintColor: colors.text,

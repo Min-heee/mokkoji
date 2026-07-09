@@ -1,11 +1,10 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatMoney } from '@/domain/currency';
 import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
 import { formatKrw, genId } from '@/domain/format';
-import { KIND_EMOJI } from '@/domain/shareText';
 import type { Round } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
 import {
@@ -19,7 +18,7 @@ import {
   SectionTitle,
   TextField,
 } from '@/ui/components';
-import { colors, fontSize, spacing } from '@/ui/theme';
+import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 export default function SessionDetailScreen() {
   const params = useLocalSearchParams<{ id: string }>();
@@ -40,7 +39,7 @@ export default function SessionDetailScreen() {
   if (!session) {
     return (
       <Screen>
-        <EmptyState emoji="🤔" title="모임을 찾을 수 없어요" />
+        <EmptyState title="모임을 찾을 수 없어요" />
       </Screen>
     );
   }
@@ -89,6 +88,13 @@ export default function SessionDetailScreen() {
     ]);
   };
 
+  const cancelRoundBet = (round: Round) => {
+    updateSession(session.id, (s) => ({
+      ...s,
+      rounds: s.rounds.map((r) => (r.id === round.id ? { ...r, bet: null } : r)),
+    }));
+  };
+
   return (
     <Screen
       footer={
@@ -122,8 +128,7 @@ export default function SessionDetailScreen() {
       <SectionTitle>차수</SectionTitle>
       {session.rounds.length === 0 ? (
         <EmptyState
-          emoji="🍻"
-          title="차수를 추가해보세요"
+                    title="차수를 추가해보세요"
           hint="1차 카페, 2차 밥, 3차 술, 숙소, 교통..."
         />
       ) : (
@@ -135,9 +140,7 @@ export default function SessionDetailScreen() {
           >
             <View style={styles.roundRow}>
               <View style={styles.roundInfo}>
-                <Text style={styles.roundTitle}>
-                  {KIND_EMOJI[round.kind]} {round.title}
-                </Text>
+                <Text style={styles.roundTitle}>{round.title}</Text>
                 <Text style={styles.roundSubtitle}>
                   결제 {nameOf(round.payerId)} ·{' '}
                   {round.mode === 'even' ? '균등 n빵' : '항목별'}
@@ -161,6 +164,31 @@ export default function SessionDetailScreen() {
                   )}
                 </View>
               )}
+            </View>
+
+            <View style={styles.betRow}>
+              {round.bet ? (
+                <View style={styles.betBadgeWrap}>
+                  <Text style={styles.betBadge}>
+                    {nameOf(round.bet.loserId)} 몰빵
+                  </Text>
+                  <Text style={styles.betCancel} onPress={() => cancelRoundBet(round)}>
+                    취소
+                  </Text>
+                </View>
+              ) : (
+                <View />
+              )}
+              <Pressable
+                onPress={() =>
+                  router.push(`/session/${session.id}/round/${round.id}/bet`)
+                }
+                style={({ pressed }) => [styles.betPill, pressed && { opacity: 0.6 }]}
+              >
+                <Text style={styles.betPillText}>
+                  {round.bet ? '내기 다시' : '내기'}
+                </Text>
+              </Pressable>
             </View>
           </Card>
         ))
@@ -203,6 +231,43 @@ const styles = StyleSheet.create({
   roundAmountCol: {
     alignItems: 'flex-end',
     gap: spacing.xs,
+  },
+  betRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  betBadgeWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flexShrink: 1,
+  },
+  betBadge: {
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  betCancel: {
+    fontSize: fontSize.sm,
+    fontWeight: '700',
+    color: colors.danger,
+  },
+  betPill: {
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.text,
+  },
+  betPillText: {
+    fontSize: fontSize.sm,
+    fontWeight: '800',
+    color: colors.text,
   },
   fxMissing: {
     fontSize: fontSize.xs,
