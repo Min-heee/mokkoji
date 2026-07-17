@@ -377,7 +377,7 @@ export default function RoundEditScreen() {
         <SectionTitle>정산 방식</SectionTitle>
         <Row>
           <Chip
-            label="균등 n빵"
+            label="균등 정산"
             selected={round.mode === 'even'}
             onPress={() => setMode('even')}
           />

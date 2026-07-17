@@ -657,3 +657,57 @@ describe('내기 (betting) 정산', () => {
     assert.equal(shares[C], 0);
   });
 })
+
+describe('모임 전체 내기 (session bet)', () => {
+  it('전액 몰빵: 진 사람이 모임 전체를 다 낸다', () => {
+    // 1차 30,000(A결제), 2차 30,000(B결제). 3명 균등이면 각 20,000 부담.
+    // 모임 내기로 B가 전액(60,000) 몰빵 → B가 전부 부담.
+    const session = makeSession([
+      evenRound({ id: 'r1', payerId: A, participantIds: [A, B, C], totalAmount: 30000 }),
+      evenRound({ id: 'r2', payerId: B, participantIds: [A, B, C], totalAmount: 30000 }),
+    ]);
+    session.bet = { loserId: B, amount: 60000 };
+    const result = computeSettlement(session);
+    const b = result.persons.find((p) => p.personId === B)!;
+    assert.ok(Math.abs(b.consumed - 60000) < 1e-6);
+    assert.equal(result.persons.find((p) => p.personId === A)!.consumed, 0);
+    assert.equal(result.persons.find((p) => p.personId === C)!.consumed, 0);
+    // 잔액 합계 0 (불변식)
+    assert.ok(Math.abs(result.persons.reduce((s, p) => s + p.net, 0)) < 1e-6);
+  });
+
+  it('부분 몰빵: 진 사람이 amount, 나머지는 원래 비율대로', () => {
+    // 60,000 전체, 3명 각 20,000 부담. 모임 내기 30,000 몰빵(B).
+    // 나머지 30,000을 원래 비율(각 1/3)대로 → 각 10,000. B는 +30,000 = 40,000.
+    const session = makeSession([
+      evenRound({ id: 'r1', payerId: A, participantIds: [A, B, C], totalAmount: 30000 }),
+      evenRound({ id: 'r2', payerId: A, participantIds: [A, B, C], totalAmount: 30000 }),
+    ]);
+    session.bet = { loserId: B, amount: 30000 };
+    const result = computeSettlement(session);
+    const c = (id: string) => result.persons.find((p) => p.personId === id)!.consumed;
+    assert.ok(Math.abs(c(A) - 10000) < 1e-6);
+    assert.ok(Math.abs(c(C) - 10000) < 1e-6);
+    assert.ok(Math.abs(c(B) - 40000) < 1e-6);
+    assert.ok(Math.abs(result.persons.reduce((s, p) => s + p.net, 0)) < 1e-6);
+  });
+
+  it('금액이 전체보다 크면 전액으로 클램프', () => {
+    const session = makeSession([
+      evenRound({ payerId: A, participantIds: [A, B], totalAmount: 20000 }),
+    ]);
+    session.bet = { loserId: B, amount: 999999 };
+    const result = computeSettlement(session);
+    assert.ok(Math.abs(result.persons.find((p) => p.personId === B)!.consumed - 20000) < 1e-6);
+  });
+
+  it('NaN·미참가자·전체 0은 무시', () => {
+    const base = makeSession([
+      evenRound({ payerId: A, participantIds: [A, B, C], totalAmount: 30000 }),
+    ]);
+    const nan = { ...base, bet: { loserId: B, amount: NaN } };
+    assert.equal(computeSettlement(nan).persons.find((p) => p.personId === B)!.consumed, 10000);
+    const outsider = { ...base, bet: { loserId: 'ghost', amount: 10000 } };
+    assert.equal(computeSettlement(outsider).persons.find((p) => p.personId === B)!.consumed, 10000);
+  });
+})

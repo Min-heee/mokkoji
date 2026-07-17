@@ -188,6 +188,31 @@ export function computeTransfers(
   return transfers;
 }
 
+/**
+ * 모임 전체 내기를 부담액(consumed, 기준통화 원)에 반영한다.
+ * 전체 부담 합계 T에서 진 사람이 amount를 몰빵하고, 나머지 (T-amount)는
+ * 각자의 기존 부담 비율대로 나눈다 (consumed를 (T-amount)/T로 축소 후 진
+ * 사람에게 amount 가산). 합계는 T 그대로라 잔액 합계 0이 유지된다.
+ */
+function applySessionBet(
+  session: Session,
+  consumed: Record<PersonId, number>,
+): void {
+  const bet = session.bet;
+  if (!bet || !Number.isFinite(bet.amount)) return;
+  const total = Object.values(consumed).reduce((sum, v) => sum + v, 0);
+  if (!Number.isFinite(total) || total <= 0) return;
+  if (!session.people.some((p) => p.id === bet.loserId)) return;
+  const amount = Math.max(0, Math.min(bet.amount, total));
+  if (amount <= 0) return;
+
+  const scale = (total - amount) / total;
+  for (const id of Object.keys(consumed)) {
+    consumed[id] *= scale;
+  }
+  consumed[bet.loserId] = (consumed[bet.loserId] ?? 0) + amount;
+}
+
 export function computeSettlement(session: Session): SettlementResult {
   const paid: Record<PersonId, number> = {};
   const consumed: Record<PersonId, number> = {};
@@ -238,6 +263,11 @@ export function computeSettlement(session: Session): SettlementResult {
       shares,
     };
   });
+
+  // 모임 전체 내기: 진 사람이 amount(원)를 몰빵, 나머지는 원래 부담 비율대로.
+  // consumed를 (전체-amount)/전체로 축소한 뒤 진 사람에게 amount를 더한다.
+  // 부담 합계는 전체 그대로라 잔액 합계 0이 유지된다.
+  applySessionBet(session, consumed);
 
   // 세션 people에서 빠졌더라도 결제/부담 기록이 있는 id는 정산에 포함해
   // 잔액 합계가 항상 0이 되도록 유지한다.

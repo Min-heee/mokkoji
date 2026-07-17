@@ -50,6 +50,7 @@ export function normalizeSession(raw: Partial<Session> & { id: string }): Sessio
       baseCurrency: raw.settings?.baseCurrency ?? BASE_CURRENCY,
     },
     lastFxRates: raw.lastFxRates ?? {},
+    bet: raw.bet ?? null,
   };
 }
 

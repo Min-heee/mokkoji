@@ -88,6 +88,14 @@ export interface SessionSettings {
   baseCurrency: string;
 }
 
+/** 모임 전체에 걸린 내기 (기준통화 원 기준) */
+export interface SessionBet {
+  /** 내기에 진 사람 (몰빵) */
+  loserId: PersonId;
+  /** 몰빵 금액 (원). 모임 전체 부담에서 이 금액을 진 사람이 몰빵한다 */
+  amount: number;
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -97,6 +105,8 @@ export interface Session {
   settings: SessionSettings;
   /** 통화별 마지막 사용 환율 — 새 지출의 기본값으로 재사용 */
   lastFxRates?: Record<string, number>;
+  /** 모임 전체 내기 결과. 진 사람이 amount를 몰빵, 나머지는 원래 비율대로 */
+  bet?: SessionBet | null;
 }
 
 export interface PersonSettlement {

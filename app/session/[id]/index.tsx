@@ -95,6 +95,9 @@ export default function SessionDetailScreen() {
     }));
   };
 
+  const cancelSessionBet = () =>
+    updateSession(session.id, (s) => ({ ...s, bet: null }));
+
   return (
     <Screen
       footer={
@@ -143,7 +146,7 @@ export default function SessionDetailScreen() {
                 <Text style={styles.roundTitle}>{round.title}</Text>
                 <Text style={styles.roundSubtitle}>
                   결제 {nameOf(round.payerId)} ·{' '}
-                  {round.mode === 'even' ? '균등 n빵' : '항목별'}
+                  {round.mode === 'even' ? '균등 정산' : '항목별'}
                 </Text>
               </View>
               {(round.currency || 'KRW') === 'KRW' ? (
@@ -195,6 +198,40 @@ export default function SessionDetailScreen() {
       )}
       <PrimaryButton label="+ 차수 추가" variant="ghost" onPress={handleAddRound} />
 
+      <SectionTitle>모임 내기</SectionTitle>
+      <Card>
+        {session.bet ? (
+          <View style={styles.sessionBetRow}>
+            <View style={styles.betBadgeWrap}>
+              <Text style={styles.betBadge}>
+                {nameOf(session.bet.loserId)} 몰빵 · {formatKrw(session.bet.amount)}
+              </Text>
+              <Text style={styles.betCancel} onPress={cancelSessionBet}>
+                취소
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => router.push(`/session/${session.id}/bet`)}
+              style={({ pressed }) => [styles.betPill, pressed && { opacity: 0.6 }]}
+            >
+              <Text style={styles.betPillText}>다시</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            onPress={() => router.push(`/session/${session.id}/bet`)}
+            style={({ pressed }) => [
+              styles.betPill,
+              { alignSelf: 'flex-start' },
+              pressed && { opacity: 0.6 },
+            ]}
+          >
+            <Text style={styles.betPillText}>모임 전체 내기</Text>
+          </Pressable>
+        )}
+        <Text style={styles.roundSubtitle}>진 사람이 오늘 전체 중 정한 금액을 몰빵해요</Text>
+      </Card>
+
       <Card>
         <Text style={styles.totalLabel}>총 지출</Text>
         <Text style={styles.totalAmount}>{formatKrw(grandTotal)}</Text>
@@ -240,6 +277,11 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+  },
+  sessionBetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   betBadgeWrap: {
     flexDirection: 'row',
