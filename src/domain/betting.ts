@@ -84,6 +84,17 @@ export function randomReactionDelayMs(
   return Math.floor(lo + rng() * (hi - lo));
 }
 
+/** 시간 맞히기 게임의 목표 초(정수). 매 판 달라 외우거나 연습할 수 없다 */
+export function randomTargetSeconds(
+  rng: () => number = Math.random,
+  min = 1,
+  max = 10,
+): number {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  return lo + Math.floor(rng() * (hi - lo + 1));
+}
+
 /**
  * 여러 판(각자 한 번씩)을 돌린 뒤 점수가 가장 나쁜(큰) 사람이 당첨.
  * 10초 맞히기(오차)·반응속도(느린 ms) 등 턴제 게임의 공통 판정.

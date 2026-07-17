@@ -7,6 +7,7 @@ import {
   pickRandomLoser,
   randomBombDurationMs,
   randomReactionDelayMs,
+  randomTargetSeconds,
 } from './betting';
 
 describe('pickRandomLoser', () => {
@@ -104,5 +105,19 @@ describe('loserByHighestScore', () => {
 
   it('비어 있으면 null', () => {
     assert.equal(loserByHighestScore([]), null);
+  });
+});
+
+describe('randomTargetSeconds', () => {
+  it('1~10 정수 범위(경계 포함)', () => {
+    const rng = mulberry32(11);
+    const seen = new Set<number>();
+    for (let i = 0; i < 500; i += 1) {
+      const t = randomTargetSeconds(rng, 1, 10);
+      assert.ok(Number.isInteger(t) && t >= 1 && t <= 10, `범위 밖: ${t}`);
+      seen.add(t);
+    }
+    // 경계값 1과 10이 모두 나올 수 있어야 한다
+    assert.ok(seen.has(1) && seen.has(10));
   });
 });

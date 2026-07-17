@@ -8,6 +8,7 @@ import {
   pickRandomLoser,
   randomBombDurationMs,
   randomReactionDelayMs,
+  randomTargetSeconds,
   type BetGameId,
 } from '@/domain/betting';
 import { currencyInfo, formatMoney } from '@/domain/currency';
@@ -28,6 +29,13 @@ import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 type Phase = 'pick' | 'play' | 'result';
 
+/** 턴제 게임의 사람별 기록 (결과 화면에 표시) */
+interface BetRecord {
+  id: PersonId;
+  text: string;
+}
+type OnDone = (loserId: PersonId, records?: BetRecord[]) => void;
+
 export default function BetScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id: string; roundId: string; itemId?: string }>();
@@ -46,6 +54,7 @@ export default function BetScreen() {
   const [game, setGame] = React.useState<BetGameId>('draw');
   const [manualLoser, setManualLoser] = React.useState<PersonId | null>(null);
   const [loserId, setLoserId] = React.useState<PersonId | null>(null);
+  const [records, setRecords] = React.useState<BetRecord[] | null>(null);
   // 차수 내기의 몰빵 금액 (기본: 차수 전액). 항목 내기는 항목 금액 고정.
   const [betAmount, setBetAmount] = React.useState<number>(() =>
     round && !item ? roundTotal(round) : 0,
@@ -74,6 +83,7 @@ export default function BetScreen() {
 
   const startAgain = () => {
     setLoserId(null);
+    setRecords(null);
     setPhase('pick');
   };
 
@@ -137,6 +147,7 @@ export default function BetScreen() {
                 disabled={!manualLoser}
                 onPress={() => {
                   setLoserId(manualLoser);
+                  setRecords(null);
                   setPhase('result');
                 }}
               />
@@ -226,8 +237,9 @@ export default function BetScreen() {
 
       {phase === 'play'
         ? (() => {
-            const onDone = (id: PersonId) => {
+            const onDone: OnDone = (id, recs) => {
               setLoserId(id);
+              setRecords(recs ?? null);
               setPhase('result');
             };
             const props = { players, nameOf, onDone };
@@ -250,7 +262,6 @@ export default function BetScreen() {
 
       {phase === 'result' ? (
         <Screen
-          scroll={false}
           footer={
             <>
               <PrimaryButton
@@ -261,7 +272,7 @@ export default function BetScreen() {
             </>
           }
         >
-          <View style={styles.resultWrap}>
+          <View style={styles.resultTop}>
             <Text style={styles.resultKicker}>당첨</Text>
             <Text style={styles.resultName}>{loserId ? nameOf(loserId) : '?'}</Text>
             <Text style={styles.resultAmount}>
@@ -271,6 +282,42 @@ export default function BetScreen() {
               정산에 반영하면 이 금액이 {loserId ? nameOf(loserId) : '?'}님 부담으로 붙어요
             </Text>
           </View>
+
+          {records && records.length > 0 ? (
+            <>
+              <SectionTitle>기록</SectionTitle>
+              <Card>
+                {records.map((r, i) => (
+                  <View
+                    key={r.id}
+                    style={[
+                      styles.recordRow,
+                      i > 0 && styles.recordDivider,
+                      r.id === loserId && styles.recordLoser,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.recordName,
+                        r.id === loserId && styles.recordNameLoser,
+                      ]}
+                    >
+                      {nameOf(r.id)}
+                      {r.id === loserId ? ' · 당첨' : ''}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.recordValue,
+                        r.id === loserId && styles.recordNameLoser,
+                      ]}
+                    >
+                      {r.text}
+                    </Text>
+                  </View>
+                ))}
+              </Card>
+            </>
+          ) : null}
         </Screen>
       ) : null}
     </>
@@ -285,7 +332,7 @@ function DrawGame({
 }: {
   players: PersonId[];
   nameOf: (id: PersonId) => string;
-  onDone: (loserId: PersonId) => void;
+  onDone: OnDone;
 }) {
   // 폭탄이 걸린 사람을 미리 정해두고, 그 사람 카드를 뒤집으면 터진다
   const bombId = React.useMemo(() => pickRandomLoser(players)!, [players]);
@@ -348,7 +395,7 @@ function BombGame({
 }: {
   players: PersonId[];
   nameOf: (id: PersonId) => string;
-  onDone: (loserId: PersonId) => void;
+  onDone: OnDone;
 }) {
   const [holder, setHolder] = React.useState(0);
   const holderRef = React.useRef(0);
@@ -387,7 +434,7 @@ function RouletteGame({
 }: {
   players: PersonId[];
   nameOf: (id: PersonId) => string;
-  onDone: (loserId: PersonId) => void;
+  onDone: OnDone;
 }) {
   const loser = React.useMemo(() => pickRandomLoser(players)!, [players]);
   const [highlight, setHighlight] = React.useState<PersonId | null>(null);
@@ -446,7 +493,7 @@ function RouletteGame({
   );
 }
 
-/** 10초 맞히기: 각자 안 보고 10초에 멈추기. 가장 못 맞춘(오차 큰) 사람이 당첨 */
+/** 시간 맞히기: 매 판 1~10초 랜덤 목표. 각자 안 보고 그 시간에 멈추기. 오차 큰 사람이 당첨 */
 function TenSecondGame({
   players,
   nameOf,
@@ -454,13 +501,17 @@ function TenSecondGame({
 }: {
   players: PersonId[];
   nameOf: (id: PersonId) => string;
-  onDone: (loserId: PersonId) => void;
+  onDone: OnDone;
 }) {
+  const target = React.useMemo(() => randomTargetSeconds(), []);
   const [idx, setIdx] = React.useState(0);
-  const [scores, setScores] = React.useState<{ id: PersonId; score: number }[]>([]);
+  const [rows, setRows] = React.useState<
+    { id: PersonId; score: number; elapsed: number }[]
+  >([]);
   const [running, setRunning] = React.useState(false);
   const startRef = React.useRef(0);
   const current = players[idx];
+  const targetMs = target * 1000;
 
   const start = () => {
     startRef.current = Date.now();
@@ -468,15 +519,20 @@ function TenSecondGame({
   };
 
   const stop = () => {
-    const err = Math.abs(Date.now() - startRef.current - 10000);
-    const next = [...scores, { id: current, score: err }];
+    const elapsed = Date.now() - startRef.current;
+    const next = [...rows, { id: current, score: Math.abs(elapsed - targetMs), elapsed }];
     setRunning(false);
+    setRows(next);
     if (idx + 1 >= players.length) {
       const loser = loserByHighestScore(next)!;
-      setScores(next);
-      setTimeout(() => onDone(loser), 400);
+      const records: BetRecord[] = [...next]
+        .sort((a, b) => a.score - b.score)
+        .map((r) => ({
+          id: r.id,
+          text: `${(r.elapsed / 1000).toFixed(1)}초 · 오차 ${(r.score / 1000).toFixed(1)}초`,
+        }));
+      setTimeout(() => onDone(loser, records), 400);
     } else {
-      setScores(next);
       setIdx(idx + 1);
     }
   };
@@ -494,13 +550,13 @@ function TenSecondGame({
     >
       <View style={styles.turnWrap}>
         <Text style={styles.turnKicker}>
-          {idx + 1} / {players.length}
+          {idx + 1} / {players.length} · 목표 {target}초
         </Text>
         <Text style={styles.turnName}>{nameOf(current)}</Text>
         <Text style={styles.turnHint}>
           {running
-            ? '지금부터 10초! 화면 안 보고 감으로 멈춰요'
-            : '시작을 누르고 속으로 10초를 세요'}
+            ? `${target}초라고 생각되면 멈춰요 (화면엔 안 보여요)`
+            : `시작을 누르고 속으로 ${target}초를 세요`}
         </Text>
       </View>
     </Screen>
@@ -508,6 +564,7 @@ function TenSecondGame({
 }
 
 /** 반응 속도: 신호가 뜨면 탭. 가장 느린(부정출발 포함) 사람이 당첨 */
+const FALSE_START = 99999;
 function ReactionGame({
   players,
   nameOf,
@@ -515,7 +572,7 @@ function ReactionGame({
 }: {
   players: PersonId[];
   nameOf: (id: PersonId) => string;
-  onDone: (loserId: PersonId) => void;
+  onDone: OnDone;
 }) {
   const [idx, setIdx] = React.useState(0);
   const [scores, setScores] = React.useState<{ id: PersonId; score: number }[]>([]);
@@ -542,12 +599,17 @@ function ReactionGame({
   const finishTurn = (score: number) => {
     const next = [...scores, { id: current, score }];
     setState('idle');
+    setScores(next);
     if (idx + 1 >= players.length) {
       const loser = loserByHighestScore(next)!;
-      setScores(next);
-      setTimeout(() => onDone(loser), 400);
+      const records: BetRecord[] = [...next]
+        .sort((a, b) => a.score - b.score)
+        .map((r) => ({
+          id: r.id,
+          text: r.score >= FALSE_START ? '부정출발' : `${r.score}ms`,
+        }));
+      setTimeout(() => onDone(loser, records), 400);
     } else {
-      setScores(next);
       setIdx(idx + 1);
     }
   };
@@ -556,7 +618,7 @@ function ReactionGame({
     if (state === 'waiting') {
       // 부정출발 — 큰 페널티
       if (timerRef.current) clearTimeout(timerRef.current);
-      finishTurn(99999);
+      finishTurn(FALSE_START);
     } else if (state === 'go') {
       finishTurn(Date.now() - goAtRef.current);
     }
@@ -710,11 +772,11 @@ const styles = StyleSheet.create({
   bombHolder: { fontSize: fontSize.xl, fontWeight: '800', color: colors.text },
   bombHint: { fontSize: fontSize.md, color: colors.danger, fontWeight: '600' },
 
-  resultWrap: {
-    flex: 1,
+  resultTop: {
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
+    paddingVertical: spacing.xl,
   },
   resultKicker: {
     fontSize: fontSize.md,
@@ -737,4 +799,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   amountLine: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
+
+  recordRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+  },
+  recordDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  recordLoser: {},
+  recordName: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
+  recordValue: { fontSize: fontSize.sm, color: colors.subtext },
+  recordNameLoser: { color: colors.danger },
 });
