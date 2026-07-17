@@ -4,7 +4,13 @@
  * 차수 전체든 특정 항목이든 붙일 수 있고, 어떤 게임이든 이 로직을 공유한다.
  */
 
-export type BetGameId = 'draw' | 'bomb' | 'roulette' | 'timer' | 'reaction';
+export type BetGameId =
+  | 'draw'
+  | 'bomb'
+  | 'roulette'
+  | 'timer'
+  | 'reaction'
+  | 'digits';
 
 export interface BetGameInfo {
   id: BetGameId;
@@ -30,13 +36,18 @@ export const BET_GAMES: BetGameInfo[] = [
   },
   {
     id: 'timer',
-    label: '10초 맞히기',
-    desc: '10초를 가장 못 맞춘 사람이 당첨',
+    label: '시간 맞히기',
+    desc: '랜덤 초를 가장 못 맞춘 사람이 당첨',
   },
   {
     id: 'reaction',
     label: '반응 속도',
     desc: '신호에 가장 느리게 누른 사람이 당첨',
+  },
+  {
+    id: 'digits',
+    label: '끝자리 곱하기',
+    desc: '타이머 끝자리를 두 번 곱해 가장 낮은 사람이 당첨',
   },
 ];
 
@@ -97,7 +108,7 @@ export function randomTargetSeconds(
 
 /**
  * 여러 판(각자 한 번씩)을 돌린 뒤 점수가 가장 나쁜(큰) 사람이 당첨.
- * 10초 맞히기(오차)·반응속도(느린 ms) 등 턴제 게임의 공통 판정.
+ * 시간 맞히기(오차)·반응속도(느린 ms) 등 턴제 게임의 공통 판정.
  * 동점이면 먼저 나온 사람. 비어 있으면 null.
  */
 export function loserByHighestScore(
@@ -109,4 +120,20 @@ export function loserByHighestScore(
     if (s.score > worst.score) worst = s;
   }
   return worst.id;
+}
+
+/** 정수의 끝자리(0~9). 소수·음수도 안전하게 처리 */
+export function lastDigit(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.abs(Math.trunc(value)) % 10;
+}
+
+/**
+ * 점수가 가장 낮은 사람(들)의 id. 끝자리 곱하기처럼 '최저가 당첨'인 게임용.
+ * 동점이면 여럿 반환 → 그 사람들끼리 재대결한다. 비어 있으면 빈 배열.
+ */
+export function lowestScoreIds(scores: { id: string; score: number }[]): string[] {
+  if (scores.length === 0) return [];
+  const min = Math.min(...scores.map((s) => s.score));
+  return scores.filter((s) => s.score === min).map((s) => s.id);
 }

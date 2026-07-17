@@ -8,6 +8,8 @@ import {
   randomBombDurationMs,
   randomReactionDelayMs,
   randomTargetSeconds,
+  lastDigit,
+  lowestScoreIds,
 } from './betting';
 
 describe('pickRandomLoser', () => {
@@ -119,5 +121,44 @@ describe('randomTargetSeconds', () => {
     }
     // 경계값 1과 10이 모두 나올 수 있어야 한다
     assert.ok(seen.has(1) && seen.has(10));
+  });
+});
+
+describe('lastDigit', () => {
+  it('정수 끝자리', () => {
+    assert.equal(lastDigit(1387), 7);
+    assert.equal(lastDigit(240), 0);
+    assert.equal(lastDigit(5), 5);
+  });
+  it('소수·음수·비정상도 안전', () => {
+    assert.equal(lastDigit(12.9), 2);
+    assert.equal(lastDigit(-43), 3);
+    assert.equal(lastDigit(NaN), 0);
+  });
+});
+
+describe('lowestScoreIds', () => {
+  it('최저 점수 한 명', () => {
+    assert.deepEqual(
+      lowestScoreIds([
+        { id: 'a', score: 12 },
+        { id: 'b', score: 3 },
+        { id: 'c', score: 20 },
+      ]),
+      ['b'],
+    );
+  });
+  it('최저 동점이면 여럿 (재대결 대상)', () => {
+    assert.deepEqual(
+      lowestScoreIds([
+        { id: 'a', score: 0 },
+        { id: 'b', score: 0 },
+        { id: 'c', score: 15 },
+      ]),
+      ['a', 'b'],
+    );
+  });
+  it('비어 있으면 빈 배열', () => {
+    assert.deepEqual(lowestScoreIds([]), []);
   });
 });

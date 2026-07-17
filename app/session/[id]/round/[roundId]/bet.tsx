@@ -4,7 +4,9 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   BET_GAMES,
+  lastDigit,
   loserByHighestScore,
+  lowestScoreIds,
   pickRandomLoser,
   randomBombDurationMs,
   randomReactionDelayMs,
@@ -254,6 +256,8 @@ export default function BetScreen() {
                 return <TenSecondGame {...props} />;
               case 'reaction':
                 return <ReactionGame {...props} />;
+              case 'digits':
+                return <LastDigitGame {...props} />;
               default:
                 return null;
             }
@@ -493,7 +497,40 @@ function RouletteGame({
   );
 }
 
-/** 시간 맞히기: 매 판 1~10초 랜덤 목표. 각자 안 보고 그 시간에 멈추기. 오차 큰 사람이 당첨 */
+/** 사람별 결과를 한 명씩 공개하는 리빌 화면 */
+function TurnReveal({
+  kicker,
+  name,
+  big,
+  sub,
+  isLast,
+  onNext,
+}: {
+  kicker: string;
+  name: string;
+  big: string;
+  sub?: string;
+  isLast: boolean;
+  onNext: () => void;
+}) {
+  return (
+    <Screen
+      scroll={false}
+      footer={
+        <PrimaryButton label={isLast ? '결과 보기' : '다음'} onPress={onNext} />
+      }
+    >
+      <View style={styles.turnWrap}>
+        <Text style={styles.turnKicker}>{kicker}</Text>
+        <Text style={styles.turnName}>{name}</Text>
+        <Text style={styles.revealBig}>{big}</Text>
+        {sub ? <Text style={styles.turnHint}>{sub}</Text> : null}
+      </View>
+    </Screen>
+  );
+}
+
+/** 시간 맞히기: 매 판 1~10초 랜덤 목표. 각자 안 보고 멈추고, 끝날 때마다 기록 공개 */
 function TenSecondGame({
   players,
   nameOf,
@@ -504,39 +541,62 @@ function TenSecondGame({
   onDone: OnDone;
 }) {
   const target = React.useMemo(() => randomTargetSeconds(), []);
+  const targetMs = target * 1000;
   const [idx, setIdx] = React.useState(0);
   const [rows, setRows] = React.useState<
     { id: PersonId; score: number; elapsed: number }[]
   >([]);
-  const [running, setRunning] = React.useState(false);
+  const [state, setState] = React.useState<'ready' | 'running' | 'reveal'>('ready');
+  const [lastElapsed, setLastElapsed] = React.useState(0);
   const startRef = React.useRef(0);
   const current = players[idx];
-  const targetMs = target * 1000;
+  const isLast = idx + 1 >= players.length;
 
   const start = () => {
     startRef.current = Date.now();
-    setRunning(true);
+    setState('running');
   };
 
   const stop = () => {
     const elapsed = Date.now() - startRef.current;
-    const next = [...rows, { id: current, score: Math.abs(elapsed - targetMs), elapsed }];
-    setRunning(false);
-    setRows(next);
-    if (idx + 1 >= players.length) {
-      const loser = loserByHighestScore(next)!;
-      const records: BetRecord[] = [...next]
+    setLastElapsed(elapsed);
+    setRows((prev) => [
+      ...prev,
+      { id: current, score: Math.abs(elapsed - targetMs), elapsed },
+    ]);
+    setState('reveal');
+  };
+
+  const next = () => {
+    if (isLast) {
+      const loser = loserByHighestScore(rows)!;
+      const records: BetRecord[] = [...rows]
         .sort((a, b) => a.score - b.score)
         .map((r) => ({
           id: r.id,
           text: `${(r.elapsed / 1000).toFixed(1)}초 · 오차 ${(r.score / 1000).toFixed(1)}초`,
         }));
-      setTimeout(() => onDone(loser, records), 400);
+      onDone(loser, records);
     } else {
       setIdx(idx + 1);
+      setState('ready');
     }
   };
 
+  if (state === 'reveal') {
+    return (
+      <TurnReveal
+        kicker={`${idx + 1} / ${players.length} · 목표 ${target}초`}
+        name={nameOf(current)}
+        big={`${(lastElapsed / 1000).toFixed(1)}초`}
+        sub={`오차 ${(Math.abs(lastElapsed - targetMs) / 1000).toFixed(1)}초`}
+        isLast={isLast}
+        onNext={next}
+      />
+    );
+  }
+
+  const running = state === 'running';
   return (
     <Screen
       scroll={false}
@@ -563,7 +623,7 @@ function TenSecondGame({
   );
 }
 
-/** 반응 속도: 신호가 뜨면 탭. 가장 느린(부정출발 포함) 사람이 당첨 */
+/** 반응 속도: 신호가 뜨면 탭. 끝날 때마다 기록 공개. 가장 느린(부정출발 포함) 사람이 당첨 */
 const FALSE_START = 99999;
 function ReactionGame({
   players,
@@ -576,10 +636,14 @@ function ReactionGame({
 }) {
   const [idx, setIdx] = React.useState(0);
   const [scores, setScores] = React.useState<{ id: PersonId; score: number }[]>([]);
-  const [state, setState] = React.useState<'idle' | 'waiting' | 'go'>('idle');
+  const [state, setState] = React.useState<'idle' | 'waiting' | 'go' | 'reveal'>(
+    'idle',
+  );
+  const [lastScore, setLastScore] = React.useState(0);
   const goAtRef = React.useRef(0);
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const current = players[idx];
+  const isLast = idx + 1 >= players.length;
 
   React.useEffect(
     () => () => {
@@ -596,33 +660,48 @@ function ReactionGame({
     }, randomReactionDelayMs());
   };
 
-  const finishTurn = (score: number) => {
-    const next = [...scores, { id: current, score }];
-    setState('idle');
-    setScores(next);
-    if (idx + 1 >= players.length) {
-      const loser = loserByHighestScore(next)!;
-      const records: BetRecord[] = [...next]
+  const recordTurn = (score: number) => {
+    setLastScore(score);
+    setScores((prev) => [...prev, { id: current, score }]);
+    setState('reveal');
+  };
+
+  const tap = () => {
+    if (state === 'waiting') {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      recordTurn(FALSE_START);
+    } else if (state === 'go') {
+      recordTurn(Date.now() - goAtRef.current);
+    }
+  };
+
+  const next = () => {
+    if (isLast) {
+      const loser = loserByHighestScore(scores)!;
+      const records: BetRecord[] = [...scores]
         .sort((a, b) => a.score - b.score)
         .map((r) => ({
           id: r.id,
           text: r.score >= FALSE_START ? '부정출발' : `${r.score}ms`,
         }));
-      setTimeout(() => onDone(loser, records), 400);
+      onDone(loser, records);
     } else {
       setIdx(idx + 1);
+      setState('idle');
     }
   };
 
-  const tap = () => {
-    if (state === 'waiting') {
-      // 부정출발 — 큰 페널티
-      if (timerRef.current) clearTimeout(timerRef.current);
-      finishTurn(FALSE_START);
-    } else if (state === 'go') {
-      finishTurn(Date.now() - goAtRef.current);
-    }
-  };
+  if (state === 'reveal') {
+    return (
+      <TurnReveal
+        kicker={`${idx + 1} / ${players.length}`}
+        name={nameOf(current)}
+        big={lastScore >= FALSE_START ? '부정출발' : `${lastScore}ms`}
+        isLast={isLast}
+        onNext={next}
+      />
+    );
+  }
 
   return (
     <Screen
@@ -649,6 +728,139 @@ function ReactionGame({
               : '지금 눌러!'}
         </Text>
       </Pressable>
+    </Screen>
+  );
+}
+
+/**
+ * 끝자리 곱하기: 빠르게 오르는 타이머를 멈춰 끝자리를 얻는다. 두 번 해서
+ * 두 끝자리를 곱한 값이 점수. 가장 낮은 사람이 당첨. 동점이면 그 사람들끼리 재대결.
+ */
+function LastDigitGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: OnDone;
+}) {
+  const [active, setActive] = React.useState<PersonId[]>(players);
+  const [idx, setIdx] = React.useState(0);
+  const [scores, setScores] = React.useState<
+    { id: PersonId; score: number; d1: number; d2: number }[]
+  >([]);
+  const [state, setState] = React.useState<
+    'roll1' | 'reveal1' | 'roll2' | 'revealTurn' | 'tiebreak'
+  >('roll1');
+  const [count, setCount] = React.useState(0);
+  const countRef = React.useRef(0);
+  const [d1, setD1] = React.useState(0);
+  const [d2, setD2] = React.useState(0);
+  const current = active[idx];
+  const isLastPlayer = idx + 1 >= active.length;
+
+  // 타이머는 roll 상태에서만 빠르게 오른다
+  React.useEffect(() => {
+    if (state !== 'roll1' && state !== 'roll2') return;
+    const iv = setInterval(() => {
+      countRef.current += 1;
+      setCount(countRef.current);
+    }, 30);
+    return () => clearInterval(iv);
+  }, [state]);
+
+  const stopFirst = () => {
+    setD1(lastDigit(countRef.current));
+    setState('reveal1');
+  };
+  const stopSecond = () => {
+    setD2(lastDigit(countRef.current));
+    setState('revealTurn');
+  };
+
+  const afterTurn = () => {
+    const score = d1 * d2;
+    const nextScores = [...scores, { id: current, score, d1, d2 }];
+    if (isLastPlayer) {
+      const lowest = lowestScoreIds(nextScores);
+      if (lowest.length === 1) {
+        const records: BetRecord[] = [...nextScores]
+          .sort((a, b) => a.score - b.score)
+          .map((r) => ({ id: r.id, text: `${r.d1} × ${r.d2} = ${r.score}` }));
+        onDone(lowest[0], records);
+      } else {
+        // 동점 최저 → 그 사람들끼리 재대결
+        setActive(lowest);
+        setScores([]);
+        setIdx(0);
+        setState('tiebreak');
+      }
+    } else {
+      setScores(nextScores);
+      setIdx(idx + 1);
+      setState('roll1');
+    }
+  };
+
+  if (state === 'tiebreak') {
+    return (
+      <Screen scroll={false} footer={<PrimaryButton label="재대결 시작" onPress={() => setState('roll1')} />}>
+        <View style={styles.turnWrap}>
+          <Text style={styles.resultKicker}>동점</Text>
+          <Text style={styles.turnName}>{active.map(nameOf).join(', ')}</Text>
+          <Text style={styles.turnHint}>가장 낮은 점수가 같아요. 이 사람들끼리 다시!</Text>
+        </View>
+      </Screen>
+    );
+  }
+
+  if (state === 'reveal1') {
+    return (
+      <Screen scroll={false} footer={<PrimaryButton label="두 번째" onPress={() => setState('roll2')} />}>
+        <View style={styles.turnWrap}>
+          <Text style={styles.turnKicker}>
+            {idx + 1} / {active.length} · 첫 번째
+          </Text>
+          <Text style={styles.turnName}>{nameOf(current)}</Text>
+          <Text style={styles.revealBig}>끝자리 {d1}</Text>
+        </View>
+      </Screen>
+    );
+  }
+
+  if (state === 'revealTurn') {
+    return (
+      <TurnReveal
+        kicker={`${idx + 1} / ${active.length}`}
+        name={nameOf(current)}
+        big={`${d1} × ${d2} = ${d1 * d2}`}
+        sub="낮을수록 당첨 위험"
+        isLast={isLastPlayer}
+        onNext={afterTurn}
+      />
+    );
+  }
+
+  const rolling1 = state === 'roll1';
+  return (
+    <Screen
+      scroll={false}
+      footer={
+        <PrimaryButton
+          label="멈춰!"
+          onPress={rolling1 ? stopFirst : stopSecond}
+        />
+      }
+    >
+      <View style={styles.turnWrap}>
+        <Text style={styles.turnKicker}>
+          {idx + 1} / {active.length} · {rolling1 ? '첫 번째' : '두 번째'}
+        </Text>
+        <Text style={styles.turnName}>{nameOf(current)}</Text>
+        <Text style={styles.rollNumber}>{count}</Text>
+        <Text style={styles.turnHint}>멈춰서 끝자리를 정해요</Text>
+      </View>
     </Screen>
   );
 }
@@ -720,6 +932,18 @@ const styles = StyleSheet.create({
     color: colors.subtext,
     textAlign: 'center',
     paddingHorizontal: spacing.lg,
+  },
+  revealBig: {
+    fontSize: 44,
+    fontWeight: '800',
+    color: colors.text,
+    marginTop: spacing.xs,
+  },
+  rollNumber: {
+    fontSize: 56,
+    fontWeight: '800',
+    color: colors.text,
+    fontVariant: ['tabular-nums'],
   },
   reactArea: {
     flex: 1,
