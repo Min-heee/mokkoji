@@ -9,7 +9,10 @@ import {
   randomReactionDelayMs,
   randomTargetSeconds,
   lastDigit,
+  buildLadderRungs,
   lowestScoreIds,
+  randomInt,
+  traceLadderColumn,
 } from './betting';
 
 describe('pickRandomLoser', () => {
@@ -160,5 +163,46 @@ describe('lowestScoreIds', () => {
   });
   it('비어 있으면 빈 배열', () => {
     assert.deepEqual(lowestScoreIds([]), []);
+  });
+});
+
+describe('randomInt', () => {
+  it('양끝 포함 범위', () => {
+    const rng = mulberry32(4);
+    const seen = new Set<number>();
+    for (let i = 0; i < 800; i += 1) {
+      const n = randomInt(rng, 1, 6);
+      assert.ok(Number.isInteger(n) && n >= 1 && n <= 6);
+      seen.add(n);
+    }
+    assert.ok(seen.has(1) && seen.has(6));
+  });
+});
+
+describe('사다리 (ladder)', () => {
+  it('한 행에서 가로줄이 붙지 않는다', () => {
+    const rungs = buildLadderRungs(5, 12, mulberry32(3));
+    for (const row of rungs) {
+      for (let c = 1; c < row.length; c += 1) {
+        assert.ok(!(row[c] && row[c - 1]), '붙은 가로줄 발견');
+      }
+    }
+  });
+
+  it('시작 열들이 서로 다른 바닥 열로 간다 (전단사)', () => {
+    const numCols = 5;
+    const rungs = buildLadderRungs(numCols, 15, mulberry32(9));
+    const dests = new Set<number>();
+    for (let c = 0; c < numCols; c += 1) {
+      dests.add(traceLadderColumn(c, rungs, numCols));
+    }
+    assert.equal(dests.size, numCols); // 겹치는 도착 없음
+  });
+
+  it('가로줄이 하나도 없으면 제자리로 내려온다', () => {
+    const rungs = buildLadderRungs(4, 8, () => 0.9); // 항상 0.5 이상 → 줄 없음
+    for (let c = 0; c < 4; c += 1) {
+      assert.equal(traceLadderColumn(c, rungs, 4), c);
+    }
   });
 });

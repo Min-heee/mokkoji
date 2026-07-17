@@ -10,7 +10,11 @@ export type BetGameId =
   | 'roulette'
   | 'timer'
   | 'reaction'
-  | 'digits';
+  | 'digits'
+  | 'ladder'
+  | 'numberbomb'
+  | 'tapfrenzy'
+  | 'minefield';
 
 export interface BetGameInfo {
   id: BetGameId;
@@ -25,14 +29,29 @@ export const BET_GAMES: BetGameInfo[] = [
     desc: '돌림판이 돌다 멈춘 사람이 당첨',
   },
   {
+    id: 'ladder',
+    label: '사다리타기',
+    desc: '사다리를 타고 내려가 꽝에 걸린 사람이 당첨',
+  },
+  {
     id: 'draw',
     label: '제비뽑기',
     desc: '카드를 뒤집어 꽝을 뽑은 사람이 당첨',
   },
   {
+    id: 'minefield',
+    label: '지뢰밟기',
+    desc: '돌아가며 칸을 열어 지뢰를 밟은 사람이 당첨',
+  },
+  {
     id: 'bomb',
     label: '폭탄 돌리기',
     desc: '돌리다 터질 때 들고 있던 사람이 당첨',
+  },
+  {
+    id: 'numberbomb',
+    label: '숫자 폭탄',
+    desc: '범위를 좁히다 숨은 숫자를 집은 사람이 당첨',
   },
   {
     id: 'timer',
@@ -43,6 +62,11 @@ export const BET_GAMES: BetGameInfo[] = [
     id: 'reaction',
     label: '반응 속도',
     desc: '신호에 가장 느리게 누른 사람이 당첨',
+  },
+  {
+    id: 'tapfrenzy',
+    label: '연타 대결',
+    desc: '5초간 가장 적게 누른 사람이 당첨',
   },
   {
     id: 'digits',
@@ -120,6 +144,52 @@ export function loserByHighestScore(
     if (s.score > worst.score) worst = s;
   }
   return worst.id;
+}
+
+/** min~max 정수 무작위 (양끝 포함) */
+export function randomInt(
+  rng: () => number = Math.random,
+  min = 0,
+  max = 0,
+): number {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  return lo + Math.floor(rng() * (hi - lo + 1));
+}
+
+/**
+ * 사다리 가로줄 생성. rows[r][c] = true 면 그 행에서 열 c와 c+1 사이에 가로줄.
+ * 한 행에서 가로줄이 서로 붙지 않도록(같은 칸을 두 번 쓰지 않도록) 만든다.
+ */
+export function buildLadderRungs(
+  numCols: number,
+  numRows: number,
+  rng: () => number = Math.random,
+): boolean[][] {
+  const rows: boolean[][] = [];
+  for (let r = 0; r < numRows; r += 1) {
+    const row = new Array<boolean>(Math.max(0, numCols - 1)).fill(false);
+    for (let c = 0; c < numCols - 1; c += 1) {
+      if (c > 0 && row[c - 1]) continue; // 왼쪽에 이미 줄이 있으면 건너뜀
+      if (rng() < 0.5) row[c] = true;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+/** 사다리에서 시작 열이 타고 내려가 도착하는 바닥 열 */
+export function traceLadderColumn(
+  startCol: number,
+  rungs: boolean[][],
+  numCols: number,
+): number {
+  let c = startCol;
+  for (const row of rungs) {
+    if (c < numCols - 1 && row[c]) c += 1;
+    else if (c > 0 && row[c - 1]) c -= 1;
+  }
+  return c;
 }
 
 /** 정수의 끝자리(0~9). 소수·음수도 안전하게 처리 */

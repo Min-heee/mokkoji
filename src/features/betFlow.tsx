@@ -1,16 +1,19 @@
 import { Stack } from 'expo-router';
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   BET_GAMES,
+  buildLadderRungs,
   lastDigit,
   loserByHighestScore,
   lowestScoreIds,
   pickRandomLoser,
   randomBombDurationMs,
+  randomInt,
   randomReactionDelayMs,
   randomTargetSeconds,
+  traceLadderColumn,
   type BetGameId,
 } from '@/domain/betting';
 import { currencyInfo, formatMoney } from '@/domain/currency';
@@ -208,6 +211,14 @@ export function BetFlow(props: BetFlowProps) {
                 return <ReactionGame {...gameProps} />;
               case 'digits':
                 return <LastDigitGame {...gameProps} />;
+              case 'ladder':
+                return <LadderGame {...gameProps} />;
+              case 'numberbomb':
+                return <NumberBombGame {...gameProps} />;
+              case 'tapfrenzy':
+                return <TapFrenzyGame {...gameProps} />;
+              case 'minefield':
+                return <MineFieldGame {...gameProps} />;
               default:
                 return null;
             }
@@ -824,11 +835,482 @@ function LastDigitGame({
   );
 }
 
+/** 사다리타기: 각자 이름을 눌러 사다리를 타고 내려간다. 꽝칸에 도착한 사람이 당첨 */
+const LADDER_ROWS = 10;
+const COL_W = 64;
+const ROW_H = 30;
+function LadderGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: (loserId: PersonId) => void;
+}) {
+  const numCols = players.length;
+  const rungs = React.useMemo(
+    () => buildLadderRungs(numCols, LADDER_ROWS),
+    [numCols],
+  );
+  // 꽝 바닥칸을 랜덤으로 정하고, 그 칸으로 도착하는 시작열이 당첨
+  const bombCol = React.useMemo(() => randomInt(Math.random, 0, numCols - 1), [numCols]);
+  const loserCol = React.useMemo(() => {
+    for (let c = 0; c < numCols; c += 1) {
+      if (traceLadderColumn(c, rungs, numCols) === bombCol) return c;
+    }
+    return 0;
+  }, [rungs, numCols, bombCol]);
+
+  const [revealed, setRevealed] = React.useState<Set<number>>(new Set());
+  const [tracing, setTracing] = React.useState<number | null>(null);
+  const anim = React.useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+
+  const colX = (c: number) => c * COL_W + COL_W / 2;
+
+  const path = (startCol: number) => {
+    const pts: { x: number; y: number }[] = [{ x: colX(startCol), y: 0 }];
+    let c = startCol;
+    for (let r = 0; r < rungs.length; r += 1) {
+      const y = (r + 1) * ROW_H;
+      if (c < numCols - 1 && rungs[r][c]) {
+        pts.push({ x: colX(c), y });
+        c += 1;
+        pts.push({ x: colX(c), y });
+      } else if (c > 0 && rungs[r][c - 1]) {
+        pts.push({ x: colX(c), y });
+        c -= 1;
+        pts.push({ x: colX(c), y });
+      }
+    }
+    pts.push({ x: colX(c), y: LADDER_ROWS * ROW_H + ROW_H });
+    return { pts, endCol: c };
+  };
+
+  const run = (startCol: number) => {
+    if (tracing !== null || revealed.has(startCol)) return;
+    const { pts, endCol } = path(startCol);
+    setTracing(startCol);
+    anim.setValue(pts[0]);
+    const seq = pts
+      .slice(1)
+      .map((p) =>
+        Animated.timing(anim, {
+          toValue: p,
+          duration: 130,
+          useNativeDriver: false,
+        }),
+      );
+    Animated.sequence(seq).start(() => {
+      setRevealed((prev) => new Set(prev).add(startCol));
+      setTracing(null);
+      if (endCol === bombCol) {
+        setTimeout(() => onDone(players[loserCol]), 600);
+      }
+    });
+  };
+
+  const boardW = numCols * COL_W;
+  const boardH = LADDER_ROWS * ROW_H + ROW_H;
+
+  return (
+    <Screen>
+      <Card>
+        <Text style={styles.playTitle}>사다리타기</Text>
+        <Text style={styles.playSub}>이름을 눌러 사다리를 타고 내려가요</Text>
+      </Card>
+      <View style={{ alignItems: 'center' }}>
+        <View style={[styles.ladderNames, { width: boardW }]}>
+          {players.map((id, c) => (
+            <Pressable
+              key={id}
+              onPress={() => run(c)}
+              style={[styles.ladderName, { width: COL_W }]}
+            >
+              <Text
+                style={[
+                  styles.ladderNameText,
+                  revealed.has(c) && styles.ladderNameDone,
+                ]}
+              >
+                {nameOf(id)}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={{ width: boardW, height: boardH }}>
+          {/* 세로줄 */}
+          {players.map((id, c) => (
+            <View
+              key={id}
+              style={[styles.ladderCol, { left: colX(c) - 1, height: boardH }]}
+            />
+          ))}
+          {/* 가로줄 */}
+          {rungs.map((row, r) =>
+            row.map((on, c) =>
+              on ? (
+                <View
+                  key={`${r}-${c}`}
+                  style={[
+                    styles.ladderRung,
+                    {
+                      left: colX(c),
+                      top: (r + 1) * ROW_H,
+                      width: COL_W,
+                    },
+                  ]}
+                />
+              ) : null,
+            ),
+          )}
+          {/* 움직이는 말 */}
+          {tracing !== null ? (
+            <Animated.View
+              style={[
+                styles.ladderDot,
+                { transform: [{ translateX: anim.x }, { translateY: anim.y }] },
+              ]}
+            />
+          ) : null}
+        </View>
+
+        {/* 바닥칸 */}
+        <View style={[styles.ladderNames, { width: boardW }]}>
+          {players.map((id, c) => {
+            const isBombRevealed = [...revealed].some(
+              (start) => path(start).endCol === c && c === bombCol,
+            );
+            const anyReached = [...revealed].some(
+              (start) => path(start).endCol === c,
+            );
+            return (
+              <View key={id} style={[styles.ladderSlot, { width: COL_W }]}>
+                <Text
+                  style={[
+                    styles.ladderSlotText,
+                    isBombRevealed && styles.ladderSlotBomb,
+                  ]}
+                >
+                  {anyReached ? (c === bombCol ? '꽝' : '안전') : '?'}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+    </Screen>
+  );
+}
+
+/** 숫자 폭탄: 1~100 숨은 숫자. 돌아가며 범위 안 숫자를 골라 좁히다 정확히 집으면 당첨 */
+function NumberBombGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: (loserId: PersonId) => void;
+}) {
+  const bomb = React.useMemo(() => randomInt(Math.random, 1, 100), []);
+  const [lo, setLo] = React.useState(1);
+  const [hi, setHi] = React.useState(100);
+  const [idx, setIdx] = React.useState(0);
+  const [guess, setGuess] = React.useState(Math.round((1 + 100) / 2));
+  const current = players[idx];
+
+  const clamp = (n: number) => Math.max(lo, Math.min(hi, n));
+
+  const pick = () => {
+    if (guess === bomb) {
+      onDone(current);
+      return;
+    }
+    let nlo = lo;
+    let nhi = hi;
+    if (guess < bomb) nlo = guess + 1;
+    else nhi = guess - 1;
+    setLo(nlo);
+    setHi(nhi);
+    setGuess(Math.round((nlo + nhi) / 2));
+    setIdx((idx + 1) % players.length);
+  };
+
+  return (
+    <Screen scroll={false}>
+      <View style={styles.turnWrap}>
+        <Text style={styles.turnKicker}>
+          {lo} ~ {hi} 중 하나
+        </Text>
+        <Text style={styles.turnName}>{nameOf(current)}</Text>
+        <Text style={styles.rollNumber}>{guess}</Text>
+        <View style={styles.stepRow}>
+          <Pressable style={styles.stepBtn} onPress={() => setGuess(clamp(guess - 10))}>
+            <Text style={styles.stepBtnText}>−10</Text>
+          </Pressable>
+          <Pressable style={styles.stepBtn} onPress={() => setGuess(clamp(guess - 1))}>
+            <Text style={styles.stepBtnText}>−1</Text>
+          </Pressable>
+          <Pressable style={styles.stepBtn} onPress={() => setGuess(clamp(guess + 1))}>
+            <Text style={styles.stepBtnText}>+1</Text>
+          </Pressable>
+          <Pressable style={styles.stepBtn} onPress={() => setGuess(clamp(guess + 10))}>
+            <Text style={styles.stepBtnText}>+10</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.turnHint}>범위 안에서 골라요. 숨은 숫자를 집으면 당첨!</Text>
+      </View>
+      <View style={{ padding: spacing.lg, paddingBottom: spacing.xl }}>
+        <PrimaryButton label={`${guess} 선택`} onPress={pick} />
+      </View>
+    </Screen>
+  );
+}
+
+/** 연타 대결: 각자 5초간 최대한 많이 탭. 가장 적게 누른 사람이 당첨 */
+const TAP_SECONDS = 5;
+function TapFrenzyGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: OnDone;
+}) {
+  const [idx, setIdx] = React.useState(0);
+  const [scores, setScores] = React.useState<{ id: PersonId; taps: number }[]>([]);
+  const [state, setState] = React.useState<'ready' | 'running' | 'reveal'>('ready');
+  const [count, setCount] = React.useState(0);
+  const [left, setLeft] = React.useState(TAP_SECONDS);
+  const timerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const current = players[idx];
+  const isLast = idx + 1 >= players.length;
+
+  React.useEffect(
+    () => () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    },
+    [],
+  );
+
+  const start = () => {
+    setCount(0);
+    setLeft(TAP_SECONDS);
+    setState('running');
+    const startedAt = Date.now();
+    timerRef.current = setInterval(() => {
+      const remain = TAP_SECONDS - Math.floor((Date.now() - startedAt) / 1000);
+      if (remain <= 0) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        setLeft(0);
+        setState('reveal');
+      } else {
+        setLeft(remain);
+      }
+    }, 100);
+  };
+
+  const tap = () => {
+    if (state === 'running') setCount((c) => c + 1);
+  };
+
+  const finalCount = count;
+  const next = () => {
+    const nextScores = [...scores, { id: current, taps: finalCount }];
+    if (isLast) {
+      const loserId = lowestScoreIds(
+        nextScores.map((s) => ({ id: s.id, score: s.taps })),
+      )[0];
+      const records: BetRecord[] = [...nextScores]
+        .sort((a, b) => b.taps - a.taps)
+        .map((r) => ({ id: r.id, text: `${r.taps}번` }));
+      onDone(loserId, records);
+    } else {
+      setScores(nextScores);
+      setIdx(idx + 1);
+      setState('ready');
+    }
+  };
+
+  if (state === 'reveal') {
+    return (
+      <TurnReveal
+        kicker={`${idx + 1} / ${players.length}`}
+        name={nameOf(current)}
+        big={`${finalCount}번`}
+        isLast={isLast}
+        onNext={next}
+      />
+    );
+  }
+
+  if (state === 'ready') {
+    return (
+      <Screen
+        scroll={false}
+        footer={<PrimaryButton label={`${nameOf(current)} 시작`} onPress={start} />}
+      >
+        <View style={styles.turnWrap}>
+          <Text style={styles.turnKicker}>
+            {idx + 1} / {players.length}
+          </Text>
+          <Text style={styles.turnName}>{nameOf(current)}</Text>
+          <Text style={styles.turnHint}>{TAP_SECONDS}초 동안 최대한 많이 눌러요</Text>
+        </View>
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen scroll={false}>
+      <Pressable style={styles.tapArea} onPress={tap}>
+        <Text style={styles.turnKicker}>{left}초</Text>
+        <Text style={styles.tapCount}>{count}</Text>
+        <Text style={styles.turnHint}>계속 눌러요!</Text>
+      </Pressable>
+    </Screen>
+  );
+}
+
+/** 지뢰밟기: 돌아가며 칸을 연다. 지뢰를 밟은 사람이 당첨 */
+function MineFieldGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: (loserId: PersonId) => void;
+}) {
+  const tiles = players.length + 2;
+  const mine = React.useMemo(() => randomInt(Math.random, 0, tiles - 1), [tiles]);
+  const [opened, setOpened] = React.useState<Set<number>>(new Set());
+  const [turn, setTurn] = React.useState(0);
+  const [done, setDone] = React.useState(false);
+  const current = players[turn % players.length];
+
+  const open = (i: number) => {
+    if (done || opened.has(i)) return;
+    const next = new Set(opened).add(i);
+    setOpened(next);
+    if (i === mine) {
+      setDone(true);
+      setTimeout(() => onDone(current), 700);
+    } else {
+      setTurn((t) => t + 1);
+    }
+  };
+
+  return (
+    <Screen>
+      <Card>
+        <Text style={styles.playTitle}>지뢰밟기</Text>
+        <Text style={styles.playSub}>
+          {done ? '지뢰!' : `${nameOf(current)} 차례 · 칸을 하나 열어요`}
+        </Text>
+      </Card>
+      <View style={styles.mineGrid}>
+        {Array.from({ length: tiles }, (_, i) => {
+          const isOpen = opened.has(i);
+          const isMine = i === mine;
+          return (
+            <Pressable
+              key={i}
+              onPress={() => open(i)}
+              style={({ pressed }) => [
+                styles.mineTile,
+                isOpen && (isMine ? styles.mineTileBomb : styles.mineTileSafe),
+                pressed && !isOpen && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={[styles.mineTileText, isOpen && isMine && styles.mineTileBombText]}>
+                {isOpen ? (isMine ? '지뢰' : '안전') : '?'}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={styles.playHint}>돌아가며 한 칸씩 — 지뢰를 피해요</Text>
+    </Screen>
+  );
+}
+
 const styles = StyleSheet.create({
   betTitle: { fontSize: fontSize.lg, fontWeight: '800', color: colors.text },
   betSub: { fontSize: fontSize.sm, color: colors.subtext },
   gameLabel: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
   gameDesc: { fontSize: fontSize.sm, color: colors.subtext, marginTop: 2 },
+
+  // 사다리
+  ladderNames: { flexDirection: 'row' },
+  ladderName: { alignItems: 'center', paddingVertical: spacing.sm },
+  ladderNameText: { fontSize: fontSize.sm, fontWeight: '800', color: colors.text },
+  ladderNameDone: { color: colors.subtext },
+  ladderCol: {
+    position: 'absolute',
+    top: 0,
+    width: 2,
+    backgroundColor: colors.border,
+  },
+  ladderRung: { position: 'absolute', height: 3, backgroundColor: colors.text },
+  ladderDot: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    marginLeft: -8,
+    marginTop: -8,
+    backgroundColor: colors.primary,
+  },
+  ladderSlot: { alignItems: 'center', paddingVertical: spacing.sm },
+  ladderSlotText: { fontSize: fontSize.sm, fontWeight: '800', color: colors.subtext },
+  ladderSlotBomb: { color: colors.danger },
+
+  // 숫자 폭탄 스텝 버튼
+  stepRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  stepBtn: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: colors.cardAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  stepBtnText: { fontSize: fontSize.md, fontWeight: '800', color: colors.text },
+
+  // 연타
+  tapArea: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+  },
+  tapCount: { fontSize: 72, fontWeight: '800', color: colors.text },
+
+  // 지뢰
+  mineGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    justifyContent: 'center',
+  },
+  mineTile: {
+    width: 80,
+    height: 80,
+    borderRadius: radius.md,
+    backgroundColor: colors.cardAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mineTileSafe: { backgroundColor: colors.card },
+  mineTileBomb: { backgroundColor: colors.dangerDim, borderColor: colors.danger },
+  mineTileText: { fontSize: fontSize.md, fontWeight: '800', color: colors.subtext },
+  mineTileBombText: { color: colors.danger },
   radio: {
     width: 26,
     height: 26,
