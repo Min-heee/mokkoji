@@ -15,6 +15,7 @@ import { useSessions } from '@/state/SessionsContext';
 import {
   AmountField,
   Card,
+  Chip,
   EmptyState,
   PrimaryButton,
   Row,
@@ -38,7 +39,10 @@ export default function BetScreen() {
   const item = itemId ? round?.items.find((it) => it.id === itemId) : undefined;
 
   const [phase, setPhase] = React.useState<Phase>('pick');
+  /** 게임으로 뽑을지, 밖에서 정한 결과를 직접 고를지 */
+  const [method, setMethod] = React.useState<'game' | 'manual'>('game');
   const [game, setGame] = React.useState<BetGameId>('draw');
+  const [manualLoser, setManualLoser] = React.useState<PersonId | null>(null);
   const [loserId, setLoserId] = React.useState<PersonId | null>(null);
   // 차수 내기의 몰빵 금액 (기본: 차수 전액). 항목 내기는 항목 금액 고정.
   const [betAmount, setBetAmount] = React.useState<number>(() =>
@@ -123,10 +127,18 @@ export default function BetScreen() {
       {phase === 'pick' ? (
         <Screen
           footer={
-            <PrimaryButton
-              label="시작하기"
-              onPress={() => setPhase('play')}
-            />
+            method === 'game' ? (
+              <PrimaryButton label="시작하기" onPress={() => setPhase('play')} />
+            ) : (
+              <PrimaryButton
+                label="정했어요"
+                disabled={!manualLoser}
+                onPress={() => {
+                  setLoserId(manualLoser);
+                  setPhase('result');
+                }}
+              />
+            )
           }
         >
           <Card>
@@ -158,20 +170,55 @@ export default function BetScreen() {
             </>
           )}
 
-          <SectionTitle>게임 고르기</SectionTitle>
-          {BET_GAMES.map((g) => (
-            <Card key={g.id} onPress={() => setGame(g.id)}>
-              <Row style={{ justifyContent: 'space-between' }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.gameLabel}>{g.label}</Text>
-                  <Text style={styles.gameDesc}>{g.desc}</Text>
-                </View>
-                <View style={[styles.radio, game === g.id && styles.radioOn]}>
-                  {game === g.id ? <Text style={styles.radioDot}>✓</Text> : null}
-                </View>
+          <SectionTitle>정하는 방법</SectionTitle>
+          <Row>
+            <Chip
+              label="게임으로"
+              selected={method === 'game'}
+              onPress={() => setMethod('game')}
+            />
+            <Chip
+              label="직접 고르기"
+              selected={method === 'manual'}
+              onPress={() => setMethod('manual')}
+            />
+          </Row>
+
+          {method === 'game' ? (
+            <>
+              <SectionTitle>게임 고르기</SectionTitle>
+              {BET_GAMES.map((g) => (
+                <Card key={g.id} onPress={() => setGame(g.id)}>
+                  <Row style={{ justifyContent: 'space-between' }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.gameLabel}>{g.label}</Text>
+                      <Text style={styles.gameDesc}>{g.desc}</Text>
+                    </View>
+                    <View style={[styles.radio, game === g.id && styles.radioOn]}>
+                      {game === g.id ? <Text style={styles.radioDot}>✓</Text> : null}
+                    </View>
+                  </Row>
+                </Card>
+              ))}
+            </>
+          ) : (
+            <>
+              <SectionTitle>누가 걸렸어요?</SectionTitle>
+              <Row>
+                {players.map((pid) => (
+                  <Chip
+                    key={pid}
+                    label={nameOf(pid)}
+                    selected={manualLoser === pid}
+                    onPress={() => setManualLoser(pid)}
+                  />
+                ))}
               </Row>
-            </Card>
-          ))}
+              <Text style={styles.betSub}>
+                사다리·가위바위보처럼 밖에서 정했으면 진 사람만 골라 정산에 반영해요
+              </Text>
+            </>
+          )}
         </Screen>
       ) : null}
 
