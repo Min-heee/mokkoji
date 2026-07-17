@@ -4,7 +4,7 @@
  * 차수 전체든 특정 항목이든 붙일 수 있고, 어떤 게임이든 이 로직을 공유한다.
  */
 
-export type BetGameId = 'draw' | 'bomb';
+export type BetGameId = 'draw' | 'bomb' | 'roulette' | 'timer' | 'reaction';
 
 export interface BetGameInfo {
   id: BetGameId;
@@ -14,6 +14,11 @@ export interface BetGameInfo {
 
 export const BET_GAMES: BetGameInfo[] = [
   {
+    id: 'roulette',
+    label: '룰렛',
+    desc: '돌림판이 돌다 멈춘 사람이 당첨',
+  },
+  {
     id: 'draw',
     label: '제비뽑기',
     desc: '카드를 뒤집어 꽝을 뽑은 사람이 당첨',
@@ -22,6 +27,16 @@ export const BET_GAMES: BetGameInfo[] = [
     id: 'bomb',
     label: '폭탄 돌리기',
     desc: '돌리다 터질 때 들고 있던 사람이 당첨',
+  },
+  {
+    id: 'timer',
+    label: '10초 맞히기',
+    desc: '10초를 가장 못 맞춘 사람이 당첨',
+  },
+  {
+    id: 'reaction',
+    label: '반응 속도',
+    desc: '신호에 가장 느리게 누른 사람이 당첨',
   },
 ];
 
@@ -56,4 +71,31 @@ export function randomBombDurationMs(
   const lo = Math.min(minMs, maxMs);
   const hi = Math.max(minMs, maxMs);
   return Math.floor(lo + rng() * (hi - lo));
+}
+
+/** 반응속도 게임에서 '지금!' 신호가 뜨기까지의 랜덤 대기 시간(ms) */
+export function randomReactionDelayMs(
+  rng: () => number = Math.random,
+  minMs = 1500,
+  maxMs = 4500,
+): number {
+  const lo = Math.min(minMs, maxMs);
+  const hi = Math.max(minMs, maxMs);
+  return Math.floor(lo + rng() * (hi - lo));
+}
+
+/**
+ * 여러 판(각자 한 번씩)을 돌린 뒤 점수가 가장 나쁜(큰) 사람이 당첨.
+ * 10초 맞히기(오차)·반응속도(느린 ms) 등 턴제 게임의 공통 판정.
+ * 동점이면 먼저 나온 사람. 비어 있으면 null.
+ */
+export function loserByHighestScore(
+  scores: { id: string; score: number }[],
+): string | null {
+  if (scores.length === 0) return null;
+  let worst = scores[0];
+  for (const s of scores) {
+    if (s.score > worst.score) worst = s;
+  }
+  return worst.id;
 }

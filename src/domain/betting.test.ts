@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  loserByHighestScore,
   mulberry32,
   pickRandomLoser,
   randomBombDurationMs,
+  randomReactionDelayMs,
 } from './betting';
 
 describe('pickRandomLoser', () => {
@@ -65,5 +67,42 @@ describe('randomBombDurationMs', () => {
   it('min/max가 뒤집혀 들어와도 안전하다', () => {
     const d = randomBombDurationMs(() => 0.5, 12000, 3000);
     assert.ok(d >= 3000 && d < 12000);
+  });
+});
+
+describe('randomReactionDelayMs', () => {
+  it('지정 범위 안에서만 나온다', () => {
+    const rng = mulberry32(5);
+    for (let i = 0; i < 200; i += 1) {
+      const d = randomReactionDelayMs(rng, 1500, 4500);
+      assert.ok(d >= 1500 && d < 4500, `범위 밖: ${d}`);
+    }
+  });
+});
+
+describe('loserByHighestScore', () => {
+  it('점수가 가장 큰(나쁜) 사람이 당첨', () => {
+    assert.equal(
+      loserByHighestScore([
+        { id: 'a', score: 120 },
+        { id: 'b', score: 800 },
+        { id: 'c', score: 300 },
+      ]),
+      'b',
+    );
+  });
+
+  it('동점이면 먼저 나온 사람', () => {
+    assert.equal(
+      loserByHighestScore([
+        { id: 'a', score: 500 },
+        { id: 'b', score: 500 },
+      ]),
+      'a',
+    );
+  });
+
+  it('비어 있으면 null', () => {
+    assert.equal(loserByHighestScore([]), null);
   });
 });

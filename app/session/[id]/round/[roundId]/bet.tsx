@@ -4,8 +4,10 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   BET_GAMES,
+  loserByHighestScore,
   pickRandomLoser,
   randomBombDurationMs,
+  randomReactionDelayMs,
   type BetGameId,
 } from '@/domain/betting';
 import { currencyInfo, formatMoney } from '@/domain/currency';
@@ -222,27 +224,29 @@ export default function BetScreen() {
         </Screen>
       ) : null}
 
-      {phase === 'play' && game === 'draw' ? (
-        <DrawGame
-          players={players}
-          nameOf={nameOf}
-          onDone={(id) => {
-            setLoserId(id);
-            setPhase('result');
-          }}
-        />
-      ) : null}
-
-      {phase === 'play' && game === 'bomb' ? (
-        <BombGame
-          players={players}
-          nameOf={nameOf}
-          onDone={(id) => {
-            setLoserId(id);
-            setPhase('result');
-          }}
-        />
-      ) : null}
+      {phase === 'play'
+        ? (() => {
+            const onDone = (id: PersonId) => {
+              setLoserId(id);
+              setPhase('result');
+            };
+            const props = { players, nameOf, onDone };
+            switch (game) {
+              case 'draw':
+                return <DrawGame {...props} />;
+              case 'bomb':
+                return <BombGame {...props} />;
+              case 'roulette':
+                return <RouletteGame {...props} />;
+              case 'timer':
+                return <TenSecondGame {...props} />;
+              case 'reaction':
+                return <ReactionGame {...props} />;
+              default:
+                return null;
+            }
+          })()
+        : null}
 
       {phase === 'result' ? (
         <Screen
@@ -375,6 +379,218 @@ function BombGame({
   );
 }
 
+/** 룰렛: 하이라이트가 이름들 사이를 돌다 점점 느려지며 멈춘 사람이 당첨 */
+function RouletteGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: (loserId: PersonId) => void;
+}) {
+  const loser = React.useMemo(() => pickRandomLoser(players)!, [players]);
+  const [highlight, setHighlight] = React.useState<PersonId | null>(null);
+  const [done, setDone] = React.useState(false);
+
+  React.useEffect(() => {
+    const loserIdx = players.indexOf(loser);
+    const totalSteps = players.length * 3 + loserIdx; // 3바퀴 돌고 당첨자에 멈춤
+    let step = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      setHighlight(players[step % players.length]);
+      if (step >= totalSteps) {
+        setDone(true);
+        timer = setTimeout(() => onDone(loser), 700);
+        return;
+      }
+      const progress = step / totalSteps;
+      const delay = 55 + progress * progress * 340; // 뒤로 갈수록 감속
+      step += 1;
+      timer = setTimeout(tick, delay);
+    };
+    tick();
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <Screen>
+      <Card>
+        <Text style={styles.playTitle}>룰렛</Text>
+        <Text style={styles.playSub}>
+          {done ? '멈췄어요!' : '돌림판이 돌아가는 중...'}
+        </Text>
+      </Card>
+      <View style={styles.tileGrid}>
+        {players.map((pid) => {
+          const on = highlight === pid;
+          return (
+            <View
+              key={pid}
+              style={[
+                styles.tile,
+                on && styles.tileOn,
+                done && on && styles.tileLoser,
+              ]}
+            >
+              <Text style={[styles.tileText, on && styles.tileTextOn]}>
+                {nameOf(pid)}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    </Screen>
+  );
+}
+
+/** 10초 맞히기: 각자 안 보고 10초에 멈추기. 가장 못 맞춘(오차 큰) 사람이 당첨 */
+function TenSecondGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: (loserId: PersonId) => void;
+}) {
+  const [idx, setIdx] = React.useState(0);
+  const [scores, setScores] = React.useState<{ id: PersonId; score: number }[]>([]);
+  const [running, setRunning] = React.useState(false);
+  const startRef = React.useRef(0);
+  const current = players[idx];
+
+  const start = () => {
+    startRef.current = Date.now();
+    setRunning(true);
+  };
+
+  const stop = () => {
+    const err = Math.abs(Date.now() - startRef.current - 10000);
+    const next = [...scores, { id: current, score: err }];
+    setRunning(false);
+    if (idx + 1 >= players.length) {
+      const loser = loserByHighestScore(next)!;
+      setScores(next);
+      setTimeout(() => onDone(loser), 400);
+    } else {
+      setScores(next);
+      setIdx(idx + 1);
+    }
+  };
+
+  return (
+    <Screen
+      scroll={false}
+      footer={
+        running ? (
+          <PrimaryButton label="멈춰!" onPress={stop} />
+        ) : (
+          <PrimaryButton label={`${nameOf(current)} 시작`} onPress={start} />
+        )
+      }
+    >
+      <View style={styles.turnWrap}>
+        <Text style={styles.turnKicker}>
+          {idx + 1} / {players.length}
+        </Text>
+        <Text style={styles.turnName}>{nameOf(current)}</Text>
+        <Text style={styles.turnHint}>
+          {running
+            ? '지금부터 10초! 화면 안 보고 감으로 멈춰요'
+            : '시작을 누르고 속으로 10초를 세요'}
+        </Text>
+      </View>
+    </Screen>
+  );
+}
+
+/** 반응 속도: 신호가 뜨면 탭. 가장 느린(부정출발 포함) 사람이 당첨 */
+function ReactionGame({
+  players,
+  nameOf,
+  onDone,
+}: {
+  players: PersonId[];
+  nameOf: (id: PersonId) => string;
+  onDone: (loserId: PersonId) => void;
+}) {
+  const [idx, setIdx] = React.useState(0);
+  const [scores, setScores] = React.useState<{ id: PersonId; score: number }[]>([]);
+  const [state, setState] = React.useState<'idle' | 'waiting' | 'go'>('idle');
+  const goAtRef = React.useRef(0);
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const current = players[idx];
+
+  React.useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  const begin = () => {
+    setState('waiting');
+    timerRef.current = setTimeout(() => {
+      goAtRef.current = Date.now();
+      setState('go');
+    }, randomReactionDelayMs());
+  };
+
+  const finishTurn = (score: number) => {
+    const next = [...scores, { id: current, score }];
+    setState('idle');
+    if (idx + 1 >= players.length) {
+      const loser = loserByHighestScore(next)!;
+      setScores(next);
+      setTimeout(() => onDone(loser), 400);
+    } else {
+      setScores(next);
+      setIdx(idx + 1);
+    }
+  };
+
+  const tap = () => {
+    if (state === 'waiting') {
+      // 부정출발 — 큰 페널티
+      if (timerRef.current) clearTimeout(timerRef.current);
+      finishTurn(99999);
+    } else if (state === 'go') {
+      finishTurn(Date.now() - goAtRef.current);
+    }
+  };
+
+  return (
+    <Screen
+      scroll={false}
+      footer={
+        state === 'idle' ? (
+          <PrimaryButton label={`${nameOf(current)} 준비`} onPress={begin} />
+        ) : undefined
+      }
+    >
+      <Pressable
+        style={[styles.reactArea, state === 'go' && styles.reactAreaGo]}
+        onPress={state === 'idle' ? undefined : tap}
+        disabled={state === 'idle'}
+      >
+        <Text style={styles.turnKicker}>
+          {idx + 1} / {players.length} · {nameOf(current)}
+        </Text>
+        <Text style={[styles.reactText, state === 'go' && styles.reactTextGo]}>
+          {state === 'idle'
+            ? '준비되면 아래 버튼을 눌러요'
+            : state === 'waiting'
+              ? '기다려요...'
+              : '지금 눌러!'}
+        </Text>
+      </Pressable>
+    </Screen>
+  );
+}
+
 const styles = StyleSheet.create({
   betTitle: { fontSize: fontSize.lg, fontWeight: '800', color: colors.text },
   betSub: { fontSize: fontSize.sm, color: colors.subtext },
@@ -400,6 +616,63 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.sm,
   },
+
+  // 룰렛 타일
+  tileGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    justifyContent: 'center',
+  },
+  tile: {
+    minWidth: 84,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+  },
+  tileOn: { backgroundColor: colors.primary, borderColor: colors.primary },
+  tileLoser: { backgroundColor: colors.danger, borderColor: colors.danger },
+  tileText: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
+  tileTextOn: { color: colors.onPrimary },
+
+  // 턴제(10초·반응) 공통
+  turnWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.md,
+  },
+  turnKicker: {
+    fontSize: fontSize.sm,
+    fontWeight: '800',
+    color: colors.subtext,
+    letterSpacing: 2,
+  },
+  turnName: { fontSize: fontSize.xl, fontWeight: '800', color: colors.text },
+  turnHint: {
+    fontSize: fontSize.md,
+    color: colors.subtext,
+    textAlign: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  reactArea: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.lg,
+    borderRadius: radius.lg,
+    margin: spacing.lg,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  reactAreaGo: { backgroundColor: colors.primary, borderColor: colors.primary },
+  reactText: { fontSize: fontSize.xl, fontWeight: '800', color: colors.text },
+  reactTextGo: { color: colors.onPrimary },
   cardGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
