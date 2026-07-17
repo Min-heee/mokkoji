@@ -757,8 +757,16 @@ function LastDigitGame({
   const countRef = React.useRef(0);
   const [d1, setD1] = React.useState(0);
   const [d2, setD2] = React.useState(0);
+  const tiebreaksRef = React.useRef(0);
   const current = active[idx];
   const isLastPlayer = idx + 1 >= active.length;
+
+  const buildRecords = (
+    rows: { id: PersonId; score: number; d1: number; d2: number }[],
+  ): BetRecord[] =>
+    [...rows]
+      .sort((a, b) => a.score - b.score)
+      .map((r) => ({ id: r.id, text: `${r.d1} × ${r.d2} = ${r.score}` }));
 
   // 타이머는 roll 상태에서만 빠르게 오른다
   React.useEffect(() => {
@@ -785,12 +793,13 @@ function LastDigitGame({
     if (isLastPlayer) {
       const lowest = lowestScoreIds(nextScores);
       if (lowest.length === 1) {
-        const records: BetRecord[] = [...nextScores]
-          .sort((a, b) => a.score - b.score)
-          .map((r) => ({ id: r.id, text: `${r.d1} × ${r.d2} = ${r.score}` }));
-        onDone(lowest[0], records);
+        onDone(lowest[0], buildRecords(nextScores));
+      } else if (tiebreaksRef.current >= 5) {
+        // 안전장치: 계속 동점이면 그 중 랜덤으로 (무한 재대결 방지)
+        onDone(pickRandomLoser(lowest)!, buildRecords(nextScores));
       } else {
         // 동점 최저 → 그 사람들끼리 재대결
+        tiebreaksRef.current += 1;
         setActive(lowest);
         setScores([]);
         setIdx(0);
