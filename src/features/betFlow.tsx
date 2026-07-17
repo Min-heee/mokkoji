@@ -1,6 +1,6 @@
 import { Stack } from 'expo-router';
 import React from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   BET_GAMES,
@@ -864,7 +864,15 @@ function LadderGame({
 
   const [revealed, setRevealed] = React.useState<Set<number>>(new Set());
   const [tracing, setTracing] = React.useState<number | null>(null);
-  const anim = React.useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const [dot, setDot] = React.useState<{ x: number; y: number } | null>(null);
+  const stepRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  React.useEffect(
+    () => () => {
+      if (stepRef.current) clearInterval(stepRef.current);
+    },
+    [],
+  );
 
   const colX = (c: number) => c * COL_W + COL_W / 2;
 
@@ -891,23 +899,22 @@ function LadderGame({
     if (tracing !== null || revealed.has(startCol)) return;
     const { pts, endCol } = path(startCol);
     setTracing(startCol);
-    anim.setValue(pts[0]);
-    const seq = pts
-      .slice(1)
-      .map((p) =>
-        Animated.timing(anim, {
-          toValue: p,
-          duration: 130,
-          useNativeDriver: false,
-        }),
-      );
-    Animated.sequence(seq).start(() => {
-      setRevealed((prev) => new Set(prev).add(startCol));
-      setTracing(null);
-      if (endCol === bombCol) {
-        setTimeout(() => onDone(players[loserCol]), 600);
+    setDot(pts[0]);
+    let i = 0;
+    stepRef.current = setInterval(() => {
+      i += 1;
+      if (i >= pts.length) {
+        if (stepRef.current) clearInterval(stepRef.current);
+        setDot(null);
+        setTracing(null);
+        setRevealed((prev) => new Set(prev).add(startCol));
+        if (endCol === bombCol) {
+          setTimeout(() => onDone(players[loserCol]), 600);
+        }
+        return;
       }
-    });
+      setDot(pts[i]);
+    }, 120);
   };
 
   const boardW = numCols * COL_W;
@@ -966,13 +973,8 @@ function LadderGame({
             ),
           )}
           {/* 움직이는 말 */}
-          {tracing !== null ? (
-            <Animated.View
-              style={[
-                styles.ladderDot,
-                { transform: [{ translateX: anim.x }, { translateY: anim.y }] },
-              ]}
-            />
+          {dot ? (
+            <View style={[styles.ladderDot, { left: dot.x, top: dot.y }]} />
           ) : null}
         </View>
 
