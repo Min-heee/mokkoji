@@ -365,17 +365,38 @@ function BombGame({
   const [holder, setHolder] = React.useState(0);
   const holderRef = React.useRef(0);
   holderRef.current = holder;
+  // 화면 들어오자마자 터지지 않도록 대기 → '시작'을 눌러야 심지에 불이 붙는다
+  const [started, setStarted] = React.useState(false);
 
   React.useEffect(() => {
+    if (!started) return;
     const duration = randomBombDurationMs();
     const timer = setTimeout(() => {
       onDone(players[holderRef.current % players.length]);
     }, duration);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [started]);
 
   const pass = () => setHolder((h) => (h + 1) % players.length);
+
+  if (!started) {
+    return (
+      <Screen
+        scroll={false}
+        footer={<PrimaryButton label="시작" onPress={() => setStarted(true)} />}
+      >
+        <View style={styles.bombWrap}>
+          <Text style={styles.bombKicker}>폭탄</Text>
+          <Text style={styles.bombHolder}>{nameOf(players[0])}</Text>
+          <Text style={styles.turnHint}>
+            시작을 누르면 심지에 불이 붙어요.{'\n'}
+            {nameOf(players[0])}님부터 들고, 터지기 전에 넘기세요
+          </Text>
+        </View>
+      </Screen>
+    );
+  }
 
   return (
     <Screen scroll={false}>
@@ -404,8 +425,11 @@ function RouletteGame({
   const loser = React.useMemo(() => pickRandomLoser(players)!, [players]);
   const [highlight, setHighlight] = React.useState<PersonId | null>(null);
   const [done, setDone] = React.useState(false);
+  // 화면 들어오자마자 돌지 않도록 대기 → '돌리기'를 눌러야 시작
+  const [started, setStarted] = React.useState(false);
 
   React.useEffect(() => {
+    if (!started) return;
     const loserIdx = players.indexOf(loser);
     const totalSteps = players.length * 3 + loserIdx; // 3바퀴 돌고 당첨자에 멈춤
     let step = 0;
@@ -425,14 +449,24 @@ function RouletteGame({
     tick();
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [started]);
 
   return (
-    <Screen>
+    <Screen
+      footer={
+        started ? undefined : (
+          <PrimaryButton label="돌리기" onPress={() => setStarted(true)} />
+        )
+      }
+    >
       <Card>
         <Text style={styles.playTitle}>룰렛</Text>
         <Text style={styles.playSub}>
-          {done ? '멈췄어요!' : '돌림판이 돌아가는 중...'}
+          {!started
+            ? '준비되면 돌리기를 눌러요'
+            : done
+              ? '멈췄어요!'
+              : '돌림판이 돌아가는 중...'}
         </Text>
       </Card>
       <View style={styles.tileGrid}>
