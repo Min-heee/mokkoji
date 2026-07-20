@@ -14,11 +14,17 @@ import { genId } from '@/domain/format';
 import type { Person, Round, Session } from '@/domain/types';
 import { loadSessions, saveSessions } from '@/storage/store';
 
+/** 새 모임 참가자 입력: 직접 입력(name만) 또는 친구 목록에서(friendId 포함) */
+export interface NewPersonInput {
+  name: string;
+  friendId?: string | null;
+}
+
 export interface SessionsApi {
   sessions: Session[];
   loading: boolean;
   getSession(id: string): Session | undefined;
-  createSession(title: string, peopleNames: string[]): Session;
+  createSession(title: string, people: NewPersonInput[]): Session;
   updateSession(id: string, updater: (session: Session) => Session): void;
   deleteSession(id: string): void;
   /** 기본값으로 새 차수를 만들어 세션에 추가하고 그 차수를 반환 */
@@ -121,11 +127,11 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createSession = useCallback(
-    (title: string, peopleNames: string[]): Session => {
-      const people: Person[] = peopleNames
-        .map((name) => name.trim())
-        .filter((name) => name.length > 0)
-        .map((name) => ({ id: genId('p'), name }));
+    (title: string, inputs: NewPersonInput[]): Session => {
+      const people: Person[] = inputs
+        .map((p) => ({ ...p, name: p.name.trim() }))
+        .filter((p) => p.name.length > 0)
+        .map((p) => ({ id: genId('p'), name: p.name, friendId: p.friendId ?? null }));
       const session: Session = {
         id: genId('s'),
         title: title.trim() || '새 모임',

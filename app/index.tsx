@@ -60,10 +60,17 @@ export default function HomeScreen() {
   return (
     <Screen
       footer={
-        <PrimaryButton
-          label="새 모임 만들기"
-          onPress={() => router.push('/session/new')}
-        />
+        <View style={styles.footerButtons}>
+          <PrimaryButton
+            label="새 모임 만들기"
+            onPress={() => router.push('/session/new')}
+          />
+          <PrimaryButton
+            label="친구 목록"
+            variant="ghost"
+            onPress={() => router.push('/friends')}
+          />
+        </View>
       }
     >
       {sessions.length === 0 ? (
@@ -109,6 +116,9 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
+  footerButtons: {
+    gap: 8,
+  },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,12 +1,14 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
+import { FriendsProvider } from '@/state/FriendsContext';
 import { SessionsProvider } from '@/state/SessionsContext';
 import { colors } from '@/ui/theme';
 
 export default function RootLayout() {
   return (
     <SessionsProvider>
+      <FriendsProvider>
       <StatusBar style="dark" />
       <Stack
         screenOptions={{
@@ -18,6 +20,8 @@ export default function RootLayout() {
         }}
       >
         <Stack.Screen name="index" options={{ title: '엔빵' }} />
+        <Stack.Screen name="friends/index" options={{ title: '친구' }} />
+        <Stack.Screen name="friends/[friendId]" options={{ title: '친구' }} />
         <Stack.Screen name="session/new" options={{ title: '새 모임' }} />
         <Stack.Screen name="session/[id]/index" options={{ title: '모임' }} />
         <Stack.Screen name="session/[id]/bet" options={{ title: '모임 내기' }} />
@@ -25,6 +29,7 @@ export default function RootLayout() {
         <Stack.Screen name="session/[id]/round/[roundId]/bet" options={{ title: '내기' }} />
         <Stack.Screen name="session/[id]/result" options={{ title: '정산 결과' }} />
       </Stack>
+      </FriendsProvider>
     </SessionsProvider>
   );
 }

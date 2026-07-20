@@ -2,7 +2,8 @@ import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { useSessions } from '@/state/SessionsContext';
+import { useFriends } from '@/state/FriendsContext';
+import { useSessions, type NewPersonInput } from '@/state/SessionsContext';
 import {
   Chip,
   PrimaryButton,
@@ -16,10 +17,18 @@ import { colors, fontSize } from '@/ui/theme';
 export default function NewSessionScreen() {
   const router = useRouter();
   const { createSession } = useSessions();
+  const { friends } = useFriends();
 
   const [title, setTitle] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [names, setNames] = useState<string[]>([]);
+  const [selectedFriendIds, setSelectedFriendIds] = useState<string[]>([]);
+
+  const toggleFriend = (id: string) => {
+    setSelectedFriendIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
 
   const addName = () => {
     const name = nameInput.trim();
@@ -41,8 +50,16 @@ export default function NewSessionScreen() {
   const effectiveNames =
     pendingName && !names.includes(pendingName) ? [...names, pendingName] : names;
 
+  // 친구 선택분(friendId 연결) + 직접 입력분. 이름이 겹쳐도 다른 사람일 수 있으니 그대로 둔다
+  const effectivePeople: NewPersonInput[] = [
+    ...friends
+      .filter((f) => selectedFriendIds.includes(f.id))
+      .map((f) => ({ name: f.name, friendId: f.id })),
+    ...effectiveNames.map((name) => ({ name })),
+  ];
+
   const create = () => {
-    const session = createSession(title, effectiveNames);
+    const session = createSession(title, effectivePeople);
     router.replace('/session/' + session.id);
   };
 
@@ -52,7 +69,7 @@ export default function NewSessionScreen() {
         <PrimaryButton
           label="모임 만들기"
           onPress={create}
-          disabled={effectiveNames.length < 2}
+          disabled={effectivePeople.length < 2}
         />
       }
     >
@@ -65,6 +82,23 @@ export default function NewSessionScreen() {
       />
 
       <SectionTitle>참가자</SectionTitle>
+
+      {friends.length > 0 ? (
+        <>
+          <SectionTitle>친구에서 추가</SectionTitle>
+          <Row>
+            {friends.map((f) => (
+              <Chip
+                key={f.id}
+                label={f.name}
+                selected={selectedFriendIds.includes(f.id)}
+                onPress={() => toggleFriend(f.id)}
+              />
+            ))}
+          </Row>
+        </>
+      ) : null}
+
       <Row>
         <View style={styles.nameField}>
           <TextField

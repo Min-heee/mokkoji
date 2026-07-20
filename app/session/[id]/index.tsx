@@ -3,9 +3,12 @@ import React, { useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatMoney } from '@/domain/currency';
+import type { Friend } from '@/domain/friends';
+import { addFriendPerson, addNamedPerson } from '@/domain/people';
 import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
-import { formatKrw, genId } from '@/domain/format';
+import { formatKrw } from '@/domain/format';
 import type { Round } from '@/domain/types';
+import { useFriends } from '@/state/FriendsContext';
 import { useSessions } from '@/state/SessionsContext';
 import {
   Card,
@@ -25,6 +28,7 @@ export default function SessionDetailScreen() {
   const id = typeof params.id === 'string' ? params.id : params.id?.[0] ?? '';
   const router = useRouter();
   const { loading, getSession, updateSession, addRound } = useSessions();
+  const { friends } = useFriends();
   const [newName, setNewName] = useState('');
 
   if (loading) {
@@ -52,17 +56,31 @@ export default function SessionDetailScreen() {
     0,
   );
 
+  // 이름이 아니라 friendId로만 거른다 — 새 모임 화면처럼
+  // 이름이 같아도 다른 친구면 추가할 수 있어야 한다
+  const linkedFriendIds = new Set(
+    session.people.map((p) => p.friendId).filter((v): v is string => !!v),
+  );
+  const availableFriends = friends.filter((f) => !linkedFriendIds.has(f.id));
+
+  const handleAddFriendPerson = (friend: Friend) => {
+    // 중복 가드는 업데이터 안(addFriendPerson)에 있어 더블탭에도 안전하다
+    updateSession(session.id, (s) => addFriendPerson(s, friend));
+  };
+
   const handleAddPerson = () => {
     const name = newName.trim();
     if (!name) return;
     if (session.people.some((p) => p.name === name)) {
-      setNewName('');
+      // 조용히 입력만 지우면 추가된 것처럼 보이므로 명시적으로 알린다
+      Alert.alert(
+        '같은 이름이 있어요',
+        `'${name}' 참가자가 이미 있어요. 다른 사람이라면 구분되는 이름(예: ${name}2)으로 추가해 주세요.`,
+      );
       return;
     }
-    updateSession(session.id, (s) => ({
-      ...s,
-      people: [...s.people, { id: genId('p'), name }],
-    }));
+    // 중복 가드는 업데이터 안(addNamedPerson)에도 있어 이중 submit에 안전하다
+    updateSession(session.id, (s) => addNamedPerson(s, name));
     setNewName('');
   };
 
@@ -117,6 +135,21 @@ export default function SessionDetailScreen() {
             <Chip key={person.id} label={person.name} selected={false} />
           ))}
         </Row>
+        {availableFriends.length > 0 && (
+          <>
+            <Text style={styles.friendPickLabel}>친구에서 추가</Text>
+            <Row>
+              {availableFriends.map((friend) => (
+                <Chip
+                  key={friend.id}
+                  label={friend.name}
+                  selected={false}
+                  onPress={() => handleAddFriendPerson(friend)}
+                />
+              ))}
+            </Row>
+          </>
+        )}
         <TextField
           label="이름"
           value={newName}
@@ -241,6 +274,12 @@ export default function SessionDetailScreen() {
 }
 
 const styles = StyleSheet.create({
+  friendPickLabel: {
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+    color: colors.subtext,
+    marginTop: spacing.sm,
+  },
   roundRow: {
     flexDirection: 'row',
     alignItems: 'center',

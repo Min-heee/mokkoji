@@ -3,6 +3,8 @@ export type PersonId = string;
 export interface Person {
   id: PersonId;
   name: string;
+  /** 친구 목록에서 추가된 경우 그 친구의 id (직접 입력한 사람은 null) */
+  friendId?: string | null;
 }
 
 export type RoundKind =
