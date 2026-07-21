@@ -1,6 +1,6 @@
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatMoney } from '@/domain/currency';
 import type { Friend } from '@/domain/friends';
@@ -10,6 +10,7 @@ import { formatKrw } from '@/domain/format';
 import type { Round } from '@/domain/types';
 import { useFriends } from '@/state/FriendsContext';
 import { useSessions } from '@/state/SessionsContext';
+import { alertDialog, confirmDialog } from '@/ui/dialogs';
 import {
   Card,
   Chip,
@@ -73,7 +74,7 @@ export default function SessionDetailScreen() {
     if (!name) return;
     if (session.people.some((p) => p.name === name)) {
       // 조용히 입력만 지우면 추가된 것처럼 보이므로 명시적으로 알린다
-      Alert.alert(
+      alertDialog(
         '같은 이름이 있어요',
         `'${name}' 참가자가 이미 있어요. 다른 사람이라면 구분되는 이름(예: ${name}2)으로 추가해 주세요.`,
       );
@@ -92,18 +93,16 @@ export default function SessionDetailScreen() {
   };
 
   const handleDeleteRound = (round: Round) => {
-    Alert.alert('차수 삭제', `'${round.title}' 차수를 삭제할까요?`, [
-      { text: '취소', style: 'cancel' },
-      {
-        text: '삭제',
-        style: 'destructive',
-        onPress: () =>
-          updateSession(session.id, (s) => ({
-            ...s,
-            rounds: s.rounds.filter((r) => r.id !== round.id),
-          })),
-      },
-    ]);
+    confirmDialog(
+      '차수 삭제',
+      `'${round.title}' 차수를 삭제할까요?`,
+      () =>
+        updateSession(session.id, (s) => ({
+          ...s,
+          rounds: s.rounds.filter((r) => r.id !== round.id),
+        })),
+      { confirmText: '삭제', destructive: true },
+    );
   };
 
   const cancelRoundBet = (round: Round) => {

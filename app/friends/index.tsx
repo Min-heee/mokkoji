@@ -1,10 +1,11 @@
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatKrw } from '@/domain/format';
 import { friendBalance, type Friend } from '@/domain/friends';
 import { useFriends } from '@/state/FriendsContext';
+import { confirmDialog } from '@/ui/dialogs';
 import {
   Card,
   EmptyState,
@@ -34,17 +35,11 @@ export default function FriendsScreen() {
   };
 
   const confirmDelete = (friend: Friend) => {
-    Alert.alert(
+    confirmDialog(
       '친구 삭제',
       `'${friend.name}' 친구와 주고받을 돈 기록이 함께 지워져요. 삭제할까요?`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: () => removeFriend(friend.id),
-        },
-      ],
+      () => removeFriend(friend.id),
+      { confirmText: '삭제', destructive: true },
     );
   };
 

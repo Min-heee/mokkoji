@@ -1,10 +1,11 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import React from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatKrw } from '@/domain/format';
 import { friendBalance, type LedgerEntry, type LedgerType } from '@/domain/friends';
 import { useFriends } from '@/state/FriendsContext';
+import { confirmDialog } from '@/ui/dialogs';
 import {
   AmountField,
   Card,
@@ -57,17 +58,11 @@ export default function FriendDetailScreen() {
   };
 
   const confirmRemoveEntry = (entry: LedgerEntry) => {
-    Alert.alert(
+    confirmDialog(
       '기록 삭제',
       `'${entry.memo || '기록'}' ${formatKrw(entry.amount)} 기록을 삭제할까요?`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: () => removeEntry(entry.id),
-        },
-      ],
+      () => removeEntry(entry.id),
+      { confirmText: '삭제', destructive: true },
     );
   };
 

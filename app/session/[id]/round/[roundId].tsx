@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 
 import {
@@ -15,6 +15,7 @@ import type { Item, PersonId, Round, RoundKind, RoundMode } from '@/domain/types
 import { formatFxTimestamp } from '@/services/fxRates';
 import { useSessions } from '@/state/SessionsContext';
 import { useFxRates } from '@/state/useFxRates';
+import { confirmDialog } from '@/ui/dialogs';
 import {
   AmountField,
   Card,
@@ -142,13 +143,11 @@ export default function RoundEditScreen() {
       applyCurrency(code);
       return;
     }
-    Alert.alert(
+    confirmDialog(
       '통화 변경',
       `통화를 ${currencyInfo(code).label}(${code})로 바꾸면 입력한 환율과 카드 실청구액이 초기화돼요. 바꿀까요?`,
-      [
-        { text: '취소', style: 'cancel' },
-        { text: '변경', style: 'destructive', onPress: () => applyCurrency(code) },
-      ],
+      () => applyCurrency(code),
+      { confirmText: '변경', destructive: true },
     );
   };
 
@@ -230,23 +229,17 @@ export default function RoundEditScreen() {
   };
 
   const confirmDeleteRound = () => {
-    Alert.alert(
+    confirmDialog(
       '차수 삭제',
       `'${round.title}' 차수를 삭제할까요?`,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: () => {
-            updateSession(sessionId, (s) => ({
-              ...s,
-              rounds: s.rounds.filter((r) => r.id !== roundId),
-            }));
-            router.back();
-          },
-        },
-      ],
+      () => {
+        updateSession(sessionId, (s) => ({
+          ...s,
+          rounds: s.rounds.filter((r) => r.id !== roundId),
+        }));
+        router.back();
+      },
+      { confirmText: '삭제', destructive: true },
     );
   };
 

@@ -1,7 +1,7 @@
 import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams } from 'expo-router';
 import React, { useMemo } from 'react';
-import { Alert, Share, StyleSheet, Text, View } from 'react-native';
+import { Share, StyleSheet, Text, View } from 'react-native';
 
 import { BASE_CURRENCY, formatMoney } from '@/domain/currency';
 import { formatKrw } from '@/domain/format';
@@ -9,6 +9,7 @@ import { computeSettlement } from '@/domain/settlement';
 import { buildShareText } from '@/domain/shareText';
 import type { PersonId, SessionSettings } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
+import { alertDialog } from '@/ui/dialogs';
 import {
   Card,
   Chip,
@@ -84,7 +85,7 @@ export default function ResultScreen() {
 
   const onCopy = async () => {
     await Clipboard.setStringAsync(buildShareText(session, result));
-    Alert.alert('복사했어요', '카톡에 붙여넣어 공유하세요');
+    alertDialog('복사했어요', '카톡에 붙여넣어 공유하세요');
   };
 
   return (

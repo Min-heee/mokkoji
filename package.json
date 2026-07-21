@@ -9,7 +9,12 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "granite dev",
+    "build": "ait build",
+    "deploy": "ait deploy",
+    "ait:build": "ait build",
+    "ait:deploy": "ait deploy"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -28,6 +33,7 @@
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {
+    "@apps-in-toss/web-framework": "^2.10.6",
     "@types/react": "~19.1.10",
     "tsx": "^4.21.0",
     "typescript": "~5.9.2"

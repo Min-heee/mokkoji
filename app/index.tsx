@@ -1,11 +1,12 @@
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatKrw } from '@/domain/format';
 import { roundBaseTotal } from '@/domain/settlement';
 import type { Session } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
+import { confirmDialog } from '@/ui/dialogs';
 import {
   Card,
   EmptyState,
@@ -47,14 +48,12 @@ export default function HomeScreen() {
   }
 
   const confirmDelete = (session: Session) => {
-    Alert.alert('모임 삭제', `'${session.title}' 모임을 삭제할까요?`, [
-      { text: '취소', style: 'cancel' },
-      {
-        text: '삭제',
-        style: 'destructive',
-        onPress: () => deleteSession(session.id),
-      },
-    ]);
+    confirmDialog(
+      '모임 삭제',
+      `'${session.title}' 모임을 삭제할까요?`,
+      () => deleteSession(session.id),
+      { confirmText: '삭제', destructive: true },
+    );
   };
 
   return (
