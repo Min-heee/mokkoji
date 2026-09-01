@@ -2,11 +2,19 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import {
+  appointmentStatus,
+  compareByAppointment,
+  formatAppointmentTime,
+  formatCountdown,
+  hasAppointment,
+} from '@/domain/appointment';
 import { formatKrw } from '@/domain/format';
 import { roundBaseTotal } from '@/domain/settlement';
 import type { Session } from '@/domain/types';
 import { useSessions } from '@/state/SessionsContext';
 import { confirmDialog } from '@/ui/dialogs';
+import { useNow } from '@/ui/useNow';
 import {
   Card,
   EmptyState,
@@ -14,7 +22,7 @@ import {
   PrimaryButton,
   Screen,
 } from '@/ui/components';
-import { colors, fontSize } from '@/ui/theme';
+import { colors, fontSize, radius } from '@/ui/theme';
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -38,6 +46,8 @@ function peopleSummary(session: Session): string {
 export default function HomeScreen() {
   const router = useRouter();
   const { sessions, loading, deleteSession } = useSessions();
+  // 훅이라 early return보다 위에 있어야 한다
+  const now = useNow();
 
   if (loading) {
     return (
@@ -55,6 +65,8 @@ export default function HomeScreen() {
       { confirmText: '삭제', destructive: true },
     );
   };
+
+  const sorted = [...sessions].sort((a, b) => compareByAppointment(a, b, now));
 
   return (
     <Screen
@@ -78,8 +90,11 @@ export default function HomeScreen() {
           hint="새 모임을 만들어 정산을 시작해보세요"
         />
       ) : (
-        sessions.map((s) => {
+        sorted.map((s) => {
           const total = s.rounds.reduce((sum, r) => sum + roundBaseTotal(r), 0);
+          const appt = s.appointment ?? null;
+          const showAppointment = appt !== null && hasAppointment(appt);
+          const place = appt ? appt.place.trim() : '';
           return (
             <Card
               key={s.id}
@@ -101,7 +116,33 @@ export default function HomeScreen() {
                   <Text style={styles.deleteLabel}>삭제</Text>
                 </Pressable>
               </View>
-              <Text style={styles.meta}>{formatDate(s.createdAt)}</Text>
+              {showAppointment && appt ? (
+                <View style={styles.appointmentBlock}>
+                  {appt.at ? (
+                    <View style={styles.appointmentRow}>
+                      <Text style={styles.appointmentTime} numberOfLines={1}>
+                        {formatAppointmentTime(appt.at)}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.countdown,
+                          appointmentStatus(appt, now) === 'past' &&
+                            styles.countdownPast,
+                        ]}
+                      >
+                        {formatCountdown(appt.at, now)}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {place ? (
+                    <Text style={styles.meta} numberOfLines={1}>
+                      {place}
+                    </Text>
+                  ) : null}
+                </View>
+              ) : (
+                <Text style={styles.meta}>{formatDate(s.createdAt)}</Text>
+              )}
               <Text style={styles.meta}>{peopleSummary(s)}</Text>
               <Text style={styles.meta}>
                 차수 {s.rounds.length}개 · {formatKrw(total)}
@@ -144,5 +185,33 @@ const styles = StyleSheet.create({
   meta: {
     fontSize: fontSize.sm,
     color: colors.subtext,
+  },
+  appointmentBlock: {
+    gap: 2,
+  },
+  appointmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  appointmentTime: {
+    flexShrink: 1,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  countdown: {
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primaryDim,
+    fontSize: fontSize.xs,
+    fontWeight: '700',
+    color: colors.subtext,
+    overflow: 'hidden',
+  },
+  countdownPast: {
+    backgroundColor: colors.dangerDim,
+    color: colors.danger,
   },
 });

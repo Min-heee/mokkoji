@@ -2,6 +2,12 @@ import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import {
+  appointmentInputHint,
+  formatAppointmentTime,
+  formatCountdown,
+  parseAppointmentInput,
+} from '@/domain/appointment';
 import { useFriends } from '@/state/FriendsContext';
 import { useSessions, type NewPersonInput } from '@/state/SessionsContext';
 import {
@@ -23,6 +29,9 @@ export default function NewSessionScreen() {
   const [nameInput, setNameInput] = useState('');
   const [names, setNames] = useState<string[]>([]);
   const [selectedFriendIds, setSelectedFriendIds] = useState<string[]>([]);
+  const [dateText, setDateText] = useState('');
+  const [timeText, setTimeText] = useState('');
+  const [placeText, setPlaceText] = useState('');
 
   const toggleFriend = (id: string) => {
     setSelectedFriendIds((prev) =>
@@ -58,8 +67,18 @@ export default function NewSessionScreen() {
     ...effectiveNames.map((name) => ({ name })),
   ];
 
+  const parsed = parseAppointmentInput(dateText, timeText);
+  const at = parsed.at;
+  // 적어놓은 시각이 조용히 버려지지 않게, 만들기 버튼까지 막는다
+  const timeInvalid = parsed.status === 'incomplete' || parsed.status === 'invalid';
+
   const create = () => {
-    const session = createSession(title, effectivePeople);
+    if (timeInvalid) return;
+    const session = createSession(title, effectivePeople, {
+      at,
+      place: placeText.trim(),
+      placeNote: '',
+    });
     router.replace('/session/' + session.id);
   };
 
@@ -69,7 +88,7 @@ export default function NewSessionScreen() {
         <PrimaryButton
           label="모임 만들기"
           onPress={create}
-          disabled={effectivePeople.length < 2}
+          disabled={effectivePeople.length < 2 || timeInvalid}
         />
       }
     >
@@ -80,6 +99,44 @@ export default function NewSessionScreen() {
         placeholder="예: 금요일 회식 · 오사카 여행"
         autoFocus
       />
+
+      <SectionTitle>약속 (선택)</SectionTitle>
+
+      <Row>
+        <View style={styles.dateField}>
+          <TextField
+            label="날짜"
+            value={dateText}
+            onChangeText={setDateText}
+            placeholder="2026-08-03"
+          />
+        </View>
+        <View style={styles.timeField}>
+          <TextField
+            label="시간"
+            value={timeText}
+            onChangeText={setTimeText}
+            placeholder="19:30"
+          />
+        </View>
+      </Row>
+
+      <TextField
+        label="장소"
+        value={placeText}
+        onChangeText={setPlaceText}
+        placeholder="예: 강남역 2번출구 곱창집"
+      />
+
+      {at ? (
+        <Text style={styles.help}>
+          {formatAppointmentTime(at) + ' · ' + formatCountdown(at, Date.now())}
+        </Text>
+      ) : timeInvalid ? (
+        <Text style={styles.hintDanger}>{appointmentInputHint(parsed.status)}</Text>
+      ) : (
+        <Text style={styles.help}>나중에 모임 화면에서 정해도 돼요</Text>
+      )}
 
       <SectionTitle>참가자</SectionTitle>
 
@@ -143,5 +200,15 @@ const styles = StyleSheet.create({
   help: {
     fontSize: fontSize.sm,
     color: colors.subtext,
+  },
+  dateField: {
+    flex: 3,
+  },
+  timeField: {
+    flex: 2,
+  },
+  hintDanger: {
+    fontSize: fontSize.sm,
+    color: colors.danger,
   },
 });

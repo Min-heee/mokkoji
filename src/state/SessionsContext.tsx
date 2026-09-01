@@ -9,9 +9,10 @@ import React, {
 } from 'react';
 import { AppState } from 'react-native';
 
+import { EMPTY_APPOINTMENT } from '@/domain/appointment';
 import { BASE_CURRENCY } from '@/domain/currency';
 import { genId } from '@/domain/format';
-import type { Person, Round, Session } from '@/domain/types';
+import type { Appointment, Person, Round, Session } from '@/domain/types';
 import { loadSessions, saveSessions } from '@/storage/store';
 
 /** 새 모임 참가자 입력: 직접 입력(name만) 또는 친구 목록에서(friendId 포함) */
@@ -24,7 +25,11 @@ export interface SessionsApi {
   sessions: Session[];
   loading: boolean;
   getSession(id: string): Session | undefined;
-  createSession(title: string, people: NewPersonInput[]): Session;
+  createSession(
+    title: string,
+    people: NewPersonInput[],
+    appointment?: Appointment | null,
+  ): Session;
   updateSession(id: string, updater: (session: Session) => Session): void;
   deleteSession(id: string): void;
   /** 기본값으로 새 차수를 만들어 세션에 추가하고 그 차수를 반환 */
@@ -127,7 +132,11 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createSession = useCallback(
-    (title: string, inputs: NewPersonInput[]): Session => {
+    (
+      title: string,
+      inputs: NewPersonInput[],
+      appointment?: Appointment | null,
+    ): Session => {
       const people: Person[] = inputs
         .map((p) => ({ ...p, name: p.name.trim() }))
         .filter((p) => p.name.length > 0)
@@ -140,6 +149,7 @@ export function SessionsProvider({ children }: { children: React.ReactNode }) {
         rounds: [],
         settings: { roundingUnit: 100, baseCurrency: BASE_CURRENCY },
         lastFxRates: {},
+        appointment: appointment ?? { ...EMPTY_APPOINTMENT },
       };
       setSessions((prev) => [session, ...prev]);
       return session;

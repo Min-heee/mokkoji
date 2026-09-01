@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { normalizeAppointment } from '@/domain/appointment';
 import { BASE_CURRENCY } from '@/domain/currency';
 import type { Item, Round, Session } from '@/domain/types';
 
@@ -51,6 +52,7 @@ export function normalizeSession(raw: Partial<Session> & { id: string }): Sessio
     },
     lastFxRates: raw.lastFxRates ?? {},
     bet: raw.bet ?? null,
+    appointment: normalizeAppointment(raw.appointment),
   };
 }
 

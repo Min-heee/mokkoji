@@ -98,6 +98,19 @@ export interface SessionBet {
   amount: number;
 }
 
+/**
+ * 약속 정보 — 모임을 "언제 어디서"까지 포함하는 약속으로 만든다.
+ * 정산 앞단(약속 잡기 → 만나기 → 정산)을 한 흐름으로 잇는다.
+ */
+export interface Appointment {
+  /** 만나는 시각 (ISO). 아직 안 정했으면 null */
+  at: string | null;
+  /** 장소 이름 (예: '강남역 2번출구 곱창') */
+  place: string;
+  /** 장소 메모 (예: '2번 출구에서 도보 3분') */
+  placeNote: string;
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -109,6 +122,8 @@ export interface Session {
   lastFxRates?: Record<string, number>;
   /** 모임 전체 내기 결과. 진 사람이 amount를 몰빵, 나머지는 원래 비율대로 */
   bet?: SessionBet | null;
+  /** 약속(시간·장소). 예전 데이터엔 없을 수 있다 */
+  appointment?: Appointment | null;
 }
 
 export interface PersonSettlement {

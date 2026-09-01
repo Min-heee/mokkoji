@@ -1,16 +1,29 @@
+import * as Linking from 'expo-linking';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import {
+  EMPTY_APPOINTMENT,
+  appointmentInputHint,
+  appointmentStatus,
+  formatAppointmentTime,
+  formatCountdown,
+  hasAppointment,
+  mapSearchUrl,
+  parseAppointmentInput,
+  toLocalInputValue,
+} from '@/domain/appointment';
 import { formatMoney } from '@/domain/currency';
 import type { Friend } from '@/domain/friends';
 import { addFriendPerson, addNamedPerson } from '@/domain/people';
 import { roundBaseTotal, roundFxFactor, roundTotal } from '@/domain/settlement';
 import { formatKrw } from '@/domain/format';
-import type { Round } from '@/domain/types';
+import type { Appointment, Round } from '@/domain/types';
 import { useFriends } from '@/state/FriendsContext';
 import { useSessions } from '@/state/SessionsContext';
 import { alertDialog, confirmDialog } from '@/ui/dialogs';
+import { useNow } from '@/ui/useNow';
 import {
   Card,
   Chip,
@@ -24,13 +37,47 @@ import {
 } from '@/ui/components';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
+/** 약속 → 편집 입력 텍스트 4종 ('YYYY-MM-DDTHH:mm'을 날짜/시간으로 쪼갠다) */
+function appointmentFields(appointment: Appointment) {
+  const local = toLocalInputValue(appointment.at);
+  const [date = '', time = ''] = local ? local.split('T') : [];
+  return {
+    date,
+    time,
+    place: appointment.place,
+    note: appointment.placeNote,
+  };
+}
+
 export default function SessionDetailScreen() {
   const params = useLocalSearchParams<{ id: string }>();
   const id = typeof params.id === 'string' ? params.id : params.id?.[0] ?? '';
   const router = useRouter();
   const { loading, getSession, updateSession, addRound } = useSessions();
   const { friends } = useFriends();
+
+  // 훅은 early return보다 위에 있어야 하므로 세션 조회를 먼저 한다.
+  // (getSession은 훅이 아니라 그냥 조회 함수다)
+  const session = getSession(id);
+  const appointment = session?.appointment ?? EMPTY_APPOINTMENT;
+
   const [newName, setNewName] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [dateText, setDateText] = useState(() => appointmentFields(appointment).date);
+  const [timeText, setTimeText] = useState(() => appointmentFields(appointment).time);
+  const [placeText, setPlaceText] = useState(() => appointmentFields(appointment).place);
+  const [noteText, setNoteText] = useState(() => appointmentFields(appointment).note);
+  const now = useNow();
+
+  // 첫 렌더는 로딩 중이라 초기값이 비어 있을 수 있다.
+  // 편집을 열 때·취소할 때 항상 현재 약속에서 다시 채운다
+  const seedAppointmentFields = (a: Appointment) => {
+    const fields = appointmentFields(a);
+    setDateText(fields.date);
+    setTimeText(fields.time);
+    setPlaceText(fields.place);
+    setNoteText(fields.note);
+  };
 
   if (loading) {
     return (
@@ -40,7 +87,6 @@ export default function SessionDetailScreen() {
     );
   }
 
-  const session = getSession(id);
   if (!session) {
     return (
       <Screen>
@@ -115,6 +161,58 @@ export default function SessionDetailScreen() {
   const cancelSessionBet = () =>
     updateSession(session.id, (s) => ({ ...s, bet: null }));
 
+  const openAppointmentEditor = () => {
+    seedAppointmentFields(appointment);
+    setEditing(true);
+  };
+
+  const cancelAppointmentEdit = () => {
+    seedAppointmentFields(appointment);
+    setEditing(false);
+  };
+
+  const saveAppointment = () => {
+    const parsed = parseAppointmentInput(dateText, timeText);
+    // 시간 미정으로 두려면 날짜·시간을 둘 다 비우면 된다('empty').
+    // 한쪽만 적었거나 형식이 틀렸으면, 적어둔 날짜까지 조용히 지워지지 않게 막는다
+    if (parsed.status === 'incomplete' || parsed.status === 'invalid') {
+      alertDialog(
+        parsed.status === 'incomplete'
+          ? '날짜와 시간 중 한 칸이 비었어요'
+          : '날짜·시간 형식을 확인해주세요',
+        appointmentInputHint(parsed.status),
+      );
+      return;
+    }
+
+    updateSession(session.id, (s) => ({
+      ...s,
+      appointment: {
+        at: parsed.at,
+        place: placeText.trim(),
+        placeNote: noteText.trim(),
+      },
+    }));
+    setEditing(false);
+  };
+
+  const openMap = () => {
+    const url = mapSearchUrl(appointment.place);
+    if (!url) return;
+    if (Platform.OS === 'web') {
+      // 웹(앱인토스 웹뷰)에서 Linking.openURL은 같은 탭을 통째로 갈아치워
+      // 미니앱이 지도로 대체돼 버린다. 새 탭으로 열고, 막히면 알린다
+      // (이 경로에선 openURL이 절대 reject하지 않아 .catch가 안 걸린다)
+      const opened = window.open(url, '_blank', 'noopener');
+      if (!opened) alertDialog('지도를 열 수 없어요');
+      return;
+    }
+    Linking.openURL(url).catch(() => alertDialog('지도를 열 수 없어요'));
+  };
+
+  const placeName = appointment.place.trim();
+  const isPastAppointment = appointmentStatus(appointment, now) === 'past';
+
   return (
     <Screen
       footer={
@@ -126,6 +224,96 @@ export default function SessionDetailScreen() {
       }
     >
       <Stack.Screen options={{ title: session.title }} />
+
+      <SectionTitle>약속</SectionTitle>
+      <Card>
+        {editing ? (
+          <>
+            <TextField
+              label="날짜"
+              value={dateText}
+              onChangeText={setDateText}
+              placeholder="2026-08-03"
+            />
+            <TextField
+              label="시간"
+              value={timeText}
+              onChangeText={setTimeText}
+              placeholder="19:30"
+            />
+            <TextField
+              label="장소"
+              value={placeText}
+              onChangeText={setPlaceText}
+              placeholder="예: 강남역 2번출구 곱창"
+            />
+            <TextField
+              label="장소 메모 (선택)"
+              value={noteText}
+              onChangeText={setNoteText}
+              placeholder="예: 2번 출구에서 도보 3분"
+            />
+            <Row>
+              <View style={styles.apptEditButton}>
+                <PrimaryButton label="저장" onPress={saveAppointment} />
+              </View>
+              <View style={styles.apptEditButton}>
+                <PrimaryButton
+                  label="취소"
+                  variant="ghost"
+                  onPress={cancelAppointmentEdit}
+                />
+              </View>
+            </Row>
+          </>
+        ) : hasAppointment(appointment) ? (
+          <>
+            {appointment.at ? (
+              <View style={styles.apptTimeRow}>
+                <Text style={styles.apptTime}>
+                  {formatAppointmentTime(appointment.at)}
+                </Text>
+                <Text
+                  style={[styles.apptPill, isPastAppointment && styles.apptPillPast]}
+                >
+                  {formatCountdown(appointment.at, now)}
+                </Text>
+              </View>
+            ) : (
+              <Text style={styles.apptMuted}>시간 미정</Text>
+            )}
+
+            {placeName ? (
+              <Text style={styles.apptPlace}>{placeName}</Text>
+            ) : (
+              <Text style={styles.apptMuted}>장소 미정</Text>
+            )}
+            {appointment.placeNote.trim() ? (
+              <Text style={styles.apptNote}>{appointment.placeNote.trim()}</Text>
+            ) : null}
+
+            <Row>
+              <PrimaryButton
+                label="약속 수정"
+                variant="ghost"
+                onPress={openAppointmentEditor}
+              />
+              {placeName ? (
+                <PrimaryButton label="길찾기" variant="ghost" onPress={openMap} />
+              ) : null}
+            </Row>
+          </>
+        ) : (
+          <>
+            <Text style={styles.apptMuted}>아직 약속이 정해지지 않았어요</Text>
+            <PrimaryButton
+              label="약속 정하기"
+              variant="ghost"
+              onPress={openAppointmentEditor}
+            />
+          </>
+        )}
+      </Card>
 
       <SectionTitle>참가자</SectionTitle>
       <Card>
@@ -273,6 +461,47 @@ export default function SessionDetailScreen() {
 }
 
 const styles = StyleSheet.create({
+  apptTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flexWrap: 'wrap',
+  },
+  apptTime: {
+    fontSize: fontSize.lg,
+    fontWeight: '800',
+    color: colors.text,
+    flexShrink: 1,
+  },
+  apptPill: {
+    fontSize: fontSize.xs,
+    fontWeight: '800',
+    color: colors.text,
+    backgroundColor: colors.primaryDim,
+    borderRadius: radius.pill,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    overflow: 'hidden',
+  },
+  apptPillPast: {
+    color: colors.danger,
+    backgroundColor: colors.dangerDim,
+  },
+  apptPlace: {
+    fontSize: fontSize.md,
+    color: colors.text,
+  },
+  apptNote: {
+    fontSize: fontSize.sm,
+    color: colors.subtext,
+  },
+  apptMuted: {
+    fontSize: fontSize.sm,
+    color: colors.subtext,
+  },
+  apptEditButton: {
+    flex: 1,
+  },
   friendPickLabel: {
     fontSize: fontSize.sm,
     fontWeight: '600',
