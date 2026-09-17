@@ -117,4 +117,16 @@ describe('normalizeSession', () => {
     assert.equal(s.rounds[0].billedBaseAmount, null);
     assert.equal(s.rounds[0].totalAmount, 30000);
   });
+
+  it('lateBetId 는 문자열일 때만 남고, 없던 데이터에는 키가 생기지 않는다', () => {
+    const plain = normalizeSession({ id: 's1', title: '옛 모임' });
+    assert.equal('lateBetId' in plain, false);
+    assert.equal(normalizeSession({ id: 's2', lateBetId: 'appt-1' }).lateBetId, 'appt-1');
+    for (const bad of ['', 123, null, {}]) {
+      assert.equal('lateBetId' in normalizeSession({ id: 's3', lateBetId: bad } as never), false);
+    }
+    // 저장 → 다시 읽기를 거쳐도 그대로다
+    const round = normalizeStoredSessions(JSON.parse(JSON.stringify([normalizeSession({ id: 's4', lateBetId: 'appt-2' })])));
+    assert.equal(round[0].lateBetId, 'appt-2');
+  });
 });

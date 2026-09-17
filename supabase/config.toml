@@ -1,0 +1,12 @@
+# 정산야호 '약속 내기' — Supabase CLI 최소 설정.
+# 쓰임: `npx supabase link --project-ref <ref>` → `npx supabase db push` (설계서 §9-8).
+# 로컬 Docker 스택(supabase start)은 쓰지 않는다. SQL 검증은 `npm run test:sql`(로컬 PG16)로 한다.
+project_id = "jeongsan-yaho"
+
+[api]
+# Data API 에는 public 만 노출한다. private 스키마는 절대 넣지 않는다(설계서 §2.2).
+schemas = ["public"]
+
+[auth]
+# 익명 로그인만 쓴다(설계서 §9-6). 대시보드의 'Allow anonymous sign-ins' 와 같은 값.
+enable_anonymous_sign_ins = true
