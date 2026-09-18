@@ -9,8 +9,7 @@
  *
  * Date.now()·기기 타임존에 의존하지 않는다. 시각 표시는 시간대를 인자로 받는다.
  */
-import { fullForfeitAtMs, penaltyFor, type LatePolicy } from './lateBet';
-import { lateTimes } from './latePhase';
+import { closeAtMs, fullForfeitAtMs, penaltyFor, type LatePolicy } from './lateBet';
 import { formatKoreanTime, SEOUL_TZ } from './tzGuard';
 
 const MINUTE_MS = 60_000;
@@ -24,7 +23,6 @@ export const POLICY_LIMITS = {
   unitMinutes: { min: 1, max: 60 },
   penaltyPerUnit: { min: 0, max: 300 },
   graceMinutes: { min: 0, max: 30 },
-  shareLocationMinutesBefore: { min: 30, max: 360 },
 } as const satisfies Record<keyof LatePolicy, { min: number; max: number }>;
 
 /** 전액 몰수까지 허용되는 최대 지각(분) — CHECK policy_reaches_full_within_cap */
@@ -41,8 +39,6 @@ export const STAKE_CHOICES: readonly number[] = [0, 50, 100, 200, 300];
 export const GRACE_CHOICES: readonly number[] = [0, 5, 10];
 /** 도착 인정 거리(m). '직접'은 폼이 POLICY_LIMITS.radiusM 안에서 받는다 */
 export const RADIUS_CHOICES: readonly number[] = [50, 100, 200];
-/** 위치 공개: 30분 / 1시간 / 2시간 전 */
-export const SHARE_BEFORE_CHOICES: readonly number[] = [30, 60, 120];
 /** 이 반경 이하면 폼이 경고한다: "지하·실내는 GPS가 잘 안 잡혀요. 100m를 권해요" */
 export const SMALL_RADIUS_WARN_M = 50;
 
@@ -56,11 +52,12 @@ export interface LatePreset {
   policy: LatePolicy;
 }
 
-const BASE = { radiusM: 100, graceMinutes: 0, shareLocationMinutesBefore: 60 } as const;
+const BASE = { radiusM: 100, graceMinutes: 0 } as const;
 
-/** 기본값: 봐주는 시간 0분, 반경 100m, 공개 1시간 전 */
+/** 기본값: 봐주는 시간 0분, 반경 100m. 위치 공개 시점은 정책이 아니다 — 주최자가 [시작하기]를 누르는 순간이다 */
 export const LATE_PRESETS: readonly LatePreset[] = [
-  { id: 'mild', name: '순한맛', policy: { ...BASE, stake: 50, unitMinutes: 5, penaltyPerUnit: 5 } },
+  // 순한맛은 보통과 같은 10% 차감이되 단위가 10분 — 걸 포인트를 바꿔도 셋이 서로 구분된다
+  { id: 'mild', name: '순한맛', policy: { ...BASE, stake: 100, unitMinutes: 10, penaltyPerUnit: 10 } },
   { id: 'normal', name: '보통', policy: { ...BASE, stake: 100, unitMinutes: 5, penaltyPerUnit: 10 } },
   { id: 'spicy', name: '매운맛', policy: { ...BASE, stake: 300, unitMinutes: 1, penaltyPerUnit: 10 } },
 ];
@@ -93,7 +90,7 @@ export function policyWithStake(id: LatePresetId, stake: number, base?: Partial<
 /**
  * 정책이 어느 프리셋에서 나왔는지 (수정 화면 프리필용). 없으면 null.
  * 1) 스테이크까지 프리셋과 똑같으면 그 프리셋. 2) 아니면 스테이크만 바꾼 것과 같은 프리셋.
- * 순한맛과 보통은 차감 비율이 같아서(5분마다 10%) 스테이크를 바꾸면 구분되지 않는다 — 그때는 기본(보통)으로 본다.
+ * 세 프리셋은 지각 단위가 서로 달라(10분·5분·1분) 스테이크를 바꿔도 구분된다.
  */
 export function matchPreset(policy: LatePolicy): LatePresetId | null {
   const same = (a: LatePolicy) => a.unitMinutes === policy.unitMinutes && a.penaltyPerUnit === policy.penaltyPerUnit;
@@ -123,7 +120,6 @@ const FIELD_NAMES: Record<keyof LatePolicy, string> = {
   unitMinutes: '지각 단위',
   penaltyPerUnit: '단위마다 잃는 포인트',
   graceMinutes: '봐주는 시간',
-  shareLocationMinutesBefore: '위치 공개 시점',
 };
 
 const FIELD_UNITS: Record<keyof LatePolicy, string> = {
@@ -132,7 +128,6 @@ const FIELD_UNITS: Record<keyof LatePolicy, string> = {
   unitMinutes: '분',
   penaltyPerUnit: 'P',
   graceMinutes: '분',
-  shareLocationMinutesBefore: '분',
 };
 
 /**
@@ -146,8 +141,7 @@ export function minutesToFullForfeit(policy: LatePolicy): number | null {
 
 /**
  * 서버 CHECK 제약과 같은 식으로 검증한다. 값을 고쳐 주지 않는다(정규화는 lateBet.normalizeLatePolicy).
- * - 6개 필드: 정수 + 범위 (stake 0~300, radiusM 30~1000, unitMinutes 1~60, penaltyPerUnit 0~300,
- *   graceMinutes 0~30, shareLocationMinutesBefore 30~360)
+ * - 5개 필드: 정수 + 범위 (stake 0~300, radiusM 30~1000, unitMinutes 1~60, penaltyPerUnit 0~300, graceMinutes 0~30)
  * - policy_reaches_full_within_cap: penaltyPerUnit = 0 or stake = 0 or
  *   (ceil(stake / penaltyPerUnit) − 1) × unitMinutes + graceMinutes <= 180
  */
@@ -199,17 +193,13 @@ export interface PolicyDescription {
   grace: string;
   /** 도착 인정 거리 아래 */
   radius: string;
-  /** 위치 공개 아래: '오후 6:30부터 서로 위치가 보여요. 그 뒤에는 빠질 수 없어요.' */
-  share: string;
   /** 위 문장 중 빈 것을 뺀 전체(미리보기·참여 카드의 '정책 전문') */
   lines: string[];
   /** 전액을 잃기 시작하는 경계 시각 = lateBet.fullForfeitAtMs. 없으면 null */
   fullForfeitAtMs: number | null;
   /** 그 경계가 약속 시각에서 몇 분 뒤인가 ('N분 넘게 늦으면'의 N). 없으면 null */
   fullLateMinutes: number | null;
-  /** 위치 공개 시작 = 체크인 개시 = 잠금 */
-  shareStartMs: number;
-  /** 체크인·위치 공개 종료 */
+  /** 체크인·위치 공개 종료(전액 몰수 + 30분 꼬리). 시작 시각은 정책에 없다(주최자의 [시작하기]) */
   closeMs: number;
 }
 
@@ -237,11 +227,12 @@ export function shortPolicyLine(policy: LatePolicy): string {
 
 /**
  * 정책 설명 문장. 시각은 tz 의 벽시계로 적는다(기본 한국 시각).
- * 모든 시각·분은 엔진(fullForfeitAtMs·penaltyFor·locationShareWindow)에서 계산한 값이다.
+ * 모든 시각·분은 엔진(fullForfeitAtMs·penaltyFor·closeAtMs)에서 계산한 값이다.
+ * 위치 공개 시작 문장은 없다 — 공개는 주최자가 [시작하기]를 누르는 순간부터라 화면이 따로 말한다.
  */
 export function describePolicy(policy: LatePolicy, meetAtMs: number, tz: string = SEOUL_TZ): PolicyDescription {
   const { stake, penaltyPerUnit, unitMinutes, graceMinutes, radiusM } = policy;
-  const { shareStartMs, closeMs } = lateTimes(policy, meetAtMs);
+  const closeMs = closeAtMs(policy, meetAtMs) ?? Number.NaN;
   const fullAt = fullForfeitAtMs(policy, meetAtMs);
   const fullLateMinutes = fullAt === null ? null : Math.round((fullAt - meetAtMs) / MINUTE_MS);
   const closeTime = formatKoreanTime(closeMs, tz);
@@ -272,7 +263,8 @@ export function describePolicy(policy: LatePolicy, meetAtMs: number, tz: string 
           ? `${formatMinutes(fullLateMinutes)} 넘게 늦으면 ${stake}P를 모두 잃어요.`
           : `조금이라도 늦으면 ${stake}P를 모두 잃어요.`;
     }
-    if (closeTime) close = `${closeTime}가 지나면 체크인이 닫히고 ${stake}P를 모두 잃어요.`;
+    // 전액 몰수 뒤에도 30분(꼬리) 더 체크인·위치 공개가 열려 있다(오너 결정 변경 3) — 전액 시각은 full 문장이 말한다
+    if (closeTime) close = `${closeTime}에 체크인이 닫혀요. 그 뒤에 와도 도착으로 남지 않아요.`;
   }
 
   const grace =
@@ -280,10 +272,8 @@ export function describePolicy(policy: LatePolicy, meetAtMs: number, tz: string 
       ? '봐주는 시간은 없어요. 약속 시각이 마감이에요.'
       : `약속 시각에서 ${formatMinutes(graceMinutes)}까지는 늦어도 봐줘요.`;
   const radius = `약속 장소 ${radiusM}m 안에 들어오면 도착이에요.`;
-  const shareTime = formatKoreanTime(shareStartMs, tz);
-  const share = shareTime ? `${shareTime}부터 서로 위치가 보여요. 그 뒤에는 빠질 수 없어요.` : '';
 
-  const lines = [stakeLine, penaltyLine, example, full, grace, radius, share, close].filter((s) => s !== '');
+  const lines = [stakeLine, penaltyLine, example, full, grace, radius, close].filter((s) => s !== '');
   return {
     stake: stakeLine,
     penalty: penaltyLine,
@@ -292,11 +282,9 @@ export function describePolicy(policy: LatePolicy, meetAtMs: number, tz: string 
     close,
     grace,
     radius,
-    share,
     lines,
     fullForfeitAtMs: fullAt,
     fullLateMinutes,
-    shareStartMs,
     closeMs,
   };
 }

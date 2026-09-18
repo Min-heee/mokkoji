@@ -25,6 +25,12 @@ export type LbServerErrorCode =
   | 'LB_JOIN_CLOSED'
   | 'LB_APPT_CHANGED'
   | 'LB_NICKNAME_TAKEN'
+  /** 고른 이름이 초대 명단에 없다 */
+  | 'LB_NOT_INVITED'
+  /** 그 이름은 이미 다른 기기가 골랐다 */
+  | 'LB_SLOT_TAKEN'
+  /** 이미 들어온 이름은 명단에서 지울 수 없다(내보내기를 써야 한다) */
+  | 'LB_INVITEE_JOINED'
   | 'LB_FULL'
   | 'LB_INSUFFICIENT_POINTS'
   | 'LB_NOT_HOST'
@@ -34,8 +40,19 @@ export type LbServerErrorCode =
   | 'LB_LEAVE_CLOSED'
   | 'LB_KICK_CLOSED'
   | 'LB_EDIT_CLOSED'
-  | 'LB_EDIT_LOCKED'
+  /** 시작 후: 걸 포인트·지각 규칙·반경·명단은 동결 */
+  | 'LB_EDIT_FROZEN'
+  /** 시작 후: 시간은 뒤로만 */
+  | 'LB_POSTPONE_ONLY'
+  /** 시작 후: 최대 +3시간 */
+  | 'LB_POSTPONE_TOO_FAR'
   | 'LB_CANCEL_CLOSED'
+  /** [시작하기]: 약속 시각이 지났거나 닫힌 약속 */
+  | 'LB_START_CLOSED'
+  /** [시작하기]: 이미 시작했다(되돌릴 수 없다) */
+  | 'LB_ALREADY_STARTED'
+  /** 시작 전에는 할 수 없는 일(보증 도착 등) */
+  | 'LB_NOT_STARTED'
   | 'LB_CLOSED'
   | 'LB_CANNOT_VOUCH_SELF'
   | 'LB_VOUCHER_NOT_ARRIVED'
@@ -78,17 +95,25 @@ export const LATE_BET_ERROR_MESSAGES: Record<LateBetErrorCode, string> = {
   LB_JOIN_CLOSED: '지금은 참여할 수 없는 약속이에요. 주최자에게 물어봐 주세요.',
   LB_APPT_CHANGED: '방금 약속이 바뀌었어요. 다시 확인해 주세요.',
   LB_NICKNAME_TAKEN: '이 약속에 같은 이름이 있어요. 다른 이름을 적어주세요.',
+  LB_NOT_INVITED: '초대 명단에 없어요. 주최자에게 이름을 추가해 달라고 해주세요.',
+  LB_SLOT_TAKEN: '이 이름은 이미 다른 사람이 골랐어요. 내 이름이 맞으면 주최자에게 확인해 주세요.',
+  LB_INVITEE_JOINED: '이미 들어온 친구예요. 빼려면 내보내기를 눌러 주세요.',
   LB_FULL: '참여 인원이 가득 찼어요.',
   LB_INSUFFICIENT_POINTS: '다른 약속에 걸어 둔 포인트가 많아요. 그 약속이 끝나면 참여할 수 있어요.',
   LB_NOT_HOST: '주최자만 할 수 있어요.',
   LB_NOT_FOUND: '약속을 찾을 수 없어요.',
   LB_NOT_MEMBER: '이 약속의 참가자가 아니에요.',
   LB_HOST_CANNOT_LEAVE: '주최자는 나갈 수 없어요. 약속을 취소해 주세요.',
-  LB_LEAVE_CLOSED: '위치 공개가 시작돼 지금은 빠질 수 없어요. 못 오면 건 포인트를 잃어요.',
-  LB_KICK_CLOSED: '위치 공개가 시작돼 내보낼 수 없어요.',
-  LB_EDIT_CLOSED: '끝난 약속은 바꿀 수 없어요.',
-  LB_EDIT_LOCKED: '친구가 참여한 뒤에는 바꿀 수 없어요. 취소하고 새로 만들어 주세요.',
-  LB_CANCEL_CLOSED: '위치 공개가 시작돼 바꿀 수 없어요.',
+  LB_LEAVE_CLOSED: '주최자가 시작해서 지금은 빠질 수 없어요. 못 오면 건 포인트를 잃어요.',
+  LB_KICK_CLOSED: '이미 시작한 약속에서는 내보낼 수 없어요.',
+  LB_EDIT_CLOSED: '끝나가는 약속은 바꿀 수 없어요.',
+  LB_EDIT_FROZEN: '이미 시작한 약속은 시간을 미루거나 장소만 바꿀 수 있어요.',
+  LB_POSTPONE_ONLY: '시작한 뒤에는 시간을 뒤로 미룰 수만 있어요.',
+  LB_POSTPONE_TOO_FAR: '시간은 최대 3시간까지만 미룰 수 있어요.',
+  LB_CANCEL_CLOSED: '이미 시작한 약속은 취소할 수 없어요.',
+  LB_START_CLOSED: '약속 시각이 지나 이제 시작할 수 없어요.',
+  LB_ALREADY_STARTED: '이미 시작한 약속이에요.',
+  LB_NOT_STARTED: '주최자가 아직 시작하지 않았어요.',
   LB_CLOSED: '체크인 시간이 지났어요.',
   LB_CANNOT_VOUCH_SELF: '내 도착은 직접 확인해 줄 수 없어요.',
   LB_VOUCHER_NOT_ARRIVED: '먼저 위치로 도착을 확인한 사람만 눌러 줄 수 있어요.',
@@ -102,8 +127,10 @@ export const LATE_BET_ERROR_MESSAGES: Record<LateBetErrorCode, string> = {
   LB_UNKNOWN: FALLBACK,
 };
 
-/** 수락 실패 때 주최자에게 보여 줄 문구(§4: 대상의 포인트를 채워 줄 수도 없을 때) */
-export const APPROVE_INSUFFICIENT_MESSAGE = '이 친구는 포인트가 모자라 수락할 수 없어요.';
+/** 시작 전 걸 포인트 올리기가 참가자의 포인트 부족(채워 줄 수도 없음)으로 실패했을 때 주최자에게 (e.detail = 그 닉네임) */
+export const RAISE_STAKE_INSUFFICIENT_MESSAGE = '포인트가 모자란 친구가 있어 걸 포인트를 올릴 수 없어요.';
+/** 내보내졌을 때(LB_NOT_MEMBER, 원장에 kicked 환불) */
+export const REMOVED_MESSAGE = '주최자가 내보냈어요. 건 포인트는 돌려드렸어요.';
 /** 서버 오류가 3회 연속일 때 덧붙인다(§5.4) */
 export const REPEATED_FAILURE_MESSAGE = '문제가 계속되면 만든 사람에게 알려 주세요.';
 /** 오프라인으로 캐시를 보여 줄 때(§5.3-A) */
@@ -147,7 +174,7 @@ export function isConnectivityError(e: unknown): boolean {
   return e instanceof LateBetError && (e.code === 'LB_OFFLINE' || e.code === 'LB_TIMEOUT');
 }
 
-/** 멤버가 아니게 됐는가 (내보내짐·요청 거절·정산이 대기 요청을 지움) */
+/** 멤버가 아니게 됐는가 (내보내짐) */
 export function isNotMemberError(e: unknown): boolean {
   return e instanceof LateBetError && e.code === 'LB_NOT_MEMBER';
 }
@@ -173,16 +200,10 @@ export function toLateBetError(e: unknown): LateBetError {
   return new LateBetError('LB_UNKNOWN', message || null);
 }
 
-/** 내보내짐·거절 안내(§5.4). wasPending = 마지막으로 본 내 상태가 승인 대기였는가 */
-export function removedMessage(wasPending: boolean): string {
-  return wasPending ? '주최자가 요청을 받지 않았어요.' : '주최자가 내보냈어요. 건 포인트는 돌려드렸어요.';
-}
-
 export interface ReportReasonContext {
   distanceM?: number | null;
   accuracyM?: number | null;
   radiusM: number;
-  shareStartMs: number;
   closeMs: number;
   tz: string;
 }
@@ -202,13 +223,11 @@ export function reportReasonMessage(reason: LbReportReason | null, ctx: ReportRe
       return left === null ? '아직 도착 인정 거리 밖이에요.' : `아직 ${left.toLocaleString('ko-KR')}m 남았어요`;
     }
     case 'not_open':
-      return `체크인은 ${formatKoreanTime(ctx.shareStartMs, ctx.tz)}부터예요`;
+      return '주최자가 시작하면 체크인할 수 있어요.';
     case 'mocked':
       return '모의 위치 앱이 켜져 있으면 도착을 확인할 수 없어요.';
     case 'closed':
       return `체크인 시간이 지났어요 (${formatKoreanTime(ctx.closeMs, ctx.tz)}까지였어요).`;
-    case 'pending':
-      return '주최자가 수락하면 참여돼요.';
     case 'bad_position':
       return '위치를 읽지 못했어요. 다시 눌러주세요.';
     default:

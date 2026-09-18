@@ -2,9 +2,11 @@
  * 가짜 서버 조작 패널 — fake 모드(개발 번들)에서만 보인다. 그 외에는 null.
  *
  * 접힌 띠 한 줄("가짜 서버 · 서버 시각")을 누르면 펼쳐진다.
- * - 시간 빨리 감기(+1분/+10분/+1시간, 공개 시작·약속 시각·마감 직전·마감 뒤로 점프)
+ * - 시간 빨리 감기(+1분/+10분/+1시간, 약속 5분 전·약속 시각·마감 직전·마감 뒤로 점프)
  * - 내 가짜 위치(목적지로/300m 앞/1.5km 밖/GPS 부정확/모의 위치/위치 모름) → useArrivalReporter 가 읽어 보고한다
- * - 봇(성격별 참여, 참여 요청 만들기, 한 명 도착시키기)
+ * - 봇: 명단의 빈 이름을 차례로 고르며 수락한다('봇 한 명 수락', 성격별, '시작 후 봇 수락', '봇 한 명 도착')
+ *   주최자의 [시작하기]는 패널이 대신 누르지 않는다 — 대기실의 실제 버튼으로 누른다.
+ * - 주최자 조작: 시간 30분 미루기(시작 전후 규칙을 그대로 탄다)
  * - 연결 끊기, 초기화
  * 조작 뒤에는 서버 시계를 다시 맞추고 onChanged(보통 useLive.refresh)와 전역 refresh 를 부른다.
  */
@@ -99,12 +101,15 @@ function Panel({
       return `내 위치: ${label}`;
     });
 
-  const bot = (plan: import('../fakeApi').FakeBotPlan, label: string) =>
+  const bot = (plan: import('../fakeApi').FakeBotPlan | undefined, label: string) =>
     guard(() => {
       if (!appointmentId) return '약속이 없어요';
       const b = server.addBot(appointmentId, plan);
-      return `${b.nickname}(${label}) ${b.state === 'pending' ? '참여 요청' : '참여'}`;
+      return `${b.nickname}(${label}) 수락${b.started ? ' — 시작 뒤라 바로 위치가 보여요' : ''}`;
     });
+
+  const unclaimed = a ? a.invitees.filter((i) => i.claimedByUserId === null).map((i) => i.name) : [];
+  const started = a ? a.startedAtMs !== null : false;
 
   return (
     <View style={styles.wrap}>
@@ -123,7 +128,7 @@ function Panel({
             <Chip label="+1시간" selected={false} onPress={guard(() => (server.advance(60 * MIN), '+1시간'))} />
             {a ? (
               <>
-                <Chip label="공개 시작으로" selected={false} onPress={jump('위치 공개 시작', a.shareStartMs)} />
+                <Chip label="약속 30분 전" selected={false} onPress={jump('약속 30분 전', a.meetAtMs - 30 * MIN)} />
                 <Chip label="약속 5분 전" selected={false} onPress={jump('약속 5분 전', a.meetAtMs - 5 * MIN)} />
                 <Chip label="약속 시각" selected={false} onPress={jump('약속 시각', a.meetAtMs)} />
                 <Chip label="마감 1분 전" selected={false} onPress={jump('마감 1분 전', a.closeMs - MIN)} />
@@ -155,19 +160,25 @@ function Panel({
                 <Chip label="위치 모름" selected={false} onPress={guard(() => (fakeDevice.set(null), '내 위치: 모름'))} />
               </View>
 
-              <Text style={styles.label}>봇 친구 (잠금 전 = 바로 참여, 잠금 후 = 참여 요청)</Text>
+              <Text style={styles.label}>
+                봇 친구 — 명단의 빈 이름을 차례로 고르며 수락한다{started ? ' · 시작됨(빈 이름은 약속 시각까지 수락 가능, 명단 추가는 불가)' : ''}
+                {unclaimed.length > 0 ? ` (아직 안 들어옴: ${unclaimed.join(', ')})` : started ? ' (빈 이름 없음)' : ' (빈 이름 없음 → 이름을 추가해 수락한다)'}
+              </Text>
               <View style={styles.chips}>
+                <Chip label="봇 한 명 수락" selected={false} onPress={bot(undefined, '성격 순환')} />
                 <Chip label="제시간 봇" selected={false} onPress={bot('onTime', '제시간')} />
                 <Chip label="지각 봇" selected={false} onPress={bot('late', '지각')} />
                 <Chip label="지하 봇(보증 필요)" selected={false} onPress={bot('needsVouch', '보증 필요')} />
                 <Chip label="노쇼 봇" selected={false} onPress={bot('noShow', '노쇼')} />
                 <Chip label="앱 닫는 봇" selected={false} onPress={bot('ghost', '앱 닫음')} />
                 <Chip
-                  label="참여 요청 만들기"
+                  label="시작 후 봇 수락"
                   selected={false}
                   onPress={guard(() => {
-                    const b = server.addBotRequest(a.id);
-                    return `${b.nickname}님이 참여를 요청했어요`;
+                    if (!started) return '아직 시작 전이에요. 대기실의 [시작하기]를 먼저 누르세요';
+                    if (unclaimed.length === 0) return '빈 이름이 없어요 (시작 뒤에는 명단을 늘릴 수 없어요)';
+                    const b = server.addBot(a.id, 'onTime');
+                    return `${b.nickname} 늦게 수락 — 이제부터 위치가 보이고 판정 대상이에요`;
                   })}
                 />
                 <Chip
@@ -177,6 +188,18 @@ function Panel({
                     const r = server.arriveBot(a.id);
                     if (!r) return '도착시킬 봇이 없어요';
                     return r.result.arrived ? `${r.nickname} 도착` : `${r.nickname}: ${r.result.reason}`;
+                  })}
+                />
+              </View>
+
+              <Text style={styles.label}>주최자 조작 (시작 전후 규칙을 그대로 탄다{started ? ' · 시작됨' : ' · 시작 전'})</Text>
+              <View style={styles.chips}>
+                <Chip
+                  label="시간 30분 미루기"
+                  selected={false}
+                  onPress={guard(() => {
+                    const moved = server.postpone(a.id, 30);
+                    return `약속을 ${formatKoreanDateTime(moved.meetAtMs, moved.tz)}(으)로 미뤘어요 (version ${moved.version})`;
                   })}
                 />
               </View>
@@ -210,8 +233,8 @@ function Panel({
             />
           </View>
           <Text style={styles.hint}>
-            데모 초대 코드: {mod.FAKE_DEMO_CODES.open}(바로 참여) · {mod.FAKE_DEMO_CODES.locked}(수락제, 8초 뒤 자동 수락) ·{' '}
-            {mod.FAKE_DEMO_CODES.joinClosed}(참여 마감) · {mod.FAKE_DEMO_CODES.canceled}(취소됨)
+            데모 초대 코드: {mod.FAKE_DEMO_CODES.open}(시작 전, 빈 이름 '민병희'·'병희' → 대기실) · {mod.FAKE_DEMO_CODES.full}(빈 이름 없음 → 명단에 없음 안내) ·{' '}
+            {mod.FAKE_DEMO_CODES.started}(주최자가 이미 시작 + 빈 이름 '민병희' → 고르면 바로 live, 위치가 뜸) · {mod.FAKE_DEMO_CODES.canceled}(취소됨)
           </Text>
         </ScrollView>
       ) : null}

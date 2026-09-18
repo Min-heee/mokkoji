@@ -1,10 +1,11 @@
 /**
  * 약속 화면 — useLive + latePhase 로 단계를 구해 단계별 뷰로 나눈다.
  *
- *   pending → PendingView        waiting → WaitingView
- *   live · overtime → LiveView   arrived → ArrivedView
+ *   waiting → WaitingView            (시작 전 대기실 — 주최자에게 [시작하기])
+ *   live · overtime → LiveView       (주최자가 시작한 뒤: 위치 공개·체크인)   arrived → ArrivedView
  *   settling · settled · voided → ResultView
- *   canceled · 내보내짐/거절 · 불러오기 실패 → 이 파일의 안내 화면
+ *   canceled · 내보내짐 · 불러오기 실패 → 이 파일의 안내 화면
+ * 수락제(pending·PendingView)와 '전원 참여 시 자동 잠금'(locked)은 오너 확정 흐름(2026-09-18)으로 없다.
  *
  * 뷰는 자기 <Screen> 을 직접 그린다. 이 컨테이너는 그 위에 FakeDevPanel(가짜 모드)과 연결 끊김 띠만 얹는다.
  * 위치 보고 루프(useArrivalReporter)는 단계가 바뀌어도 끊기지 않게 여기서 돌린다.
@@ -13,14 +14,14 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { isConnectivityError, REPEATED_FAILURE_MESSAGE, removedMessage } from '@/lateBet/errors';
+import { isConnectivityError, REMOVED_MESSAGE, REPEATED_FAILURE_MESSAGE } from '@/lateBet/errors';
 import { useLateBet } from '@/lateBet/LateBetContext';
 import { cancelLateNotifications } from '@/lateBet/notifications';
+import { canceledText } from '@/lateBet/resultModel';
 import { ArrivedView } from '@/lateBet/screens/ArrivedView';
 import { FakeDevPanel } from '@/lateBet/screens/FakeDevPanel';
 import { LiveView } from '@/lateBet/screens/LiveView';
 import { LateBetUnavailable } from '@/lateBet/screens/NicknameGate';
-import { PendingView } from '@/lateBet/screens/PendingView';
 import type { LateViewProps } from '@/lateBet/screens/props';
 import { ResultView } from '@/lateBet/screens/ResultView';
 import { WaitingView } from '@/lateBet/screens/WaitingView';
@@ -40,7 +41,8 @@ function Inner() {
   const params = useLocalSearchParams<{ id: string }>();
   const id = typeof params.id === 'string' ? params.id : null;
   const { api, refresh: refreshHome } = useLateBet();
-  const { live, phase, me, isHost, loading, error, stale, failCount, removed, settleDelayed, refresh } = useLive(id);
+  const { live, phase, me, isHost, loading, error, stale, failCount, removed, settleDelayed, unseenChanges, ackChanges, refresh } =
+    useLive(id);
 
   const [justArrived, setJustArrived] = useState(false);
   const left = useRef(false);
@@ -83,7 +85,7 @@ function Inner() {
         {header}
         {dev}
         <Screen footer={<PrimaryButton label="홈으로" onPress={goHome} />}>
-          <EmptyState title={removedMessage(removed.wasPending)} />
+          <EmptyState title={REMOVED_MESSAGE} />
         </Screen>
       </View>
     );
@@ -117,13 +119,10 @@ function Inner() {
     );
   }
 
-  const common: LateViewProps = { live, phase, me, isHost, api, refresh, stale, error };
+  const common: LateViewProps = { live, phase, me, isHost, api, refresh, stale, error, unseenChanges, ackChanges };
 
   let body: React.ReactNode;
   switch (phase) {
-    case 'pending':
-      body = <PendingView {...common} onLeft={onLeft} />;
-      break;
     case 'waiting':
       body = <WaitingView {...common} onLeft={onLeft} />;
       break;
@@ -139,16 +138,14 @@ function Inner() {
     case 'voided':
       body = <ResultView {...common} settleDelayed={settleDelayed} />;
       break;
-    case 'canceled': {
-      const stake = live.appointment.policy.stake;
-      const refund = stake > 0 && live.myState === 'active' ? ` 건 ${stake}P는 돌려드렸어요.` : '';
+    case 'canceled':
+      // 문구는 resultModel.canceledText 한 곳에 둔다(ResultView 와 같은 문장)
       body = (
         <Screen footer={<PrimaryButton label="홈으로" onPress={goHome} />}>
-          <EmptyState title={isHost ? `약속을 취소했어요.${refund}` : `주최자가 약속을 취소했어요.${refund}`} />
+          <EmptyState title={canceledText(live, isHost)} />
         </Screen>
       );
       break;
-    }
     default:
       body = null;
   }

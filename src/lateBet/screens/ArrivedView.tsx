@@ -1,10 +1,13 @@
 /**
  * 도착 뒤: 도착 연출 + 친구 기다리기 + [같이 있어요]
- * 설계서 §5.3-F(arrived·settling), §3.4 보증 도착. 담당: [live]
+ * 설계서 §5.3-F(arrived·settling), §3.4 보증 도착, §0-1 오너 결정 변경(2026-09-18). 담당: [live]
  *
  * - 도착 연출: 300ms 옵시디언 반전 1회(약속당 한 번). 햅틱은 expo-haptics 가 들어오는 P1 에서 붙인다.
  * - 1초 티커는 ParticipantRows 안에만 있다. 이 화면 본체는 폴링(5초) 때만 다시 그린다.
- * - 나는 이미 도착했으므로 위치 공유는 서버에서 끝났다. 친구 위치는 공개 창 동안 계속 보인다.
+ * - 나는 이미 도착했으므로 위치 공유는 서버에서 끝났다. 친구 위치는 공개 창(시작 ~ 마감, 전액 몰수 뒤 30분 꼬리 포함) 동안 계속 보인다.
+ * - 이 화면은 시작 뒤에만 온다(도착 = 체크인 = 시작 뒤). 아직 안 들어온 이름은 약속 시각까지 들어올 수 있어 표시만 한다(버튼 없음).
+ * - 주최자가 시간을 미루면 변경 배너가 뜨고(props), 내 도착 기록은 그대로 유지된다(조기/지각 표시는 새 시각 기준으로 다시 계산).
+ * - 주최자에게는 [시간 미루기]·[장소 바꾸기](HostTools)를 그대로 준다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, StyleSheet, Text, View } from 'react-native';
@@ -20,7 +23,7 @@ import { colors, fontSize, spacing } from '@/ui/theme';
 
 import { toLateBetError } from '../errors';
 import type { LbLiveParticipant } from '../types';
-import { JoinRequests, liveMarkers, ParticipantRows, SmallButton } from './LiveView';
+import { ChangeBanner, HostTools, liveMarkers, ParticipantRows, SmallButton, unclaimedNames } from './LiveView';
 import type { ArrivedViewProps } from './props';
 
 const MINUTE_MS = 60_000;
@@ -32,7 +35,7 @@ const FLASH_FADE_MS = 180;
 /** 도착 연출을 이미 보여 준 약속(화면이 다시 마운트돼도 또 번쩍이지 않게) */
 const celebrated = new Set<string>();
 
-/** 도착 순간의 화면 반전. 끝나면 스스로 사라진다 */
+/** 도착 순간의 화면 반전. 끝나면 스스로 사라진다(언마운트 때 애니메이션 정리) */
 function ArrivalFlash({ timeLabel, onDone }: { timeLabel: string; onDone: () => void }) {
   const opacity = useRef(new Animated.Value(1)).current;
   const done = useRef(onDone);
@@ -57,7 +60,7 @@ function ArrivalFlash({ timeLabel, onDone }: { timeLabel: string; onDone: () => 
   );
 }
 
-export function ArrivedView({ live, phase, me, isHost, api, refresh, justArrived }: ArrivedViewProps) {
+export function ArrivedView({ live, phase, me, isHost, api, refresh, stale, justArrived, unseenChanges, ackChanges }: ArrivedViewProps) {
   const appointment = live.appointment;
   const { tz, meetAtMs, closeMs } = appointment;
   const policy = useMemo(() => normalizeLatePolicy(appointment.policy), [appointment.policy]);
@@ -71,7 +74,7 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, justArrived
   }, [justArrived, appointment.id]);
   const endFlash = useCallback(() => setFlash(false), []);
 
-  // ── 내 도착 요약
+  // ── 내 도착 요약 (주최자가 시간을 미루면 새 약속 시각 기준으로 다시 계산된다)
   const arrivedAtMs = me?.arrivedAtMs ?? null;
   const timeLabel = arrivedAtMs !== null ? formatKoreanTime(arrivedAtMs, tz) : '';
   const loss = arrivedAtMs !== null ? penaltyFor(policy, meetAtMs, arrivedAtMs) : 0;
@@ -80,17 +83,21 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, justArrived
     const earlyMs = meetAtMs - arrivedAtMs;
     if (earlyMs >= MINUTE_MS) diffLine = `${formatMinutes(Math.floor(earlyMs / MINUTE_MS))} 일찍`;
     else if (earlyMs >= 0) diffLine = '제시간';
-    else diffLine = `${formatMinutes(Math.max(1, Math.floor(-earlyMs / MINUTE_MS)))} 늦음`;
+    else diffLine = `${formatMinutes(Math.max(1, Math.ceil(-earlyMs / MINUTE_MS)))} 늦음`;
   }
   const late = arrivedAtMs !== null && arrivedAtMs > meetAtMs;
 
-  // ── 기다리는 중 문구
+  // ── 기다리는 중 문구 (본체는 폴링 때만 다시 그리므로 그때의 서버 시각으로 본다)
   const settling = phase === 'settling' || live.settlePending;
   const everyone = allActiveArrived(live.participants);
+  const missing = unclaimedNames(appointment, live.serverNowMs);
+  const beforeMeet = live.serverNowMs < meetAtMs;
   const waitingLine = settling
     ? '결과를 확정하는 중이에요'
-    : everyone
-      ? `모두 도착했어요. ${formatKoreanTime(meetAtMs, tz)}에 결과가 확정돼요.`
+    : everyone && missing.length === 0
+      ? beforeMeet
+        ? `모두 도착했어요. ${formatKoreanTime(meetAtMs, tz)}에 결과가 확정돼요.`
+        : '모두 도착했어요. 곧 결과가 확정돼요.'
       : `결과는 모두 도착하면 약속 시각에, 늦어도 ${formatKoreanTime(closeMs, tz)}에 확정돼요.`;
 
   // ── 보증 도착 [같이 있어요] — GPS 로 도착한 사람만 누를 수 있다
@@ -131,7 +138,7 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, justArrived
     ? (p: LbLiveParticipant) => (
         <SmallButton
           label={vouchingId === p.userId ? '확인 중' : '같이 있어요'}
-          disabled={vouchingId !== null}
+          disabled={vouchingId !== null || stale}
           onPress={() => vouch(p)}
         />
       )
@@ -151,6 +158,8 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, justArrived
   return (
     <View style={styles.fill}>
       <Screen>
+        <ChangeBanner changes={unseenChanges} tz={tz} onAck={ackChanges} />
+
         <View style={styles.hero}>
           <Text style={styles.heroTime}>
             {timeLabel ? `${timeLabel} 도착` : '도착했어요'}
@@ -177,9 +186,13 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, justArrived
             {settling ? waitingLine : '위치 공유가 끝났어요. 친구들을 기다리는 중'}
           </Text>
           {settling ? null : <Text style={styles.waitSub}>{waitingLine}</Text>}
+          {!settling && missing.length > 0 ? (
+            <Text style={styles.waitSub}>
+              아직 안 들어온 친구({missing.join(', ')})는 {formatKoreanTime(meetAtMs, tz)}까지 들어올 수 있어요. 들어오면 그때부터 위치가
+              보여요.
+            </Text>
+          ) : null}
         </Card>
-
-        <JoinRequests live={live} isHost={isHost} api={api} refresh={refresh} />
 
         <SectionTitle>참가자</SectionTitle>
         <ParticipantRows live={live} renderAction={renderAction} />
@@ -193,6 +206,8 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, justArrived
             height={160}
           />
         ) : null}
+
+        {isHost ? <HostTools live={live} api={api} refresh={refresh} disabled={stale} /> : null}
       </Screen>
       {flash ? <ArrivalFlash timeLabel={timeLabel} onDone={endFlash} /> : null}
     </View>

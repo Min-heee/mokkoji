@@ -131,9 +131,11 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
       if (!serverClock.hasSample()) await doPing();
 
       let [me, list] = await Promise.all([api.getMyProfile(), api.listMyAppointments()]);
-      // 마감이 지난 열린 약속은 한 번 열어 준다 — 서버가 그때 정산한다(§3.5)
+      // 마감이 지난 열린 약속(그리고 시작 없이 약속 시각을 넘긴 약속)은 한 번 열어 준다 — 서버가 그때 정산·무효 처리한다(§3.5)
       const now = serverClock.now();
-      const overdue = list.filter((a) => a.status === 'open' && a.closeMs < now);
+      const overdue = list.filter(
+        (a) => a.status === 'open' && (a.closeMs < now || (a.startedAtMs === null && a.meetAtMs <= now)),
+      );
       if (overdue.length > 0) {
         await Promise.allSettled(overdue.map((a) => api.getLive(a.id)));
         [me, list] = await Promise.all([api.getMyProfile(), api.listMyAppointments()]);

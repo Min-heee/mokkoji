@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { fullForfeitAtMs, locationShareWindow, penaltyFor, type LatePolicy } from './lateBet';
+import { closeAtMs, fullForfeitAtMs, penaltyFor, type LatePolicy } from './lateBet';
 import {
   DEFAULT_PRESET_ID,
   describePolicy,
@@ -15,7 +15,6 @@ import {
   POLICY_LIMITS,
   presetPolicy,
   RADIUS_CHOICES,
-  SHARE_BEFORE_CHOICES,
   shortPolicyLine,
   STAKE_CHOICES,
   validatePolicy,
@@ -36,7 +35,6 @@ function sqlCheck(p: LatePolicy): boolean {
     between(p.unitMinutes, 1, 60) &&
     between(p.penaltyPerUnit, 0, 300) &&
     between(p.graceMinutes, 0, 30) &&
-    between(p.shareLocationMinutesBefore, 30, 360) &&
     (p.penaltyPerUnit === 0 ||
       p.stake === 0 ||
       (Math.ceil(p.stake / p.penaltyPerUnit) - 1) * p.unitMinutes + p.graceMinutes <= 180)
@@ -49,7 +47,7 @@ describe('프리셋', () => {
     for (const p of LATE_PRESETS) assert.deepEqual(validatePolicy(p.policy), { ok: true, issues: [] }, p.name);
   });
 
-  it('기본은 보통: 100P, 5분마다 10P, 반경 100m, 봐주는 시간 0분, 공개 1시간 전', () => {
+  it('기본은 보통: 100P, 5분마다 10P, 반경 100m, 봐주는 시간 0분 (공개 시점은 정책이 아니다)', () => {
     assert.equal(DEFAULT_PRESET_ID, 'normal');
     assert.deepEqual(presetPolicy(), {
       stake: 100,
@@ -57,13 +55,12 @@ describe('프리셋', () => {
       unitMinutes: 5,
       penaltyPerUnit: 10,
       graceMinutes: 0,
-      shareLocationMinutesBefore: 60,
     });
   });
 
-  it('전액을 잃는 때는 엔진에서 나온다: 순한맛·보통 45분, 매운맛 29분 넘게', () => {
+  it('전액을 잃는 때는 엔진에서 나온다: 순한맛 90분, 보통 45분, 매운맛 29분 넘게', () => {
     const minutes = LATE_PRESETS.map((p) => describePolicy(p.policy, MEET).fullLateMinutes);
-    assert.deepEqual(minutes, [45, 45, 29]);
+    assert.deepEqual(minutes, [90, 45, 29]);
     for (const p of LATE_PRESETS) {
       const at = fullForfeitAtMs(p.policy, MEET) as number;
       // 그 시각 정각 도착은 아직 전액이 아니고, 1ms 넘기면 전액이다
@@ -75,7 +72,7 @@ describe('프리셋', () => {
   it('presetPolicy 는 사본을 준다', () => {
     const a = presetPolicy('mild');
     a.stake = 999;
-    assert.equal(presetPolicy('mild').stake, 50);
+    assert.equal(presetPolicy('mild').stake, 100);
   });
 
   it('폼 선택지의 모든 조합이 서버 CHECK 를 통과한다', () => {
@@ -83,10 +80,8 @@ describe('프리셋', () => {
       for (const stake of STAKE_CHOICES) {
         for (const graceMinutes of GRACE_CHOICES) {
           for (const radiusM of RADIUS_CHOICES) {
-            for (const shareLocationMinutesBefore of SHARE_BEFORE_CHOICES) {
-              const p = policyWithStake(preset.id, stake, { graceMinutes, radiusM, shareLocationMinutesBefore });
-              assert.ok(isValidPolicy(p), JSON.stringify(p));
-            }
+            const p = policyWithStake(preset.id, stake, { graceMinutes, radiusM });
+            assert.ok(isValidPolicy(p), JSON.stringify(p));
           }
         }
       }
@@ -120,8 +115,8 @@ describe('policyWithStake', () => {
     assert.equal(matchPreset(policyWithStake('mild', 50)), 'mild');
     assert.equal(matchPreset(policyWithStake('spicy', 100)), 'spicy');
     assert.equal(matchPreset(policyWithStake('normal', 200)), 'normal');
-    // 순한맛과 보통은 비율이 같아 스테이크를 바꾸면 구분되지 않는다 → 기본(보통)
-    assert.equal(matchPreset(policyWithStake('mild', 200)), 'normal');
+    // 순한맛은 단위가 10분이라 스테이크를 바꿔도 보통과 구분된다
+    assert.equal(matchPreset(policyWithStake('mild', 200)), 'mild');
     assert.equal(matchPreset({ ...NORMAL, unitMinutes: 7 }), null);
   });
 });
@@ -180,7 +175,6 @@ describe('validatePolicy', () => {
         unitMinutes: pick('unitMinutes'),
         penaltyPerUnit: pick('penaltyPerUnit'),
         graceMinutes: pick('graceMinutes'),
-        shareLocationMinutesBefore: pick('shareLocationMinutesBefore'),
       };
       assert.equal(isValidPolicy(p), sqlCheck(p), JSON.stringify(p));
       if (!sqlCheck(p)) rejected += 1;
@@ -190,14 +184,14 @@ describe('validatePolicy', () => {
 });
 
 describe('describePolicy', () => {
-  it('말하는 전액 시각 === fullForfeitAtMs (세 프리셋)', () => {
+  it('말하는 전액 시각 === fullForfeitAtMs, 체크인 마감 = 전액 시각 + 30분 꼬리 (세 프리셋)', () => {
     for (const p of LATE_PRESETS) {
       const d = describePolicy(p.policy, MEET);
       const at = fullForfeitAtMs(p.policy, MEET) as number;
       assert.equal(d.fullForfeitAtMs, at, p.name);
-      assert.equal(d.closeMs, at, p.name);
-      assert.ok(d.close.startsWith(`${formatKoreanTime(at, 'Asia/Seoul')}가 지나면`), d.close);
-      assert.ok(d.close.includes(`${p.policy.stake}P를 모두 잃어요`), d.close);
+      assert.equal(d.closeMs, at + 30 * MIN, p.name);
+      assert.ok(d.close.startsWith(`${formatKoreanTime(at + 30 * MIN, 'Asia/Seoul')}에 체크인이 닫혀요`), d.close);
+      assert.ok(d.full.includes(`${p.policy.stake}P를 모두 잃어요`), d.full);
     }
   });
 
@@ -206,18 +200,18 @@ describe('describePolicy', () => {
     assert.equal(d.penalty, '늦으면 5분마다 10P씩 잃어요. 1분만 늦어도 10P예요.');
     assert.equal(d.example, '10분 늦으면 −20P');
     assert.equal(d.full, '45분 넘게 늦으면 100P를 모두 잃어요.');
-    assert.equal(d.close, '오후 8:15가 지나면 체크인이 닫히고 100P를 모두 잃어요.');
-    assert.equal(d.share, '오후 6:30부터 서로 위치가 보여요. 그 뒤에는 빠질 수 없어요.');
+    assert.equal(d.close, '오후 8:45에 체크인이 닫혀요. 그 뒤에 와도 도착으로 남지 않아요.');
     assert.equal(d.radius, '약속 장소 100m 안에 들어오면 도착이에요.');
     assert.equal(d.grace, '봐주는 시간은 없어요. 약속 시각이 마감이에요.');
-    assert.equal(d.lines.length, 8);
+    assert.equal(d.lines.length, 7);
+    assert.ok(!('share' in d), '위치 공개 시작 문장은 없다(주최자의 [시작하기]가 시작이다)');
   });
 
   it('매운맛은 29분 넘게, 예시도 엔진 값', () => {
     const d = describePolicy(presetPolicy('spicy'), MEET);
     assert.equal(d.full, '29분 넘게 늦으면 300P를 모두 잃어요.');
     assert.equal(d.example, '2분 늦으면 −20P');
-    assert.equal(d.close, '오후 7:59가 지나면 체크인이 닫히고 300P를 모두 잃어요.');
+    assert.equal(d.close, '오후 8:29에 체크인이 닫혀요. 그 뒤에 와도 도착으로 남지 않아요.');
   });
 
   it('봐주는 시간이 있으면 예시와 전액 시각이 그만큼 밀린다', () => {
@@ -244,7 +238,7 @@ describe('describePolicy', () => {
     const d = describePolicy({ ...NORMAL, penaltyPerUnit: 0 }, MEET);
     assert.equal(d.fullForfeitAtMs, null);
     assert.equal(d.close, '오후 8:30까지 오지 않으면 100P를 모두 잃어요.');
-    assert.equal(d.closeMs, locationShareWindow({ ...NORMAL, penaltyPerUnit: 0 }, MEET).endMs);
+    assert.equal(d.closeMs, closeAtMs({ ...NORMAL, penaltyPerUnit: 0 }, MEET));
   });
 
   it('한 단위에 전액이면 "조금이라도 늦으면"', () => {
@@ -256,8 +250,7 @@ describe('describePolicy', () => {
   it('시간대를 주면 그 시간대의 벽시계로 말한다', () => {
     // 같은 순간이 방콕에서는 오후 5:30 → 마감 오후 6:15
     const d = describePolicy(NORMAL, MEET, 'Asia/Bangkok');
-    assert.ok(d.close.startsWith('오후 6:15가'), d.close);
-    assert.ok(d.share.startsWith('오후 4:30부터'), d.share);
+    assert.ok(d.close.startsWith('오후 6:45에'), d.close);
   });
 });
 

@@ -1,30 +1,23 @@
 /**
- * 승인 대기(phase = pending) — "주최자가 수락하면 참여돼요" + 조건 카드 + [요청 취소]
- * 설계서 §3.2-4, §5.3-F. 담당: [waiting]
+ * 약속 조건 카드와 같이 쓰는 조각 — WaitingView·LiveView·app/j 가 공유한다.
+ * (수락제 폐지로 PendingView 가 사라지면서 그 파일에 있던 공유 조각을 여기로 옮겼다. 내용은 그대로다.)
  *
- * 규칙
- * - 다른 참가자·위치는 절대 그리지 않는다. (서버도 승인 대기자에게는 자기 행만 주지만, 화면도 participants 를 아예 읽지 않는다)
- * - 포인트는 아직 걸리지 않았다 → [요청 취소]에 환불 문구가 없다.
- * - 수락되면 useLive 의 폴링(5초)이 phase 를 바꾸고 컨테이너가 다음 뷰로 넘긴다. 여기서는 아무것도 하지 않는다.
- *
- * 이 파일은 대기실(WaitingView)과 같이 쓰는 조각도 내보낸다: ConditionCard · FromNowPill · openExternal
+ * export: ConditionCard · FromNowPill · openExternal
  */
 import * as Linking from 'expo-linking';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 
 import { describePolicy, shortPolicyLine } from '@/domain/latePresets';
 import { mapPinUrl } from '@/domain/mapRoute';
-import { formatFromNow, formatKoreanDateTime, formatKoreanTime, tzLabel } from '@/domain/tzGuard';
-import { Card, PrimaryButton, Screen, SectionTitle } from '@/ui/components';
-import { alertDialog, confirmDialog } from '@/ui/dialogs';
+import { formatFromNow, formatKoreanDateTime, tzLabel } from '@/domain/tzGuard';
+import { Card } from '@/ui/components';
+import { alertDialog } from '@/ui/dialogs';
 import { MapPane } from '@/ui/MapPane';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
-import { toLateBetError } from '../errors';
 import type { LbAppointment } from '../types';
 import { useServerNow } from '../useServerNow';
-import type { PendingViewProps } from './props';
 
 // ───────────────────────── 같이 쓰는 조각 ─────────────────────────
 
@@ -54,7 +47,8 @@ export interface ConditionCardProps {
 
 /**
  * 약속 조건 카드: 시각(+시간대 라벨 상시) · 장소 · 핀 지도(readonly) · 내기 조건 전문.
- * 위치 공개 시각 문장은 넣지 않는다 — 대기실은 하단 잠금 안내가, 승인 대기는 머리 문구가 따로 말한다.
+ * '위치 공개 시점' 항목은 없다(오너 확정 2026-09-18) — 위치는 주최자가 [시작하기]를 누르는 순간부터 보이고,
+ * 그 안내는 대기실(주최자 버튼 아래 설명 / 게스트 "주최자가 시작하면 위치가 보여요")이 따로 말한다.
  */
 export function ConditionCard({ appointment: a, pinHint }: ConditionCardProps) {
   const d = describePolicy(a.policy, a.meetAtMs, a.tz);
@@ -99,75 +93,7 @@ export function ConditionCard({ appointment: a, pinHint }: ConditionCardProps) {
   );
 }
 
-// ───────────────────────── 승인 대기 화면 ─────────────────────────
-
-export function PendingView({ live, me, api, refresh, stale, onLeft }: PendingViewProps) {
-  const a = live.appointment;
-  const stake = a.policy.stake;
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  const withdraw = useCallback(async () => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    try {
-      await api.leave(a.id);
-      onLeft(); // refresh 대신 — 안 그러면 "주최자가 요청을 받지 않았어요"가 뜬다
-    } catch (e) {
-      alertDialog('요청을 취소하지 못했어요', toLateBetError(e).message);
-      await refresh();
-    } finally {
-      busyRef.current = false;
-      if (mounted.current) setBusy(false);
-    }
-  }, [a.id, api, onLeft, refresh]);
-
-  const askWithdraw = () => {
-    confirmDialog(
-      '참여 요청을 취소할까요?',
-      '아직 포인트가 걸리지 않았어요. 초대 링크로 다시 요청할 수 있어요.',
-      () => void withdraw(),
-      { confirmText: '네, 취소할게요', destructive: true },
-    );
-  };
-
-  return (
-    <Screen footer={<PrimaryButton label="요청 취소" variant="ghost" onPress={askWithdraw} disabled={busy || stale} />}>
-      <View style={styles.head}>
-        <Text style={styles.headTitle}>주최자가 수락하면 참여돼요</Text>
-        <Text style={styles.headBody}>
-          {stake > 0 ? `수락되는 순간 ${stake}P가 걸려요. ` : ''}
-          주최자에게 카톡으로 알려 주세요.
-        </Text>
-        <Text style={styles.muted}>
-          {me ? `'${me.nickname}' 이름으로 요청했어요. ` : ''}
-          수락되면 이 화면이 바로 바뀌어요.
-        </Text>
-      </View>
-
-      <SectionTitle>약속 조건</SectionTitle>
-      <ConditionCard appointment={a} pinHint="핀 위치가 맞는지 확인해 주세요" />
-
-      <Text style={styles.muted}>
-        수락되기 전에는 다른 참가자와 위치가 보이지 않아요. 약속 시각({formatKoreanTime(a.meetAtMs, a.tz)})까지 수락되지 않으면
-        요청은 사라져요.
-      </Text>
-    </Screen>
-  );
-}
-
 const styles = StyleSheet.create({
-  head: { gap: spacing.sm, paddingVertical: spacing.sm },
-  headTitle: { fontSize: fontSize.lg, fontWeight: '800', color: colors.text },
-  headBody: { fontSize: fontSize.md, color: colors.text, lineHeight: 22 },
   muted: { fontSize: fontSize.sm, color: colors.subtext, lineHeight: 20 },
   timeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
   time: { fontSize: fontSize.lg, fontWeight: '800', color: colors.text, flexShrink: 1 },

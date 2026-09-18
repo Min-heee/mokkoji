@@ -5,8 +5,9 @@
  * P0 에서는 진짜 GPS 대신 '가짜 기기 위치'(fakeDevice)를 읽는다. fake 모드에서 FakeDevPanel 이 그 값을 바꾼다.
  * fake 모드가 아니면 아무것도 보고하지 않는다(permission='unsupported').
  *
- * 규칙(설계서 §3.3):
- * - 도는 조건: 화면 포커스 ∧ 앱 active ∧ 공개 창 안 ∧ 나는 활성·미도착 ∧ 공유 토글 ON
+ * 규칙(설계서 §3.3, 오너 확정 흐름 2026-09-18):
+ * - 도는 조건: 화면 포커스 ∧ 앱 active ∧ 주최자가 시작한 뒤 ∧ 마감 전(isCheckInOpen) ∧ 나는 활성·미도착 ∧ 공유 토글 ON
+ *   시작 전(대기실)에는 아무것도 보고하지 않는다 — 위치는 아무도 못 본다
  * - 조건이 깨지면(blur·백그라운드·토글 OFF) lb_stop_sharing 을 best-effort 로 부른다
  * - 토글 OFF 여도 [도착 확인](checkInNow)은 share=false 로 판정만 받는다
  */

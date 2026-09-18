@@ -12,7 +12,6 @@ export interface LateNotificationTarget {
   title: string;
   tz: string;
   meetAtMs: number;
-  shareStartMs: number;
   closeMs: number;
 }
 
@@ -29,7 +28,7 @@ export async function canScheduleExactAlarms(): Promise<boolean> {
   return true;
 }
 
-/** 참여·생성·조건 변경 직후: 공개 시작 / 약속 5분 전 / 마감 임박 알림을 (다시) 예약한다 */
+/** 참여·생성·조건 변경 직후: 약속 5분 전 / 마감 임박 알림을 (다시) 예약한다. 위치 공개 시작은 주최자의 [시작하기]라 예약 대상이 아니다 */
 export async function scheduleLateNotifications(_target: LateNotificationTarget): Promise<void> {
   // P1
 }

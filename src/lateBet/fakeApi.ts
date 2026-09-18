@@ -1,27 +1,43 @@
 /**
  * 약속 내기 — 메모리 가짜 서버 (P0: Supabase 없이 전 화면을 돌리기 위한 것).
  *
- * 설계서 부록 A 의 plpgsql RPC 를 같은 순서·같은 오류 코드로 옮겼다. 다른 점:
+ * 설계서 부록 A 의 plpgsql RPC 를 같은 순서·같은 오류 코드로 옮긴 뒤, 오너 확정 흐름(2026-09-18, 설계서 §0-1)을 반영했다:
+ * - 수락제 폐지 → 초대 명단(invitees). 참여 = 명단에서 내 이름을 고르는 것(claimSlot). pending 은 없다.
+ * - 시작 = 주최자의 [시작하기](start, startedAtMs). 그 순간부터 전원 위치가 서로 보이고 체크인이 열린다. 되돌릴 수 없다.
+ *   '전원 참여 시 자동 잠금'과 '위치 공개 시점(N분 전)'은 없다.
+ * - 시작 전에는 주최자가 조건 전부를 바꾼다(차액 에스크로/환불, version+1, changes). 나가기·내보내기·명단 편집도 시작 전만.
+ *   시작 후에는 미루기·장소만. 아직 안 들어온 이름은 시작 뒤에도 약속 시각까지 들어올 수 있다.
+ * - 남의 위치는 시작됨 ∧ 마감 전 ∧ 미도착 ∧ 3분 안일 때만 내려간다. 체크인은 시작 시각부터 마감까지.
+ * - 마감(closeMs) = 전액 몰수 시각 + 30분 꼬리(lateCloseMs).
+ * - 약속 시각(meetAtMs)이 지나면: 안 들어온 이름 삭제(환불 없음), 시작이 안 된 약속은 무효(notStarted, 전원 환불).
+ *   정산(settle)은 마감 + 15초 / 전원 도착 ∧ 약속 시각 이후 / 시작 안 됨 ∧ 약속 시각 이후 — 셋 중 하나.
+ *
+ * 다른 점:
  * - 저장은 메모리뿐이다(AsyncStorage 에 쓰지 않는다). 앱을 다시 띄우면 전부 사라진다.
  * - 시계는 '가짜 서버 시계'(실제 시각 + 빨리 감은 만큼)다. now()/clock_timestamp() 구분은 없다.
  * - 트랜잭션은 상태 전체를 JSON 으로 떠 두었다가 예외가 나면 되돌리는 것으로 흉내 낸다.
- * - 걸어오는 봇 친구가 있다(제시간/지각/노쇼/앱을 닫음/지하라 GPS 가 안 됨).
+ * - 걸어오는 봇 친구가 있다(제시간/지각/노쇼/앱을 닫음/지하라 GPS 가 안 됨). 봇은 명단의 이름을 차례로 고른다.
  *
  * React/RN 을 import 하지 않는다 — fakeApi.test.ts 가 node 에서 그대로 돈다.
  */
 import { haversineMeters } from '../domain/geo';
 import { generateCode, normalizeCode } from '../domain/invite';
 import { settleLateBet, type LatePolicy } from '../domain/lateBet';
-import { lateTimes } from '../domain/latePhase';
+import { lateCloseMs } from '../domain/latePhase';
 import { START_BALANCE, presetPolicy, validatePolicy } from '../domain/latePresets';
 import { isKnownTz, isTzSuspect, msToLocalAt, wallClockToMs } from '../domain/tzGuard';
 import type { LateBetApi } from './api';
 import { LateBetError, type LateBetErrorCode } from './errors';
 import type {
   LbAppointment,
+  LbAppointmentChange,
+  LbAppointmentSnapshot,
   LbArrivalMethod,
   LbCreateInput,
+  LbEditPatch,
   LbInvitePreview,
+  LbInvitee,
+  LbInviteesPatch,
   LbJoinResult,
   LbLedgerEntry,
   LbLedgerKind,
@@ -35,7 +51,6 @@ import type {
   LbReportReason,
   LbReportResult,
   LbResultStatus,
-  LbUpdateInput,
   LbVoidReason,
   LateAppointmentStatus,
   LateMemberState,
@@ -48,23 +63,23 @@ const LOCAL_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
 export const FAKE_VISIBLE_MS = 3 * MIN;
 export const FAKE_PURGE_MS = 10 * MIN;
 export const FAKE_SETTLE_SLACK_MS = 15_000;
+/** 최대 인원(주최자 포함) = 명단 19명 + 주최자 */
 export const FAKE_MAX_ACTIVE = 20;
-export const FAKE_MAX_PENDING = 10;
 export const FAKE_MAX_OPEN_HOSTED = 10;
-/** 봇이 주최한 약속에서 내 참여 요청이 자동 수락되기까지 */
-export const FAKE_BOT_HOST_APPROVE_MS = 8_000;
+/** 시작 후 시간 미루기 상한 */
+export const FAKE_MAX_POSTPONE_MS = 180 * MIN;
 
 /** 가짜 서버에서 '나' */
 export const FAKE_ME = 'fake-me';
 
 /** 데모 초대 코드 — app/j 화면을 혼자 확인할 때 입력한다 */
 export const FAKE_DEMO_CODES = {
-  /** 잠금 전: 바로 참여 + 에스크로 */
+  /** 시작 전: 명단에 빈 이름('민병희'·'병희')이 있어 바로 고르고 참여할 수 있다(대기실) */
   open: 'FAKE2222',
-  /** 잠금 후: 참여 요청 → 봇 주최자가 8초 뒤 수락 */
-  locked: 'FAKE3333',
-  /** 주최자가 참여 마감을 눌러 둠 → LB_JOIN_CLOSED */
-  joinClosed: 'FAKE4444',
+  /** 명단에 빈 이름이 없다 → 고를 이름이 없다(LB_NOT_INVITED 안내) */
+  full: 'FAKE3333',
+  /** 주최자가 이미 시작했고 빈 이름이 하나('민병희') → 고르는 순간 live 화면, 친구 위치가 바로 뜬다 */
+  started: 'FAKE4444',
   /** 취소된 약속 */
   canceled: 'FAKE5555',
 } as const;
@@ -87,6 +102,17 @@ interface ProfileRow {
   balance: number;
   isBot: boolean;
 }
+interface InviteeRow {
+  name: string;
+  claimedByUserId: string | null;
+  claimedAtMs: number | null;
+}
+interface ChangeRow {
+  version: number;
+  atMs: number;
+  before: LbAppointmentSnapshot;
+  after: LbAppointmentSnapshot;
+}
 interface ApptRow {
   id: string;
   inviteCode: string;
@@ -100,14 +126,16 @@ interface ApptRow {
   placeLat: number;
   placeLng: number;
   policy: LatePolicy;
-  shareStartMs: number;
   closeMs: number;
-  joinClosed: boolean;
   status: LateAppointmentStatus;
   voidReason: LbVoidReason | null;
   settledAtMs: number | null;
   version: number;
   createdAtMs: number;
+  invitees: InviteeRow[];
+  /** 주최자가 [시작하기]를 누른 시각. null = 시작 전 */
+  startedAtMs: number | null;
+  changes: ChangeRow[];
 }
 interface PartRow {
   appointmentId: string;
@@ -218,13 +246,16 @@ export interface FakeBotInfo {
   plan: FakeBotPlan;
   state: LateMemberState | null;
   arrivedAtMs: number | null;
+  /** 주최자가 이미 시작한 뒤에 들어왔는가(들어온 순간부터 위치 공개·판정 대상) */
+  started: boolean;
 }
 
 function fail(code: LateBetErrorCode, detail?: string): never {
   throw new LateBetError(code, detail ?? null);
 }
 
-const INVISIBLE = /[­​-‏‪-‮⁠-⁤﻿]/g;
+/** private.lb_clean_nick 의 '보이지 않는 문자' (U+00AD, U+200B–200F, U+2028–202F, U+2060–2064, U+FEFF) */
+const INVISIBLE = /[\u00AD\u200B-\u200F\u2028-\u202F\u2060-\u2064\uFEFF]/g;
 /** private.lb_clean_nick */
 export const cleanNick = (raw: unknown): string => (typeof raw === 'string' ? raw : '').replace(INVISIBLE, '').trim();
 /** private.lb_nick_key — NFKC + 공백 제거 + 소문자 */
@@ -233,6 +264,13 @@ const charLen = (s: string) => Array.from(s).length;
 
 const byJoin = (a: PartRow, b: PartRow) => a.joinedAtMs - b.joinedAtMs || (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0);
 const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+const samePolicy = (a: LatePolicy, b: LatePolicy): boolean =>
+  a.stake === b.stake &&
+  a.radiusM === b.radiusM &&
+  a.unitMinutes === b.unitMinutes &&
+  a.penaltyPerUnit === b.penaltyPerUnit &&
+  a.graceMinutes === b.graceMinutes;
 
 /** 목적지에서 bearing(라디안) 방향으로 distM 떨어진 점 (평면 근사 — 수 km 안에서는 충분하다) */
 export function offsetPoint(lat: number, lng: number, distM: number, bearingRad: number): { lat: number; lng: number } {
@@ -332,6 +370,9 @@ export class FakeServer {
   private isBanned(apptId: string, userId: string): boolean {
     return this.state.bans.includes(`${apptId}|${userId}`);
   }
+  private hostAlone(a: ApptRow): boolean {
+    return !this.partsOf(a.id).some((p) => p.userId !== a.hostId);
+  }
 
   /** private.lb_post — 포인트 이동의 유일한 통로: 잔액 갱신 + 원장 1행 */
   private post(
@@ -342,7 +383,7 @@ export class FakeServer {
     meta: { reason?: LbLedgerReason; reliefFor?: string } = {},
   ): number {
     const p = this.profile(userId);
-    if (!p || p.balance + amount < 0) fail('LB_INSUFFICIENT_POINTS');
+    if (!p || p.balance + amount < 0) fail('LB_INSUFFICIENT_POINTS', this.part(apptId ?? '', userId)?.nickname);
     const row = p as ProfileRow;
     row.balance += amount;
     this.state.seq += 1;
@@ -360,23 +401,28 @@ export class FakeServer {
     return row.balance;
   }
 
-  /** private.lb_hold — 모자라면 '가진 것 전부 < 1000' 일 때에 한해 부족분만 채운 뒤 건다 */
-  private hold(userId: string, apptId: string, stake: number): void {
-    if (stake <= 0) return;
+  /**
+   * private.lb_hold — 모자라면 '가진 것 전부(잔액 + 열린 약속에 걸린 합) < 1000' 일 때에 한해 부족분만 채운 뒤 건다.
+   * heldHere = 이 약속에 이미 걸려 있는 포인트(잠금 전 걸 포인트 인상의 차액 hold 때)
+   */
+  private hold(userId: string, apptId: string, amount: number, opts: { reason?: LbLedgerReason; heldHere?: number } = {}): void {
+    if (amount <= 0) return;
     const p = this.profile(userId);
     if (!p) fail('LB_NO_PROFILE');
     const bal = (p as ProfileRow).balance;
-    if (bal < stake) {
+    if (bal < amount) {
       const escrow = this.state.parts
         .filter((x) => x.userId === userId && x.state === 'active' && x.appointmentId !== apptId)
         .reduce((sum, x) => {
           const a = this.appt(x.appointmentId);
           return a && a.status === 'open' ? sum + a.policy.stake : sum;
         }, 0);
-      if (bal + escrow >= START_BALANCE) fail('LB_INSUFFICIENT_POINTS');
-      this.post(userId, null, 'relief', stake - bal, { reason: 'topup', reliefFor: apptId });
+      if (bal + escrow + (opts.heldHere ?? 0) >= START_BALANCE) {
+        fail('LB_INSUFFICIENT_POINTS', this.part(apptId, userId)?.nickname ?? p?.nickname);
+      }
+      this.post(userId, null, 'relief', amount - bal, { reason: 'topup', reliefFor: apptId });
     }
-    this.post(userId, apptId, 'hold', -stake);
+    this.post(userId, apptId, 'hold', -amount, opts.reason ? { reason: opts.reason } : {});
   }
 
   /** private.lb_resolve_meet */
@@ -396,7 +442,7 @@ export class FakeServer {
   /** 테이블 CHECK 제약(23514) */
   private checkPolicy(policy: LatePolicy): LatePolicy {
     const raw = policy as unknown as Record<string, unknown>;
-    for (const k of ['stake', 'radiusM', 'unitMinutes', 'penaltyPerUnit', 'graceMinutes', 'shareLocationMinutesBefore']) {
+    for (const k of ['stake', 'radiusM', 'unitMinutes', 'penaltyPerUnit', 'graceMinutes']) {
       if (raw == null || typeof raw[k] !== 'number' || !Number.isInteger(raw[k] as number)) {
         fail('LB_CHECK_VIOLATION', `policy.${k}`);
       }
@@ -422,6 +468,22 @@ export class FakeServer {
     }
   }
 
+  /** 명단 이름 정리: 1~12자, 주최자 이름·중복(닉 키 기준) 제외 */
+  private cleanInviteeNames(raw: unknown, hostNick: string, existing: readonly InviteeRow[]): string[] {
+    const taken = new Set([nickKey(hostNick), ...existing.map((i) => nickKey(i.name))]);
+    const out: string[] = [];
+    for (const v of Array.isArray(raw) ? raw : []) {
+      const name = cleanNick(v);
+      const n = charLen(name);
+      if (n < 1 || n > 12) fail('LB_BAD_NICKNAME', name);
+      const key = nickKey(name);
+      if (taken.has(key)) continue; // 주최자 본인·같은 이름은 조용히 무시
+      taken.add(key);
+      out.push(name);
+    }
+    return out;
+  }
+
   private newInviteCode(): string {
     for (;;) {
       const code = generateCode(this.random);
@@ -435,17 +497,41 @@ export class FakeServer {
     this.state.locs = this.state.locs.filter((l) => l.updatedAtMs >= cutoff);
   }
 
-  /** private.lb_settle (멱등) */
+  /** 약속 시각이 지나면 아직 안 들어온 이름은 명단에서 지운다(포인트를 건 적이 없으니 환불 없음). 멱등 */
+  private dropUnclaimed(a: ApptRow): void {
+    if (this.nowMs() < a.meetAtMs) return;
+    a.invitees = a.invitees.filter((i) => i.claimedByUserId !== null);
+  }
+
+  /**
+   * private.lb_settle (멱등). 정산 조건 셋 중 하나:
+   * - 마감 + 15초가 지났다
+   * - 전원 도착 ∧ 약속 시각 이후
+   * - 시작이 안 된 채 약속 시각이 지났다 → 무효(notStarted), 전원 환불(refund/notStarted). 체크인이 열린 적이 없으니 전원 '오지 않음'
+   */
   private settle(apptId: string): void {
     const a = this.appt(apptId);
     if (!a || a.status !== 'open') return;
     const now = this.nowMs();
     const active = this.partsOf(apptId).filter((p) => p.state === 'active');
     const allArrived = active.length > 0 && active.every((p) => p.arrivedAtMs !== null);
-    if (!(now > a.closeMs + FAKE_SETTLE_SLACK_MS || (allArrived && now >= a.meetAtMs))) return;
+    const notStarted = a.startedAtMs === null && now >= a.meetAtMs;
+    if (!(now > a.closeMs + FAKE_SETTLE_SLACK_MS || (allArrived && now >= a.meetAtMs) || notStarted)) return;
+    this.dropUnclaimed(a);
 
-    // 승인 안 된 요청은 hold 가 없으므로 그냥 지운다
-    for (const p of this.partsOf(apptId)) if (p.state === 'pending') this.removePart(apptId, p.userId);
+    if (notStarted) {
+      for (const p of this.partsOf(apptId).sort((x, y) => byId(x.userId, y.userId))) {
+        p.resultStatus = 'noShow';
+        p.forfeited = 0;
+        p.received = 0;
+        if (a.policy.stake > 0) this.post(p.userId, apptId, 'refund', a.policy.stake, { reason: 'notStarted' });
+      }
+      a.status = a.policy.stake > 0 ? 'voided' : 'settled';
+      a.voidReason = 'notStarted';
+      a.settledAtMs = now;
+      this.removeLoc(apptId);
+      return;
+    }
 
     const rows = this.partsOf(apptId);
     const res = settleLateBet(
@@ -483,16 +569,28 @@ export class FakeServer {
     }
   }
 
-  private toAppointment(a: ApptRow, withCode: boolean): LbAppointment {
+  private snapshot(a: ApptRow): LbAppointmentSnapshot {
+    return {
+      localAt: a.localAt,
+      tz: a.tz,
+      meetAtMs: a.meetAtMs,
+      placeName: a.placeName,
+      placeLat: a.placeLat,
+      placeLng: a.placeLng,
+      policy: { ...a.policy },
+    };
+  }
+
+  private toAppointment(a: ApptRow): LbAppointment {
     return {
       id: a.id,
-      inviteCode: withCode ? a.inviteCode : null,
+      inviteCode: a.inviteCode,
       hostId: a.hostId,
+      hostNickname: this.part(a.id, a.hostId)?.nickname ?? this.profile(a.hostId)?.nickname ?? '',
       title: a.title,
       localAt: a.localAt,
       tz: a.tz,
       meetAtMs: a.meetAtMs,
-      shareStartMs: a.shareStartMs,
       closeMs: a.closeMs,
       placeName: a.placeName,
       placeNote: a.placeNote,
@@ -501,12 +599,14 @@ export class FakeServer {
       status: a.status,
       voidReason: a.voidReason,
       version: a.version,
-      joinClosed: a.joinClosed,
       policy: { ...a.policy },
+      invitees: a.invitees.map((i): LbInvitee => ({ ...i })),
+      startedAtMs: a.startedAtMs,
+      changes: a.changes.map((c): LbAppointmentChange => ({ ...c, before: { ...c.before }, after: { ...c.after } })),
     };
   }
 
-  // ───────────────────────── RPC 16개 (첫 인자 uid = auth.uid()) ─────────────────────────
+  // ───────────────────────── RPC (첫 인자 uid = auth.uid()) ─────────────────────────
 
   /** #0 */
   ping(): LbPing {
@@ -534,13 +634,14 @@ export class FakeServer {
     });
   }
 
-  /** #2 */
+  /** #2 — 초대 명단과 함께 만든다. 주최자 자동 참여 + 에스크로 */
   createAppointment(uidRaw: string, input: LbCreateInput): LbAppointment {
     const uid = this.uid(uidRaw);
     this.tick();
     return this.tx(() => {
       const me = this.profile(uid);
       if (!me) fail('LB_NO_PROFILE');
+      const host = me as ProfileRow;
       if (input.consent !== true) fail('LB_CONSENT_REQUIRED');
       if (this.state.appts.filter((a) => a.hostId === uid && a.status === 'open').length >= FAKE_MAX_OPEN_HOSTED) {
         fail('LB_TOO_MANY_OPEN');
@@ -549,7 +650,8 @@ export class FakeServer {
       this.checkPosition(input.lat, input.lng);
       const meetAtMs = this.resolveMeet(input.localAt, input.tz, input.lng, input.tzConfirmed === true);
       const policy = this.checkPolicy(input.policy);
-      const times = lateTimes(policy, meetAtMs);
+      const names = this.cleanInviteeNames(input.invitees, host.nickname, []);
+      if (names.length + 1 > FAKE_MAX_ACTIVE) fail('LB_FULL');
       const a: ApptRow = {
         id: this.nextId('appt'),
         inviteCode: this.newInviteCode(),
@@ -563,29 +665,30 @@ export class FakeServer {
         placeLat: input.lat,
         placeLng: input.lng,
         policy,
-        shareStartMs: times.shareStartMs,
-        closeMs: times.closeMs,
-        joinClosed: false,
+        closeMs: lateCloseMs(policy, meetAtMs),
         status: 'open',
         voidReason: null,
         settledAtMs: null,
         version: 1,
         createdAtMs: this.nowMs(),
+        invitees: names.map((name) => ({ name, claimedByUserId: null, claimedAtMs: null })),
+        startedAtMs: null,
+        changes: [],
       };
       this.state.appts.push(a);
-      this.insertPart(a.id, uid, (me as ProfileRow).nickname, 'active');
+      this.insertPart(a.id, uid, host.nickname);
       this.hold(uid, a.id, policy.stake);
-      return this.toAppointment(a, true);
+      return this.toAppointment(a);
     });
   }
 
-  private insertPart(apptId: string, userId: string, nickname: string, state: LateMemberState): PartRow {
+  private insertPart(apptId: string, userId: string, nickname: string): PartRow {
     const now = this.nowMs();
     const row: PartRow = {
       appointmentId: apptId,
       userId,
       nickname,
-      state,
+      state: 'active',
       joinedAtMs: now,
       consentedAtMs: now,
       firstNearAtMs: null,
@@ -602,7 +705,7 @@ export class FakeServer {
     return row;
   }
 
-  /** #3 */
+  /** #3 — 명단(누가 골랐는지)까지 보인다: 자기 이름을 골라야 하므로 */
   peekInvite(uidRaw: string, code: string): LbInvitePreview {
     const uid = this.uid(uidRaw);
     this.tick();
@@ -610,15 +713,14 @@ export class FakeServer {
     if (!a || this.isBanned(a.id, uid)) fail('LB_INVITE_NOT_FOUND');
     const row = a as ApptRow;
     const mine = this.part(row.id, uid);
-    const active = this.partsOf(row.id).filter((p) => p.state === 'active');
-    const now = this.nowMs();
     return {
       id: row.id,
       title: row.title,
+      hostNickname: this.part(row.id, row.hostId)?.nickname ?? '',
       localAt: row.localAt,
       tz: row.tz,
       meetAtMs: row.meetAtMs,
-      shareStartMs: row.shareStartMs,
+      startedAtMs: row.startedAtMs,
       closeMs: row.closeMs,
       placeName: row.placeName,
       placeNote: row.placeNote,
@@ -626,80 +728,94 @@ export class FakeServer {
       placeLng: row.placeLng,
       status: row.status,
       version: row.version,
-      joinClosed: row.joinClosed,
-      needsApproval: now >= row.shareStartMs,
-      serverNowMs: now,
+      serverNowMs: this.nowMs(),
       policy: { ...row.policy },
-      memberCount: active.length,
-      nicknames: mine?.state === 'active' ? active.map((p) => p.nickname) : [],
+      memberCount: this.partsOf(row.id).length,
+      invitees: row.invitees.map((i) => ({ name: i.name, claimed: i.claimedByUserId !== null, mine: i.claimedByUserId === uid })),
       myState: mine?.state ?? null,
       myBalance: this.profile(uid)?.balance ?? null,
     };
   }
 
-  /** #4 */
-  join(uidRaw: string, code: string, nickname: string, version: number, consent: boolean): LbJoinResult {
+  /** #4 — 명단에서 내 이름을 골라 참여(+에스크로). 약속 시각 전이면 주최자가 시작한 뒤에도 들어올 수 있다 */
+  claimSlot(uidRaw: string, apptId: string, name: string, version: number, consent: boolean): LbJoinResult {
     const uid = this.uid(uidRaw);
     this.tick();
-    return this.tx(() => this.joinInner(uid, code, nickname, version, consent, false));
+    return this.tx(() => this.claimInner(uid, apptId, name, version, consent));
   }
 
-  private joinInner(
-    uid: string,
-    code: string,
-    nickname: string,
-    version: number,
-    consent: boolean,
-    forcePending: boolean,
-  ): LbJoinResult {
-    const found = this.apptByCode(code);
+  private claimInner(uid: string, apptId: string, name: string, version: number, consent: boolean): LbJoinResult {
+    const found = this.appt(apptId);
     if (!found || this.isBanned(found.id, uid)) fail('LB_INVITE_NOT_FOUND');
     const a = found as ApptRow;
     const mine = this.part(a.id, uid);
-    if (mine) return { appointmentId: a.id, state: mine.state }; // 멱등
+    if (mine) return { appointmentId: a.id, state: mine.state, started: a.startedAtMs !== null }; // 멱등
 
     const now = this.nowMs();
-    if (a.status !== 'open' || a.joinClosed || now >= a.meetAtMs) fail('LB_JOIN_CLOSED');
+    if (a.status !== 'open' || now >= a.meetAtMs) fail('LB_JOIN_CLOSED');
     if (version !== a.version) fail('LB_APPT_CHANGED');
     if (consent !== true) fail('LB_CONSENT_REQUIRED');
     if (!this.profile(uid)) fail('LB_NO_PROFILE');
-    const nick = cleanNick(nickname);
-    const n = charLen(nick);
-    if (n < 1 || n > 12) fail('LB_BAD_NICKNAME');
-    const key = nickKey(nick);
-    const rows = this.partsOf(a.id);
-    if (rows.some((p) => nickKey(p.nickname) === key)) fail('LB_NICKNAME_TAKEN');
+    const key = nickKey(name);
+    if (key === '') fail('LB_BAD_NICKNAME');
+    const slot = a.invitees.find((i) => nickKey(i.name) === key);
+    if (!slot) fail('LB_NOT_INVITED', cleanNick(name));
+    if (slot.claimedByUserId !== null) fail('LB_SLOT_TAKEN', slot.name);
+    if (this.partsOf(a.id).length >= FAKE_MAX_ACTIVE) fail('LB_FULL');
 
-    if (forcePending || now >= a.shareStartMs) {
-      if (rows.filter((p) => p.state === 'pending').length >= FAKE_MAX_PENDING) fail('LB_FULL');
-      this.insertPart(a.id, uid, nick, 'pending');
-      return { appointmentId: a.id, state: 'pending' };
-    }
-    if (rows.filter((p) => p.state === 'active').length >= FAKE_MAX_ACTIVE) fail('LB_FULL');
-    this.insertPart(a.id, uid, nick, 'active');
+    this.insertPart(a.id, uid, slot.name);
     this.hold(uid, a.id, a.policy.stake); // 채워 줄 수도 없으면 예외 → 전체 롤백
-    return { appointmentId: a.id, state: 'active' };
+    slot.claimedByUserId = uid;
+    slot.claimedAtMs = now;
+    return { appointmentId: a.id, state: 'active', started: a.startedAtMs !== null };
   }
 
-  /** #5 */
-  approve(uidRaw: string, apptId: string, target: string): void {
+  /**
+   * #17 — [시작하기](주최자). 그 순간부터 전원 위치가 서로 보이고 체크인이 열린다. 되돌릴 수 없다.
+   * 약속 시각 전이면 언제든(참여 인원 조건 없음). 약속 시각이 지났거나 닫혔으면 LB_START_CLOSED, 이미 시작했으면 LB_ALREADY_STARTED
+   */
+  start(uidRaw: string, apptId: string): LbAppointment {
     const uid = this.uid(uidRaw);
     this.tick();
-    this.tx(() => {
+    return this.tx(() => {
       const a = this.appt(apptId);
       if (!a || a.hostId !== uid) fail('LB_NOT_HOST');
       const row = a as ApptRow;
-      if (row.status !== 'open' || this.nowMs() >= row.meetAtMs) fail('LB_JOIN_CLOSED');
-      if (this.partsOf(apptId).filter((p) => p.state === 'active').length >= FAKE_MAX_ACTIVE) fail('LB_FULL');
-      const t = this.part(apptId, target);
-      if (!t || t.state !== 'pending') return; // 이미 승인됐거나 요청을 거둔 경우
-      t.state = 'active';
-      t.joinedAtMs = this.nowMs();
-      this.hold(target, apptId, row.policy.stake);
+      if (row.startedAtMs !== null) fail('LB_ALREADY_STARTED');
+      const now = this.nowMs();
+      if (row.status !== 'open' || now >= row.meetAtMs) fail('LB_START_CLOSED');
+      row.startedAtMs = now;
+      return this.toAppointment(row);
     });
   }
 
-  /** #6 */
+  /** #16 — 명단 편집(주최자, 시작 전). remove 는 아직 안 들어온 이름만. 시작 후에는 LB_EDIT_FROZEN */
+  editInvitees(uidRaw: string, apptId: string, patch: LbInviteesPatch): LbAppointment {
+    const uid = this.uid(uidRaw);
+    this.tick();
+    return this.tx(() => {
+      const a = this.appt(apptId);
+      if (!a || a.hostId !== uid) fail('LB_NOT_HOST');
+      const row = a as ApptRow;
+      // 시작 없이 약속 시각이 지났으면 곧 무효될 약속이다(SQL lb_edit_invitees 와 같이 LB_EDIT_CLOSED)
+      if (row.status !== 'open' || (row.startedAtMs === null && this.nowMs() >= row.meetAtMs)) fail('LB_EDIT_CLOSED');
+      if (row.startedAtMs !== null) fail('LB_EDIT_FROZEN');
+      for (const raw of patch.remove ?? []) {
+        const key = nickKey(raw);
+        const slot = row.invitees.find((i) => nickKey(i.name) === key);
+        if (!slot) continue;
+        if (slot.claimedByUserId !== null) fail('LB_INVITEE_JOINED', slot.name);
+        row.invitees = row.invitees.filter((i) => i !== slot);
+      }
+      const hostNick = this.part(apptId, uid)?.nickname ?? '';
+      const added = this.cleanInviteeNames(patch.add ?? [], hostNick, row.invitees);
+      if (row.invitees.length + added.length + 1 > FAKE_MAX_ACTIVE) fail('LB_FULL');
+      for (const name of added) row.invitees.push({ name, claimedByUserId: null, claimedAtMs: null });
+      return this.toAppointment(row);
+    });
+  }
+
+  /** #6 — 시작 전까지(전액 환불). 이름은 명단에 남고 빈 칸이 된다(다시 들어올 수 있다). 시작 후 LB_LEAVE_CLOSED */
   leave(uidRaw: string, apptId: string): void {
     const uid = this.uid(uidRaw);
     this.tick();
@@ -709,18 +825,19 @@ export class FakeServer {
       const row = a as ApptRow;
       const me = this.part(apptId, uid);
       if (!me) return;
-      if (me.state === 'pending') {
-        this.removePart(apptId, uid);
-        return;
-      }
       if (row.hostId === uid) fail('LB_HOST_CANNOT_LEAVE');
-      if (row.status !== 'open' || this.nowMs() >= row.shareStartMs) fail('LB_LEAVE_CLOSED');
+      if (row.status !== 'open' || row.startedAtMs !== null) fail('LB_LEAVE_CLOSED');
       this.removePart(apptId, uid);
+      const slot = row.invitees.find((i) => i.claimedByUserId === uid);
+      if (slot) {
+        slot.claimedByUserId = null;
+        slot.claimedAtMs = null;
+      }
       if (row.policy.stake > 0) this.post(uid, apptId, 'refund', row.policy.stake, { reason: 'leave' });
     });
   }
 
-  /** #7 */
+  /** #7 — 시작 전까지(전액 환불). 명단에서도 그 이름을 지운다. ban 기본 true. 시작 후 LB_KICK_CLOSED */
   kick(uidRaw: string, apptId: string, target: string, ban = true): void {
     const uid = this.uid(uidRaw);
     this.tick();
@@ -731,23 +848,12 @@ export class FakeServer {
       if (target === uid) fail('LB_HOST_CANNOT_LEAVE');
       const t = this.part(apptId, target);
       if (!t) return;
-      if (t.state === 'active') {
-        if (row.status !== 'open' || this.nowMs() >= row.shareStartMs) fail('LB_KICK_CLOSED');
-        this.removePart(apptId, target);
-        if (row.policy.stake > 0) this.post(target, apptId, 'refund', row.policy.stake, { reason: 'kicked' });
-      } else {
-        this.removePart(apptId, target);
-      }
+      if (row.status !== 'open' || row.startedAtMs !== null) fail('LB_KICK_CLOSED');
+      this.removePart(apptId, target);
+      row.invitees = row.invitees.filter((i) => i.claimedByUserId !== target);
+      if (row.policy.stake > 0) this.post(target, apptId, 'refund', row.policy.stake, { reason: 'kicked' });
       if (ban !== false && !this.isBanned(apptId, target)) this.state.bans.push(`${apptId}|${target}`);
     });
-  }
-
-  /** #8 */
-  setJoinClosed(uidRaw: string, apptId: string, closed: boolean): void {
-    const uid = this.uid(uidRaw);
-    const a = this.appt(apptId);
-    if (!a || a.hostId !== uid || a.status !== 'open') fail('LB_NOT_HOST');
-    (a as ApptRow).joinClosed = closed !== false;
   }
 
   /** #9 — 조건이 아니므로 version 을 올리지 않는다 */
@@ -762,40 +868,75 @@ export class FakeServer {
     });
   }
 
-  /** #10 — 주최자 혼자일 때만. 옛 스테이크 환불 → 새 스테이크 에스크로 → version+1 */
-  updateAppointment(uidRaw: string, apptId: string, input: LbUpdateInput): LbAppointment {
+  /**
+   * #10 — 부분 갱신.
+   * - 시작 전: 전부. 걸 포인트 차액은 전원 추가 hold(부족분 자동 채움) / refund(policy_change). version+1
+   * - 시작 후: 시간 뒤로 미루기(최대 +3시간)·장소만. 그 외 변경은 LB_EDIT_FROZEN. 시작 시각은 그대로다
+   * - 마감이 지났거나 닫혔으면 LB_EDIT_CLOSED
+   */
+  edit(uidRaw: string, apptId: string, patch: LbEditPatch, version: number): LbAppointment {
     const uid = this.uid(uidRaw);
     this.tick();
     return this.tx(() => {
       const a = this.appt(apptId);
       if (!a || a.hostId !== uid) fail('LB_NOT_HOST');
       const row = a as ApptRow;
-      if (row.status !== 'open') fail('LB_EDIT_CLOSED');
-      if (this.partsOf(apptId).some((p) => p.userId !== uid || p.arrivedAtMs !== null)) fail('LB_EDIT_LOCKED');
-      if (input.lat == null || input.lng == null) fail('LB_BAD_POSITION');
-      this.checkPosition(input.lat, input.lng);
-      const meetAtMs = this.resolveMeet(input.localAt, input.tz, input.lng, input.tzConfirmed === true);
-      const policy = this.checkPolicy(input.policy);
+      const now = this.nowMs();
+      const started = row.startedAtMs !== null;
+      // 시작 없이 약속 시각이 지났으면 곧 무효될 약속이다(SQL lb_edit_appointment 와 같이 LB_EDIT_CLOSED)
+      if (row.status !== 'open' || now > row.closeMs || (!started && now >= row.meetAtMs)) fail('LB_EDIT_CLOSED');
+      if (version !== row.version) fail('LB_APPT_CHANGED');
 
-      if (row.policy.stake > 0) this.post(uid, apptId, 'refund', row.policy.stake, { reason: 'policy_change' });
-      const times = lateTimes(policy, meetAtMs);
-      row.localAt = msToLocalAt(meetAtMs, input.tz);
-      row.tz = input.tz;
+      const tz = patch.tz ?? row.tz;
+      const localAt = patch.localAt ?? row.localAt;
+      const timeGiven = patch.localAt !== undefined || patch.tz !== undefined;
+      const placeGiven = patch.placeName !== undefined || patch.lat !== undefined || patch.lng !== undefined;
+      if ((patch.lat === undefined) !== (patch.lng === undefined)) fail('LB_BAD_POSITION');
+      const lat = patch.lat ?? row.placeLat;
+      const lng = patch.lng ?? row.placeLng;
+      if (placeGiven) this.checkPosition(lat, lng);
+      const placeName = patch.placeName !== undefined ? this.checkText(patch.placeName, 1, 60, 'place_name') : row.placeName;
+      const policy = patch.policy !== undefined ? this.checkPolicy(patch.policy) : row.policy;
+      const policyChanged = !samePolicy(policy, row.policy);
+      if (started && policyChanged) fail('LB_EDIT_FROZEN');
+
+      const meetAtMs = timeGiven ? this.resolveMeet(localAt, tz, lng, patch.tzConfirmed === true) : row.meetAtMs;
+      const timeChanged = meetAtMs !== row.meetAtMs || tz !== row.tz;
+      if (started && timeChanged) {
+        if (meetAtMs < row.meetAtMs) fail('LB_POSTPONE_ONLY');
+        if (meetAtMs > row.meetAtMs + FAKE_MAX_POSTPONE_MS) fail('LB_POSTPONE_TOO_FAR');
+      }
+      const placeChanged = placeName !== row.placeName || lat !== row.placeLat || lng !== row.placeLng;
+      if (!timeChanged && !placeChanged && !policyChanged) return this.toAppointment(row); // 바뀐 게 없다
+
+      const before = this.snapshot(row);
+      // 걸 포인트 차액(시작 전만 올 수 있다): 전원, user_id 순
+      const diff = policy.stake - row.policy.stake;
+      if (diff !== 0) {
+        for (const p of this.partsOf(apptId).sort((x, y) => byId(x.userId, y.userId))) {
+          if (diff > 0) this.hold(p.userId, apptId, diff, { reason: 'policy_change', heldHere: row.policy.stake });
+          else this.post(p.userId, apptId, 'refund', -diff, { reason: 'policy_change' });
+        }
+      }
+      row.localAt = msToLocalAt(meetAtMs, tz);
+      row.tz = tz;
       row.meetAtMs = meetAtMs;
-      row.placeName = this.checkText(input.placeName, 1, 60, 'place_name');
-      row.placeLat = input.lat;
-      row.placeLng = input.lng;
+      row.placeName = placeName;
+      row.placeLat = lat;
+      row.placeLng = lng;
       row.policy = policy;
-      row.shareStartMs = times.shareStartMs;
-      row.closeMs = times.closeMs;
+      row.closeMs = lateCloseMs(policy, meetAtMs);
       row.version += 1;
-      this.hold(uid, apptId, policy.stake);
-      this.removeLoc(apptId);
-      return this.toAppointment(row, true);
+      row.changes.push({ version: row.version, atMs: now, before, after: this.snapshot(row) });
+      // 아직 안 온 봇은 새 시각·장소 기준으로 다시 걷는다
+      for (const b of this.state.bots.filter((x) => x.appointmentId === apptId)) {
+        if (this.part(apptId, b.userId)?.arrivedAtMs === null) this.planBot(row, b.userId, b.plan);
+      }
+      return this.toAppointment(row);
     });
   }
 
-  /** #11 */
+  /** #11 — 시작 전까지(혼자면 언제든). 전원 환불. 시작 후 LB_CANCEL_CLOSED */
   cancel(uidRaw: string, apptId: string): void {
     const uid = this.uid(uidRaw);
     this.tick();
@@ -804,9 +945,7 @@ export class FakeServer {
       if (!a || a.hostId !== uid) fail('LB_NOT_HOST');
       const row = a as ApptRow;
       if (row.status !== 'open') fail('LB_CANCEL_CLOSED');
-      const others = this.partsOf(apptId).some((p) => p.state === 'active' && p.userId !== uid);
-      if (this.nowMs() >= row.shareStartMs && others) fail('LB_CANCEL_CLOSED');
-      for (const p of this.partsOf(apptId)) if (p.state === 'pending') this.removePart(apptId, p.userId);
+      if (row.startedAtMs !== null && !this.hostAlone(row)) fail('LB_CANCEL_CLOSED');
       if (row.policy.stake > 0) {
         for (const p of this.partsOf(apptId).sort((x, y) => byId(x.userId, y.userId))) {
           this.post(p.userId, apptId, 'refund', row.policy.stake, { reason: 'canceled' });
@@ -818,7 +957,7 @@ export class FakeServer {
     });
   }
 
-  /** #12 — 위치 보고 = 도착 판정 (설계서 §2.3 판정표 순서 그대로) */
+  /** #12 — 위치 보고 = 도착 판정 (설계서 §2.3 판정표 순서 그대로, pending 단계만 없다). 시작 시각부터 마감까지 */
   reportLocation(uidRaw: string, apptId: string, input: LbReportInput): LbReportResult {
     const uid = this.uid(uidRaw);
     this.tick();
@@ -838,9 +977,12 @@ export class FakeServer {
 
     let reason: LbReportReason | null = null;
     if (row.status !== 'open') reason = 'closed';
-    else if (me.state === 'pending') reason = 'pending';
-    else if (me.arrivedAtMs !== null) reason = 'already_arrived';
-    else if (now < row.shareStartMs) reason = 'not_open';
+    else if (row.startedAtMs === null && now >= row.meetAtMs) {
+      // 시작 없이 약속 시각이 지났다 → 게으른 무효(notStarted) 뒤 closed (SQL lb_report_location 과 같다)
+      this.trySettle(apptId);
+      reason = 'closed';
+    } else if (me.arrivedAtMs !== null) reason = 'already_arrived';
+    else if (row.startedAtMs === null || now < row.startedAtMs) reason = 'not_open';
     else if (now > row.closeMs) {
       this.trySettle(apptId);
       reason = 'closed';
@@ -899,7 +1041,8 @@ export class FakeServer {
       if (!a || a.status !== 'open') fail('LB_CLOSED');
       const row = a as ApptRow;
       const now = this.nowMs();
-      if (now < row.shareStartMs || now > row.closeMs) fail('LB_CLOSED');
+      if (row.startedAtMs === null) fail('LB_NOT_STARTED');
+      if (now < row.startedAtMs || now > row.closeMs) fail('LB_CLOSED');
       if (target === uid) fail('LB_CANNOT_VOUCH_SELF');
       if (this.part(apptId, uid)?.arrivalMethod !== 'gps') fail('LB_VOUCHER_NOT_ARRIVED'); // 보증의 연쇄 금지
       const t = this.part(apptId, target);
@@ -912,7 +1055,7 @@ export class FakeServer {
     });
   }
 
-  /** #15 */
+  /** #15 — 남의 위치는 시작됨 ∧ 마감 전 ∧ 미도착 ∧ 3분 안일 때만 */
   getLive(uidRaw: string, apptId: string): LbLive {
     const uid = this.uid(uidRaw);
     this.tick();
@@ -922,6 +1065,7 @@ export class FakeServer {
     if (
       a.status === 'open' &&
       (now0 > a.closeMs + FAKE_SETTLE_SLACK_MS ||
+        (now0 >= a.meetAtMs && a.startedAtMs === null) ||
         (now0 >= a.meetAtMs && !this.partsOf(apptId).some((p) => p.state === 'active' && p.arrivedAtMs === null)))
     ) {
       this.trySettle(apptId);
@@ -929,16 +1073,13 @@ export class FakeServer {
     }
     this.purgeStale();
 
-    const found = this.part(apptId, uid);
-    if (!found) fail('LB_NOT_MEMBER'); // 정산이 승인 대기 요청을 지운 경우
-    const me = found as PartRow;
+    const me = this.part(apptId, uid) as PartRow;
     const now = this.nowMs();
-    const shareOpen = a.status === 'open' && me.state === 'active' && now >= a.shareStartMs && now <= a.closeMs;
+    const visible = a.status === 'open' && a.startedAtMs !== null && now >= a.startedAtMs && now <= a.closeMs;
 
-    const rows = this.partsOf(apptId).filter((p) => me.state === 'active' || p.userId === uid);
-    const participants: LbLiveParticipant[] = rows.map((p) => {
+    const participants: LbLiveParticipant[] = this.partsOf(apptId).map((p) => {
       const l = this.state.locs.find((x) => x.appointmentId === apptId && x.userId === p.userId);
-      const canSee = shareOpen && p.arrivedAtMs === null && l !== undefined;
+      const canSee = visible && p.arrivedAtMs === null && l !== undefined;
       if (canSee && l && p.userId !== uid && l.updatedAtMs > now - FAKE_VISIBLE_MS) this.logShare(apptId, uid, p.userId, now);
       return {
         userId: p.userId,
@@ -972,8 +1113,9 @@ export class FakeServer {
       myUserId: uid,
       myState: me.state,
       myBalance: this.profile(uid)?.balance ?? 0,
-      settlePending: a.status === 'open' && now > a.closeMs,
-      appointment: this.toAppointment(a, me.state === 'active'),
+      // 무효(notStarted)가 실패했을 때만 관측되는 두 번째 조건은 SQL lb_get_live 와 같다
+      settlePending: a.status === 'open' && (now > a.closeMs || (a.startedAtMs === null && now >= a.meetAtMs)),
+      appointment: this.toAppointment(a),
       participants,
     };
   }
@@ -1001,14 +1143,13 @@ export class FakeServer {
     for (const mine of this.state.parts.filter((p) => p.userId === uid)) {
       const a = this.appt(mine.appointmentId);
       if (!a) continue;
-      const rows = this.partsOf(a.id);
       out.push({
         id: a.id,
         title: a.title,
         localAt: a.localAt,
         tz: a.tz,
         meetAtMs: a.meetAtMs,
-        shareStartMs: a.shareStartMs,
+        startedAtMs: a.startedAtMs,
         closeMs: a.closeMs,
         placeName: a.placeName,
         status: a.status,
@@ -1016,8 +1157,8 @@ export class FakeServer {
         hostId: a.hostId,
         isHost: a.hostId === uid,
         myState: mine.state,
-        memberCount: mine.state === 'active' ? rows.filter((p) => p.state === 'active').length : 0,
-        pendingCount: a.hostId === uid ? rows.filter((p) => p.state === 'pending').length : 0,
+        memberCount: this.partsOf(a.id).length,
+        unclaimedCount: a.invitees.filter((i) => i.claimedByUserId === null).length,
       });
     }
     return out.sort((x, y) => {
@@ -1080,6 +1221,23 @@ export class FakeServer {
         if (f !== r) out.push({ problem: 'pot_mismatch', ref: a.id, detail: `${f} vs ${r}` });
         if (rows.some((p) => (p.forfeited ?? 0) > a.policy.stake)) out.push({ problem: 'forfeit_over_stake', ref: a.id, detail: '' });
       }
+      // 명단 불변식: 고른 이름 ↔ 참가자 행 1:1(주최자 제외), 약속 시각이 지난 열린 약속에는 빈 이름 없음
+      for (const i of a.invitees) {
+        if (i.claimedByUserId !== null && !this.part(a.id, i.claimedByUserId)) {
+          out.push({ problem: 'invitee_without_participant', ref: a.id, detail: i.name });
+        }
+      }
+      for (const p of rows) {
+        if (p.userId !== a.hostId && !a.invitees.some((i) => i.claimedByUserId === p.userId)) {
+          out.push({ problem: 'participant_without_invitee', ref: a.id, detail: p.nickname });
+        }
+      }
+      if (a.status === 'open' && this.nowMs() >= a.meetAtMs && a.invitees.some((i) => i.claimedByUserId === null)) {
+        out.push({ problem: 'unclaimed_after_meet', ref: a.id, detail: '' });
+      }
+      if (a.status === 'open' && a.startedAtMs === null && this.nowMs() >= a.meetAtMs) {
+        out.push({ problem: 'not_started_after_meet', ref: a.id, detail: '' });
+      }
     }
     const issued = ledger.filter((l) => l.kind === 'grant' || l.kind === 'relief').reduce((s, l) => s + l.amount, 0);
     const held = profiles.reduce((s, p) => s + p.balance, 0) + openEscrow;
@@ -1090,7 +1248,7 @@ export class FakeServer {
   /** FakeDevPanel 용: 부작용 없이 약속 본문만 읽는다(정산·봇 이동을 일으키지 않는다). 없으면 null */
   appointmentInfo(apptId: string): LbAppointment | null {
     const a = this.appt(apptId);
-    return a ? this.toAppointment(a, true) : null;
+    return a ? this.toAppointment(a) : null;
   }
 
   /** 테스트·디버그: 정산 실패 기록 */
@@ -1108,12 +1266,15 @@ export class FakeServer {
 
   // ───────────────────────── 봇 ─────────────────────────
 
-  private newBotUser(apptId: string, nickname?: string): { userId: string; nickname: string } {
-    const taken = new Set(this.partsOf(apptId).map((p) => nickKey(p.nickname)));
-    const name = nickname ?? BOT_NAMES.find((n) => !taken.has(nickKey(n))) ?? `친구${this.state.seq + 1}`;
+  private newBotUser(nickname: string): string {
     const userId = this.nextId('bot');
-    this.ensureProfile(userId, name, true);
-    return { userId, nickname: name };
+    this.ensureProfile(userId, nickname, true);
+    return userId;
+  }
+
+  private freeBotName(a: ApptRow): string {
+    const taken = new Set([...this.partsOf(a.id).map((p) => nickKey(p.nickname)), ...a.invitees.map((i) => nickKey(i.name))]);
+    return BOT_NAMES.find((n) => !taken.has(nickKey(n))) ?? `친구${this.state.seq + 1}`;
   }
 
   private planBot(a: ApptRow, userId: string, plan: FakeBotPlan): void {
@@ -1140,9 +1301,16 @@ export class FakeServer {
     });
   }
 
+  private botInfo(a: ApptRow, userId: string, plan: FakeBotPlan, started: boolean): FakeBotInfo {
+    const p = this.part(a.id, userId);
+    return { userId, nickname: p?.nickname ?? '', plan, state: p?.state ?? null, arrivedAtMs: p?.arrivedAtMs ?? null, started };
+  }
+
   /**
-   * 봇 한 명을 초대 코드로 참여시킨다 — 진짜 참여 규칙을 그대로 탄다.
-   * 잠금 전이면 즉시 참여(+에스크로), 잠금 후면 참여 요청(pending)이 된다.
+   * 봇 한 명이 명단의 다음 빈 이름을 골라 들어온다 — 진짜 참여 규칙(claimSlot)을 그대로 탄다.
+   * 주최자가 이미 시작했어도 약속 시각 전이면 들어온다(result.started = true → 그때부터 위치가 보이고 판정 대상).
+   * 빈 이름이 없으면: 시작 전이면 주최자가 이름을 하나 추가한 뒤 들어온다. 시작 후에는 명단이 동결이라 LB_EDIT_FROZEN.
+   * 약속 시각이 지났으면 LB_JOIN_CLOSED.
    */
   addBot(apptId: string, plan?: FakeBotPlan, nickname?: string): FakeBotInfo {
     this.tick();
@@ -1150,27 +1318,30 @@ export class FakeServer {
       const a = this.appt(apptId);
       if (!a) fail('LB_NOT_FOUND');
       const row = a as ApptRow;
+      if (row.status !== 'open' || this.nowMs() >= row.meetAtMs) fail('LB_JOIN_CLOSED');
       const count = this.state.bots.filter((b) => b.appointmentId === apptId).length;
       const chosen = plan ?? FAKE_BOT_PLANS[count % FAKE_BOT_PLANS.length];
-      const bot = this.newBotUser(apptId, nickname);
-      const res = this.joinInner(bot.userId, row.inviteCode, bot.nickname, row.version, true, false);
-      this.planBot(row, bot.userId, chosen);
-      return { userId: bot.userId, nickname: bot.nickname, plan: chosen, state: res.state, arrivedAtMs: null };
+      let slot = nickname !== undefined
+        ? row.invitees.find((i) => nickKey(i.name) === nickKey(nickname) && i.claimedByUserId === null)
+        : row.invitees.find((i) => i.claimedByUserId === null);
+      if (!slot) {
+        const name = nickname ?? this.freeBotName(row);
+        this.editInvitees(row.hostId, apptId, { add: [name] }); // 시작 후면 LB_EDIT_FROZEN
+        slot = row.invitees.find((i) => nickKey(i.name) === nickKey(name)) as InviteeRow;
+      }
+      const userId = this.newBotUser(slot.name);
+      const res = this.claimInner(userId, apptId, slot.name, row.version, true);
+      this.planBot(row, userId, chosen);
+      return this.botInfo(row, userId, chosen, res.started);
     });
   }
 
-  /** 주최자 수락 흐름 확인용: 잠금 전이어도 봇의 '참여 요청'(pending)을 만든다(개발 전용 우회) */
-  addBotRequest(apptId: string, plan: FakeBotPlan = 'onTime', nickname?: string): FakeBotInfo {
-    this.tick();
-    return this.tx(() => {
-      const a = this.appt(apptId);
-      if (!a) fail('LB_NOT_FOUND');
-      const row = a as ApptRow;
-      const bot = this.newBotUser(apptId, nickname);
-      const res = this.joinInner(bot.userId, row.inviteCode, bot.nickname, row.version, true, true);
-      this.planBot(row, bot.userId, plan);
-      return { userId: bot.userId, nickname: bot.nickname, plan, state: res.state, arrivedAtMs: null };
-    });
+  /** 주최자가 시간을 minutes 만큼 뒤로 미룬다(edit 를 그대로 탄다 — 시작 후 규칙 포함) */
+  postpone(apptId: string, minutes: number): LbAppointment {
+    const a = this.appt(apptId);
+    if (!a) fail('LB_NOT_FOUND');
+    const row = a as ApptRow;
+    return this.edit(row.hostId, apptId, { localAt: msToLocalAt(row.meetAtMs + minutes * MIN, row.tz) }, row.version);
   }
 
   /** 아직 안 온 봇 한 명을 지금 목적지에 도착시킨다(진짜 체크인 규칙을 탄다). 도착시킨 봇의 닉네임, 없으면 null */
@@ -1191,18 +1362,9 @@ export class FakeServer {
   }
 
   bots(apptId: string): FakeBotInfo[] {
-    return this.state.bots
-      .filter((b) => b.appointmentId === apptId)
-      .map((b) => {
-        const p = this.part(apptId, b.userId);
-        return {
-          userId: b.userId,
-          nickname: p?.nickname ?? this.profile(b.userId)?.nickname ?? '',
-          plan: b.plan,
-          state: p?.state ?? null,
-          arrivedAtMs: p?.arrivedAtMs ?? null,
-        };
-      });
+    const a = this.appt(apptId);
+    if (!a) return [];
+    return this.state.bots.filter((b) => b.appointmentId === apptId).map((b) => this.botInfo(a, b.userId, b.plan, false));
   }
 
   private botPosition(b: BotRow, a: ApptRow, t: number): { lat: number; lng: number } {
@@ -1212,8 +1374,10 @@ export class FakeServer {
   }
 
   /**
-   * 봇의 시간을 지금까지 흘려보낸다. 모든 RPC 앞에서 불린다.
-   * 빨리 감기로 건너뛴 구간의 도착은 '계획한 시각'으로 소급해서 찍는다(서버 규칙 안에서: 공개 시작 이후 ∧ 마감 이전 ∧ 승인 이후).
+   * 서버 시간을 지금까지 흘려보낸다. 모든 RPC 앞에서 불린다.
+   * - 약속 시각이 지난 열린 약속: 아직 안 들어온 이름을 자동 삭제한다. 시작이 안 됐으면 무효 정산(notStarted)까지.
+   * - 봇: 시작 뒤에만 움직인다. 빨리 감기로 건너뛴 구간의 도착은 '계획한 시각'으로 소급해서 찍는다
+   *   (서버 규칙 안에서: 시작 이후 ∧ 참여 이후 ∧ 마감 전).
    */
   tick(): void {
     if (this.ticking) return;
@@ -1227,14 +1391,22 @@ export class FakeServer {
 
   private tickInner(): void {
     const now = this.nowMs();
+
+    for (const a of this.state.appts) {
+      if (a.status !== 'open' || now < a.meetAtMs) continue;
+      this.dropUnclaimed(a);
+      if (a.startedAtMs === null) this.trySettle(a.id); // 시작 없이 약속 시각이 지났다 → 무효, 전원 환불
+    }
+
     for (const b of this.state.bots) {
       const a = this.appt(b.appointmentId);
       const p = this.part(b.appointmentId, b.userId);
       if (!a || !p || a.status !== 'open' || p.state !== 'active' || p.arrivedAtMs !== null) continue;
-      if (b.plan === 'noShow' || now < a.shareStartMs) continue;
+      if (b.plan === 'noShow' || a.startedAtMs === null || now < a.startedAtMs) continue;
+      const startedAt = a.startedAtMs;
 
       if (b.plan === 'onTime' || b.plan === 'late') {
-        const at = Math.max(b.arriveMs, a.shareStartMs, p.joinedAtMs);
+        const at = Math.max(b.arriveMs, startedAt, p.joinedAtMs);
         if (at <= now && at <= a.closeMs) {
           p.arrivedAtMs = at;
           p.arrivalMethod = 'gps';
@@ -1247,12 +1419,12 @@ export class FakeServer {
       if (now > a.closeMs) continue;
 
       const reportAt = b.stopMs !== null ? Math.min(now, b.stopMs) : now;
-      if (reportAt < a.shareStartMs || reportAt < p.joinedAtMs) continue;
+      if (reportAt < startedAt || reportAt < p.joinedAtMs) continue;
       const pos = this.botPosition(b, a, reportAt);
       const near = haversineMeters(pos, { lat: a.placeLat, lng: a.placeLng }) <= a.policy.radiusM;
       const underground = b.plan === 'needsVouch' && near;
       if (underground && p.firstNearAtMs === null) {
-        p.firstNearAtMs = Math.max(Math.min(b.arriveMs, now), a.shareStartMs, p.joinedAtMs);
+        p.firstNearAtMs = Math.max(Math.min(b.arriveMs, now), startedAt, p.joinedAtMs);
       }
       this.removeLoc(a.id, b.userId);
       this.state.locs.push({
@@ -1264,18 +1436,6 @@ export class FakeServer {
         updatedAtMs: reportAt,
       });
     }
-
-    // 봇이 주최한 약속: 사람이 보낸 참여 요청을 잠시 뒤 수락한다
-    for (const p of this.state.parts.filter((x) => x.state === 'pending')) {
-      const a = this.appt(p.appointmentId);
-      if (!a || a.status !== 'open' || !this.profile(a.hostId)?.isBot || this.profile(p.userId)?.isBot) continue;
-      if (now < p.joinedAtMs + FAKE_BOT_HOST_APPROVE_MS || now >= a.meetAtMs) continue;
-      try {
-        this.approve(a.hostId, a.id, p.userId);
-      } catch {
-        // 포인트가 모자라면 요청은 그대로 남는다
-      }
-    }
   }
 
   // ───────────────────────── 데모 데이터 ─────────────────────────
@@ -1285,9 +1445,17 @@ export class FakeServer {
     if (this.state.appts.some((a) => a.inviteCode === FAKE_DEMO_CODES.open)) return;
     const now = this.nowMs();
     const place = { lat: 37.49808, lng: 127.02761 };
-    const make = (code: string, title: string, placeName: string, meetInMin: number, hostName: string, friends: string[]) => {
-      const hostId = this.nextId('bot');
-      this.ensureProfile(hostId, hostName, true);
+    const make = (
+      code: string,
+      title: string,
+      placeName: string,
+      meetInMin: number,
+      hostName: string,
+      claimed: string[],
+      open: string[],
+      started = false,
+    ) => {
+      const hostId = this.newBotUser(hostName);
       const tz = 'Asia/Seoul';
       // 분 단위로 맞춘다(서버의 local_at 은 분 해상도)
       const meetAtMs = Math.ceil((now + meetInMin * MIN) / MIN) * MIN;
@@ -1300,24 +1468,20 @@ export class FakeServer {
         lat: place.lat,
         lng: place.lng,
         policy: presetPolicy('normal'),
+        invitees: [...claimed, ...open],
         consent: true,
       });
       const row = this.appt(created.id) as ApptRow;
       row.inviteCode = code;
       this.planBot(row, hostId, 'onTime');
-      friends.forEach((name, i) => {
-        const bot = this.newBotUser(row.id, name);
-        // 데모 친구는 잠금 여부와 상관없이 처음부터 활성 멤버로 둔다
-        this.insertPart(row.id, bot.userId, bot.nickname, 'active');
-        this.hold(bot.userId, row.id, row.policy.stake);
-        this.planBot(row, bot.userId, i === 0 ? 'late' : 'onTime');
-      });
+      claimed.forEach((name, i) => this.addBot(row.id, i === 0 ? 'late' : 'onTime', name));
+      if (started) this.start(hostId, row.id);
       return row;
     };
-    make(FAKE_DEMO_CODES.open, '금요일 곱창', '강남역 2번 출구 곱창', 180, '지수', ['현우', '태호']);
-    make(FAKE_DEMO_CODES.locked, '번개 치맥', '강남역 11번 출구 치킨', 40, '민지', ['서연']);
-    make(FAKE_DEMO_CODES.joinClosed, '동창 모임', '강남역 1번 출구 고깃집', 240, '도윤', ['하준']).joinClosed = true;
-    const canceled = make(FAKE_DEMO_CODES.canceled, '취소된 약속', '강남역 5번 출구', 300, '유나', []);
+    make(FAKE_DEMO_CODES.open, '금요일 곱창', '강남역 2번 출구 곱창', 180, '지수', ['현우', '태호'], ['민병희', '병희']);
+    make(FAKE_DEMO_CODES.full, '번개 치맥', '강남역 11번 출구 치킨', 40, '민지', ['서연'], []);
+    make(FAKE_DEMO_CODES.started, '동창 모임', '강남역 1번 출구 고깃집', 40, '도윤', ['하준'], ['민병희'], true);
+    const canceled = make(FAKE_DEMO_CODES.canceled, '취소된 약속', '강남역 5번 출구', 300, '유나', [], []);
     this.cancel(canceled.hostId, canceled.id);
   }
 }
@@ -1346,13 +1510,13 @@ export function createFakeApi(server: FakeServer, userId: string = FAKE_ME, opti
     ensureProfile: (nickname) => run(() => server.ensureProfile(userId, nickname)),
     createAppointment: (input) => run(() => server.createAppointment(userId, input)),
     peekInvite: (code) => run(() => server.peekInvite(userId, normalizeCode(code) ?? code)),
-    join: (code, nickname, version, consent) => run(() => server.join(userId, code, nickname, version, consent)),
-    approve: (id, target) => run(() => server.approve(userId, id, target)),
+    claimSlot: (id, name, version, consent) => run(() => server.claimSlot(userId, id, name, version, consent)),
+    start: (id) => run(() => server.start(userId, id)),
+    editInvitees: (id, patch) => run(() => server.editInvitees(userId, id, patch)),
     leave: (id) => run(() => server.leave(userId, id)),
     kick: (id, target, ban) => run(() => server.kick(userId, id, target, ban)),
-    setJoinClosed: (id, closed) => run(() => server.setJoinClosed(userId, id, closed)),
     updateMemo: (id, title, placeNote) => run(() => server.updateMemo(userId, id, title, placeNote)),
-    updateAppointment: (id, input) => run(() => server.updateAppointment(userId, id, input)),
+    edit: (id, patch, version) => run(() => server.edit(userId, id, patch, version)),
     cancel: (id) => run(() => server.cancel(userId, id)),
     reportLocation: (id, input) => run(() => server.reportLocation(userId, id, input)),
     stopSharing: (id) => run(() => server.stopSharing(userId, id)),

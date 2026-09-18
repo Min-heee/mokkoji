@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import { mulberry32 } from './betting';
 import {
+  closeAtMs,
   DEFAULT_LATE_POLICY,
   fullForfeitAtMs,
   isLocationShared,
@@ -11,6 +12,7 @@ import {
   MAX_EPOCH_MS,
   MAX_SHARE_AFTER_DEADLINE_MINUTES,
   MAX_STAKE,
+  SHARE_TAIL_AFTER_FULL_FORFEIT_MINUTES,
   normalizeLatePolicy,
   penaltyFor,
   projectedPenalty,
@@ -31,7 +33,6 @@ const policy = (over: Partial<LatePolicy> = {}): LatePolicy => ({
   unitMinutes: 5,
   penaltyPerUnit: 100,
   graceMinutes: 0,
-  shareLocationMinutesBefore: 60,
   ...over,
 });
 
@@ -85,7 +86,7 @@ describe('normalizeLatePolicy', () => {
   });
 
   it('정상 값은 그대로 통과', () => {
-    const p = policy({ graceMinutes: 3, shareLocationMinutesBefore: 120 });
+    const p = policy({ graceMinutes: 3 });
     assert.deepEqual(normalizeLatePolicy(p), p);
   });
 
@@ -97,7 +98,6 @@ describe('normalizeLatePolicy', () => {
         unitMinutes: '5',
         penaltyPerUnit: null,
         graceMinutes: -Infinity,
-        shareLocationMinutesBefore: {},
       }),
       DEFAULT_LATE_POLICY,
     );
@@ -110,7 +110,6 @@ describe('normalizeLatePolicy', () => {
       unitMinutes: 0,
       penaltyPerUnit: -3,
       graceMinutes: -2,
-      shareLocationMinutesBefore: -60,
     });
     assert.deepEqual(p, {
       stake: 0,
@@ -118,7 +117,6 @@ describe('normalizeLatePolicy', () => {
       unitMinutes: 1,
       penaltyPerUnit: 0,
       graceMinutes: 0,
-      shareLocationMinutesBefore: 0,
     });
     const q = normalizeLatePolicy({
       stake: 999.9,
@@ -126,7 +124,6 @@ describe('normalizeLatePolicy', () => {
       unitMinutes: 2.7,
       penaltyPerUnit: 1e30,
       graceMinutes: 1.5,
-      shareLocationMinutesBefore: 1e9,
     });
     assert.deepEqual(q, {
       stake: 999,
@@ -134,7 +131,6 @@ describe('normalizeLatePolicy', () => {
       unitMinutes: 2,
       penaltyPerUnit: MAX_STAKE,
       graceMinutes: 1,
-      shareLocationMinutesBefore: 1440,
     });
   });
 
@@ -653,7 +649,6 @@ describe('settleLateBet', () => {
         unitMinutes: maybeJunk(int(1, 15)),
         penaltyPerUnit: maybeJunk(int(0, 700)),
         graceMinutes: maybeJunk(int(0, 10)),
-        shareLocationMinutesBefore: maybeJunk(int(0, 180)),
       } as LatePolicy;
       const stake = normalizeLatePolicy(raw).stake;
 
@@ -705,48 +700,81 @@ describe('settleLateBet', () => {
   });
 });
 
-describe('locationShareWindow / isLocationShared', () => {
-  it('시작 = 마감 - N분, 끝 = 전액 몰수 시각', () => {
-    const p = policy({ shareLocationMinutesBefore: 120 });
-    assert.deepEqual(locationShareWindow(p, DEADLINE), {
-      startMs: DEADLINE - 120 * MIN,
-      endMs: DEADLINE + 45 * MIN,
-    });
+describe('closeAtMs / locationShareWindow / isLocationShared', () => {
+  /** 주최자가 [시작하기]를 누른 시각 (약속 40분 전) */
+  const STARTED = DEADLINE - 40 * MIN;
+
+  it('마감(closeAtMs) = 전액 몰수 시각 + 30분 꼬리 (오너 결정 변경 3)', () => {
+    const p = policy();
+    assert.equal(SHARE_TAIL_AFTER_FULL_FORFEIT_MINUTES, 30);
+    assert.equal(fullForfeitAtMs(p, DEADLINE), DEADLINE + 45 * MIN);
+    assert.equal(closeAtMs(p, DEADLINE), DEADLINE + 75 * MIN);
+  });
+
+  it('공개 창: 시작 = 주최자가 [시작하기]를 누른 시각, 끝 = closeAtMs. 시작 전에는 창이 없다', () => {
+    const p = policy();
+    assert.deepEqual(locationShareWindow(p, DEADLINE, STARTED), { startMs: STARTED, endMs: DEADLINE + 75 * MIN });
+    assert.equal(locationShareWindow(p, DEADLINE, null), null);
+    // 시작 시각이 언제든(약속 2시간 전이든 3분 전이든) 그 순간부터 열린다
+    assert.equal(locationShareWindow(p, DEADLINE, DEADLINE - 3 * MIN)?.startMs, DEADLINE - 3 * MIN);
+  });
+
+  it('꼬리 안(전액 몰수 뒤 30분)에는 아직 공개되고, 꼬리가 끝나면 닫힌다', () => {
+    const p = policy();
+    const full = fullForfeitAtMs(p, DEADLINE) as number;
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, full + 1, false), true);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, full + 30 * MIN, false), true);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, full + 30 * MIN + 1, false), false);
+  });
+
+  it('꼬리를 붙여도 마감 + 180분 상한을 넘지 않는다', () => {
+    // 전액 몰수가 마감 + 170분 → 꼬리를 붙이면 200분이지만 180분에서 잘린다
+    const p = policy({ stake: 180, penaltyPerUnit: 1, unitMinutes: 1, graceMinutes: 0 });
+    assert.equal(fullForfeitAtMs(p, DEADLINE), DEADLINE + 179 * MIN);
+    assert.equal(closeAtMs(p, DEADLINE), DEADLINE + MAX_SHARE_AFTER_DEADLINE_MINUTES * MIN);
+    // 전액 몰수가 마감 + 100분이면 꼬리가 온전히 붙는다
+    const q = policy({ stake: 100, penaltyPerUnit: 1, unitMinutes: 1, graceMinutes: 0 });
+    assert.equal(closeAtMs(q, DEADLINE), DEADLINE + 129 * MIN);
   });
 
   it('전액 몰수 시각이 없으면(단위 차감 0·stake 0) 마감 + 60분', () => {
-    assert.equal(locationShareWindow(policy({ penaltyPerUnit: 0 }), DEADLINE).endMs, DEADLINE + 60 * MIN);
-    assert.equal(locationShareWindow(policy({ stake: 0 }), DEADLINE).endMs, DEADLINE + 60 * MIN);
+    assert.equal(closeAtMs(policy({ penaltyPerUnit: 0 }), DEADLINE), DEADLINE + 60 * MIN);
+    assert.equal(closeAtMs(policy({ stake: 0 }), DEADLINE), DEADLINE + 60 * MIN);
   });
 
   it('프라이버시: 전액 몰수가 아주 먼 정책이어도 마감 + 상한에서 공개를 끝낸다', () => {
     const slow = policy({ stake: 100_000, penaltyPerUnit: 1, unitMinutes: 10 });
-    assert.equal(
-      locationShareWindow(slow, DEADLINE).endMs,
-      DEADLINE + MAX_SHARE_AFTER_DEADLINE_MINUTES * MIN,
-    );
+    assert.equal(closeAtMs(slow, DEADLINE), DEADLINE + MAX_SHARE_AFTER_DEADLINE_MINUTES * MIN);
   });
 
-  it('공개 창 안 + 도착 전일 때만 공개', () => {
+  it('시작한 뒤 + 공개 창 안 + 도착 전일 때만 공개 (양끝 포함)', () => {
     const p = policy();
-    const { startMs, endMs } = locationShareWindow(p, DEADLINE);
-    assert.equal(isLocationShared(p, DEADLINE, startMs - 1, false), false);
-    assert.equal(isLocationShared(p, DEADLINE, startMs, false), true);
-    assert.equal(isLocationShared(p, DEADLINE, DEADLINE, false), true);
-    assert.equal(isLocationShared(p, DEADLINE, endMs, false), true);
-    assert.equal(isLocationShared(p, DEADLINE, endMs + 1, false), false);
+    const { startMs, endMs } = locationShareWindow(p, DEADLINE, STARTED) as { startMs: number; endMs: number };
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, startMs - 1, false), false);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, startMs, false), true);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, DEADLINE, false), true);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, endMs, false), true);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, endMs + 1, false), false);
+  });
+
+  it('주최자가 아직 시작하지 않았으면 약속 시각이 코앞이어도 공개하지 않는다', () => {
+    assert.equal(isLocationShared(policy(), DEADLINE, null, DEADLINE - MIN, false), false);
+    assert.equal(isLocationShared(policy(), DEADLINE, null, DEADLINE, false), false);
   });
 
   it('도착한 사람은 창 안이어도 공개하지 않는다', () => {
-    assert.equal(isLocationShared(policy(), DEADLINE, DEADLINE - MIN, true), false);
+    assert.equal(isLocationShared(policy(), DEADLINE, STARTED, DEADLINE - MIN, true), false);
   });
 
   it('쓰레기 시각이면 공개하지 않는 쪽으로 닫는다', () => {
     const p = policy();
-    assert.deepEqual(locationShareWindow(p, NaN), { startMs: 0, endMs: 0 });
-    assert.equal(isLocationShared(p, NaN, 0, false), false);
-    assert.equal(isLocationShared(p, DEADLINE, NaN, false), false);
-    assert.equal(isLocationShared(p, Infinity, DEADLINE, false), false);
-    assert.equal(isLocationShared(p, DEADLINE, DEADLINE, undefined as unknown as boolean), false);
+    assert.equal(closeAtMs(p, NaN), null);
+    assert.equal(locationShareWindow(p, NaN, STARTED), null);
+    assert.equal(locationShareWindow(p, DEADLINE, NaN), null);
+    assert.equal(locationShareWindow(p, DEADLINE, Infinity), null);
+    assert.equal(isLocationShared(p, NaN, STARTED, 0, false), false);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, NaN, false), false);
+    assert.equal(isLocationShared(p, Infinity, STARTED, DEADLINE, false), false);
+    assert.equal(isLocationShared(p, DEADLINE, STARTED, DEADLINE, undefined as unknown as boolean), false);
   });
 });

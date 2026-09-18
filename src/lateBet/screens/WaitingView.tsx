@@ -1,44 +1,45 @@
 /**
- * 대기실(phase = waiting, 잠금 전) — 설계서 §3.2·§3.6·§3.7·§5.3-F. 담당: [waiting]
+ * 대기실(phase = waiting) — 설계서 §0-1(오너 확정 흐름 2026-09-18)·§5.3-F. 담당: [waiting]
  *
- *   참여 요청 카드(주최자) → 약속 조건 + 핀 지도(readonly) → 참가자 → 주최자 도구
- *   footer: 잠금 안내 한 줄 + 주최자 [친구 초대하기] / 게스트 [나가기 (포인트 돌려받기)]
+ *   waiting = 주최자가 아직 [시작하기]를 누르지 않았다(startedAtMs 없음). 위치는 아무도 못 보고 체크인도 안 열린다.
+ *   시작은 서버 응답으로만 바뀐다 — 주최자는 api.start 뒤 refresh, 게스트는 폴링(10초)으로 live 화면을 본다.
+ *
+ *   [변경 배너(게스트)] → 약속 조건 + 핀 지도(readonly) → 명단(참여 완료 / 아직 안 들어옴, 주최자는 [내보내기])
+ *   → 주최자: 초대 명단 편집(InviteeEditor) · 초대 코드 + [친구 초대하기] · 약속 수정(/late/new?edit=id) · 제목·메모 · 약속 취소
+ *   footer: 주최자 = 설명 한 줄 + primary [시작하기] / 게스트 = "주최자가 시작하면 위치가 보여요" + [나가기 (포인트 돌려받기)]
  *
  * 규칙
  * - 변경 RPC 뒤에는 refresh(). 내가 빠지는 동작(나가기) 뒤에는 onLeft(). 낙관적 업데이트 없음.
- * - 파괴적 동작(내보내기·차단 거절·취소·나가기)은 confirmDialog. 실패 문구는 errors.ts 의 것만 쓴다.
- * - 잠금 뒤에는 나가기·내보내기·(친구가 있을 때) 취소가 안 된다. 서버가 최종 판단하지만,
- *   눌렀을 때 이미 잠겼으면 서버에 묻기 전에 같은 문구로 안내하고 다시 읽는다(곧 라이브 화면으로 넘어간다).
+ * - 파괴적 동작(내보내기·취소·나가기)과 혼자 시작은 confirmDialog. 실패 문구는 errors.ts 의 것만 쓴다.
+ * - 시작 전에는 명단 편집·나가기·내보내기·취소·조건 변경 전부가 된다(잠금 개념 없음). 시작 후 규칙은 LiveView 몫이다.
+ * - 약속 시각(meetAtMs)이 지나면 시작할 수 없다(LB_START_CLOSED). 눌렀을 때 이미 지났으면 서버에 묻기 전에 같은 문구로 안내하고
+ *   다시 읽는다(useLive 가 무효(voided) 화면으로 넘긴다).
+ * - 수락제(pending·승인·참여 요청·[참여 마감])와 '전원 참여 시 자동 잠금'은 없다.
  *
- * 잠금 뒤 화면(LiveView·ArrivedView)에서도 주최자는 요청을 수락해야 한다 → 아래 조각은 혼자 동작하게 만들어 내보낸다:
- *   JoinRequests · JoinClosedButton · shareInvite · copyInvite
+ * 다른 화면이 그대로 쓸 수 있게 내보내는 조각: shareInvite · copyInvite · inviteShareText
  */
 import * as Clipboard from 'expo-clipboard';
-import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, Share, StyleSheet, Text, View } from 'react-native';
 
 import { buildShareText } from '@/domain/invite';
-import { isLocked } from '@/domain/latePhase';
-import { formatFromNow, formatKoreanDate, formatKoreanTime, isSameLocalDay } from '@/domain/tzGuard';
 import { Card, PrimaryButton, Screen, SectionTitle, TextField } from '@/ui/components';
 import { alertDialog, confirmDialog } from '@/ui/dialogs';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
-import type { LateBetApi } from '../api';
-import { APPROVE_INSUFFICIENT_MESSAGE, errorMessage, toLateBetError, type LateBetError } from '../errors';
-import { useLateBet } from '../LateBetContext';
-import { cancelLateNotifications, canScheduleExactAlarms, scheduleLateNotifications } from '../notifications';
+import { describeChanges } from '../changes';
+import { errorMessage, toLateBetError } from '../errors';
+import { scheduleLateNotifications } from '../notifications';
 import { serverNow } from '../serverClock';
-import type { LbAppointment, LbLive, LbLiveParticipant } from '../types';
-import { useServerNow } from '../useServerNow';
-import { ConditionCard } from './PendingView';
+import type { LbAppointment, LbAppointmentChange, LbInvitee, LbLive, LbLiveParticipant } from '../types';
+import { ConditionCard } from './ConditionCard';
+import { InviteeEditor } from './InviteeEditor';
 import type { WaitingViewProps } from './props';
 
 // ───────────────────────── 초대 문구 공유 ─────────────────────────
 
-/** 초대 문구(설계서 §3.1). 초대 코드가 없으면(승인 대기자) '' */
+/** 초대 문구(설계서 §3.1). 코드가 형식에 안 맞으면 '' */
 export function inviteShareText(a: LbAppointment, changed = false): string {
   if (!a.inviteCode) return '';
   return buildShareText({
@@ -86,15 +87,18 @@ export async function shareInvite(a: LbAppointment, changed = false): Promise<vo
   }
 }
 
+// ───────────────────────── 이름 다루기 ─────────────────────────
+
+/** 보이지 않는 문자(서버 lb_clean_nick 과 같은 목록) */
+const INVISIBLE = /[\u00AD\u200B-\u200F\u2028-\u202F\u2060-\u2064\uFEFF]/g;
+const cleanName = (raw: string): string => raw.replace(INVISIBLE, '').trim();
+/** 서버 lb_nick_key 와 같은 판정: NFKC + 공백 제거 + 소문자 (프로덕션에서 fakeApi 를 import 하지 않기 위해 여기 다시 둔다) */
+const nameKey = (raw: string): string => cleanName(raw).normalize('NFKC').replace(/\s/g, '').toLowerCase();
+
 // ───────────────────────── 한 번에 하나씩 실행 ─────────────────────────
 
-type Act = (
-  key: string,
-  failTitle: string,
-  fn: () => Promise<void>,
-  /** 오류 → 문구를 바꿔 끼울 때(수락의 포인트 부족) */
-  mapMessage?: (e: LateBetError) => string,
-) => Promise<void>;
+/** 실패하면 오류 문구를 돌려준다(성공은 null). silent 가 아니면 alertDialog 로도 알린다 */
+type Act = (key: string, failTitle: string, fn: () => Promise<void>, silent?: boolean) => Promise<string | null>;
 
 /** 변경 RPC 실행기: 연타 방지 + 실패하면 errors.ts 문구로 알리고 다시 읽는다 */
 function useAct(refresh: () => Promise<LbLive | null>): { busy: string | null; act: Act } {
@@ -109,16 +113,18 @@ function useAct(refresh: () => Promise<LbLive | null>): { busy: string | null; a
   }, []);
 
   const act = useCallback<Act>(
-    async (key, failTitle, fn, mapMessage) => {
-      if (busyRef.current) return;
+    async (key, failTitle, fn, silent = false) => {
+      if (busyRef.current) return null;
       busyRef.current = true;
       setBusy(key);
       try {
         await fn();
+        return null;
       } catch (e) {
-        const err = toLateBetError(e);
-        alertDialog(failTitle, mapMessage ? mapMessage(err) : err.message);
+        const message = toLateBetError(e).message;
+        if (!silent) alertDialog(failTitle, message);
         await refresh();
+        return message;
       } finally {
         busyRef.current = false;
         if (mounted.current) setBusy(null);
@@ -130,155 +136,44 @@ function useAct(refresh: () => Promise<LbLive | null>): { busy: string | null; a
   return { busy, act };
 }
 
-// ───────────────────────── 참여 요청 카드 (주최자) ─────────────────────────
-
-export interface JoinRequestsProps {
-  live: LbLive;
-  isHost: boolean;
-  api: LateBetApi;
-  refresh: () => Promise<LbLive | null>;
-  /** 연결이 끊겨 있으면 버튼을 막는다 */
-  stale?: boolean;
-}
+// ───────────────────────── 변경 배너 (게스트) ─────────────────────────
 
 /**
- * "현우님이 참여를 요청했어요 [수락] [거절]" — 요청마다 카드 한 장. 주최자가 아니거나 요청이 없으면 null.
- * 거절을 누르면 카드 안에서 [거절] / [거절하고 다시 못 들어오게]를 고른다(설계서 §3.2의 시트).
- * 혼자 동작한다(연타 방지·오류 안내·refresh 포함) — LiveView·ArrivedView 에 그대로 얹을 수 있다.
+ * "주최자가 약속을 바꿨어요: 오후 7:30 → 오후 8:00 · 건 포인트 100P → 200P" + [확인].
+ * 변경이 없거나(주최자 본인은 항상 []) 실질 변화가 없으면 null. (LiveView 는 자기 것을 따로 가진다)
  */
-export function JoinRequests({ live, isHost, api, refresh, stale = false }: JoinRequestsProps) {
-  const { busy, act } = useAct(refresh);
-  const [rejectingId, setRejectingId] = useState<string | null>(null);
-  const a = live.appointment;
-  const requests = isHost ? live.participants.filter((p) => p.state === 'pending') : [];
-  if (requests.length === 0) return null;
-
-  const stake = a.policy.stake;
-  const disabled = busy !== null || stale;
-
-  const approve = (p: LbLiveParticipant) =>
-    act(
-      `approve:${p.userId}`,
-      '수락하지 못했어요',
-      async () => {
-        await api.approve(a.id, p.userId);
-        await refresh();
-      },
-      (e) => (e.code === 'LB_INSUFFICIENT_POINTS' ? APPROVE_INSUFFICIENT_MESSAGE : e.message),
-    );
-
-  const reject = (p: LbLiveParticipant, ban: boolean) =>
-    act(`reject:${p.userId}`, '거절하지 못했어요', async () => {
-      await api.kick(a.id, p.userId, ban);
-      setRejectingId(null);
-      await refresh();
-    });
-
-  const askRejectAndBan = (p: LbLiveParticipant) => {
-    confirmDialog(
-      `${p.nickname}님이 다시 못 들어오게 할까요?`,
-      '이 약속에는 다시 요청할 수 없게 돼요. 되돌릴 수 없어요.',
-      () => void reject(p, true),
-      { confirmText: '거절하기', destructive: true },
-    );
-  };
-
+function ChangeBanner({ changes, tz, onAck }: { changes: LbAppointmentChange[]; tz: string; onAck: () => void }) {
+  const text = describeChanges(changes, tz);
+  if (text === '') return null;
   return (
-    <View style={styles.requests}>
-      {requests.map((p) => (
-        <Card key={p.userId} style={styles.requestCard}>
-          <Text style={styles.requestTitle}>{p.nickname}님이 참여를 요청했어요</Text>
-          <Text style={styles.muted}>
-            아는 친구일 때만 수락해 주세요. 수락하면 서로 위치가 보여요
-            {stake > 0 ? `. 그 순간 친구의 ${stake}P가 걸려요.` : '.'}
-          </Text>
-          {rejectingId === p.userId ? (
-            <View style={styles.stack}>
-              <PrimaryButton label="거절" variant="ghost" onPress={() => void reject(p, false)} disabled={disabled} />
-              <PrimaryButton label="거절하고 다시 못 들어오게" variant="ghost" onPress={() => askRejectAndBan(p)} disabled={disabled} />
-              <Text style={styles.textButton} onPress={() => setRejectingId(null)}>
-                닫기
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.pair}>
-              <View style={styles.pairItem}>
-                <PrimaryButton label="수락" onPress={() => void approve(p)} disabled={disabled} />
-              </View>
-              <View style={styles.pairItem}>
-                <PrimaryButton label="거절" variant="ghost" onPress={() => setRejectingId(p.userId)} disabled={disabled} />
-              </View>
-            </View>
-          )}
-        </Card>
-      ))}
-    </View>
+    <Card style={styles.banner}>
+      <Text style={styles.bannerText}>{text}</Text>
+      <PrimaryButton label="확인" variant="ghost" onPress={onAck} />
+    </Card>
   );
 }
 
-// ───────────────────────── [참여 마감] 토글 (주최자) ─────────────────────────
+// ───────────────────────── 새 참가자 알림 띠 ─────────────────────────
 
-export interface JoinClosedButtonProps {
-  appointment: LbAppointment;
-  api: LateBetApi;
-  refresh: () => Promise<LbLive | null>;
-  stale?: boolean;
-}
-
-/** 상태 한 줄 + 풀폭 버튼. 되돌릴 수 있는 동작이라 확인 없이 바로 바꾼다 */
-export function JoinClosedButton({ appointment: a, api, refresh, stale = false }: JoinClosedButtonProps) {
-  const { busy, act } = useAct(refresh);
-  const toggle = () =>
-    act('joinClosed', a.joinClosed ? '참여를 다시 받지 못했어요' : '참여를 마감하지 못했어요', async () => {
-      await api.setJoinClosed(a.id, !a.joinClosed);
-      await refresh();
-    });
-  return (
-    <View style={styles.stack}>
-      <Text style={styles.muted}>
-        {a.joinClosed
-          ? '참여를 마감했어요. 초대 링크로 더 들어올 수 없어요.'
-          : '지금은 초대 링크를 받은 사람이 들어올 수 있어요. 다 모였으면 마감해 주세요.'}
-      </Text>
-      <PrimaryButton
-        label={a.joinClosed ? '참여 다시 받기' : '참여 마감'}
-        variant="ghost"
-        onPress={() => void toggle()}
-        disabled={busy !== null || stale}
-      />
-    </View>
-  );
-}
-
-// ───────────────────────── 새 참가자·요청 알림 띠 ─────────────────────────
-
-interface SeenRow {
-  nickname: string;
-  state: LbLiveParticipant['state'];
-}
-
-/** 폴링 사이에 늘어난 참가자·요청을 5초 동안 한 줄로 알린다(설계서 §3.2 "활성 멤버 모두에게 토스트") */
+/** 폴링 사이에 들어오거나 나간 사람을 5초 동안 한 줄로 알린다(설계서 §3.2 "활성 멤버 모두에게 토스트") */
 function useRosterNotice(live: LbLive): { notice: string | null; forget: (userId: string) => void } {
-  const seen = useRef<Map<string, SeenRow> | null>(null);
+  const seen = useRef<Map<string, string> | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const prev = seen.current;
-    const next = new Map<string, SeenRow>();
-    for (const p of live.participants) next.set(p.userId, { nickname: p.nickname, state: p.state });
+    const next = new Map<string, string>();
+    for (const p of live.participants) next.set(p.userId, p.nickname);
     seen.current = next;
     if (!prev) return; // 처음 본 명단은 알리지 않는다
 
     const messages: string[] = [];
     for (const p of live.participants) {
       if (p.userId === live.myUserId) continue;
-      const before = prev.get(p.userId);
-      if (!before) messages.push(p.state === 'pending' ? `${p.nickname}님이 참여를 요청했어요` : `${p.nickname}님이 참여했어요`);
-      else if (before.state === 'pending' && p.state === 'active') messages.push(`${p.nickname}님이 참여했어요`);
+      if (!prev.has(p.userId)) messages.push(`${p.nickname}님이 들어왔어요`);
     }
-    // 요청이 사라진 것(거절·철회)은 알리지 않는다
-    for (const [userId, row] of prev) {
-      if (!next.has(userId) && row.state === 'active') messages.push(`${row.nickname}님이 나갔어요`);
+    for (const [userId, nickname] of prev) {
+      if (!next.has(userId)) messages.push(`${nickname}님이 나갔어요`);
     }
     if (messages.length > 0) setNotice(messages.join(' · '));
   }, [live]);
@@ -297,51 +192,43 @@ function useRosterNotice(live: LbLive): { notice: string | null; forget: (userId
   return { notice, forget };
 }
 
-// ───────────────────────── 잠금 안내 (footer) ─────────────────────────
+// ───────────────────────── 명단 한 줄 ─────────────────────────
 
-/** "오후 6:30에 위치 공유가 시작돼요. 그 뒤에는 빠질 수 없어요." 오늘이 아니면 날짜를 붙인다 */
-function LockNotice({ appointment: a, isHost }: { appointment: LbAppointment; isHost: boolean }) {
-  const now = useServerNow(30_000);
-  const time = formatKoreanTime(a.shareStartMs, a.tz);
-  const when = isSameLocalDay(now, a.shareStartMs, a.tz) ? time : `${formatKoreanDate(a.shareStartMs, a.tz)} ${time}`;
-  const left = a.shareStartMs > now ? ` (${formatFromNow(a.shareStartMs - now)})` : '';
-  return (
-    <Text style={styles.lockNotice}>
-      {when}에 위치 공유가 시작돼요{left}. {isHost ? '그 뒤에는 내보내거나 취소할 수 없어요.' : '그 뒤에는 빠질 수 없어요.'}
-    </Text>
-  );
-}
-
-// ───────────────────────── 참가자 한 줄 ─────────────────────────
-
-function ParticipantRow({
-  p,
-  isMe,
-  isHostRow,
-  onKick,
+function RosterRow({
+  name,
+  tags,
+  status,
+  dim,
+  action,
+  onAction,
   disabled,
 }: {
-  p: LbLiveParticipant;
-  isMe: boolean;
-  isHostRow: boolean;
-  /** 주최자가 다른 사람을 볼 때만 */
-  onKick?: () => void;
+  name: string;
+  /** '주최자 · 나' 같은 꼬리표 */
+  tags: string;
+  /** 오른쪽 상태 문구(동작 버튼이 없을 때) */
+  status?: string;
+  dim?: boolean;
+  /** 오른쪽 텍스트 버튼(내보내기) */
+  action?: string;
+  onAction?: () => void;
   disabled: boolean;
 }) {
-  const tags = [isHostRow ? '주최자' : '', isMe ? '나' : ''].filter((s) => s !== '').join(' · ');
   return (
-    <View style={styles.personRow}>
+    <View style={[styles.personRow, dim && styles.dimRow]}>
       <View style={styles.initial}>
-        <Text style={styles.initialText}>{Array.from(p.nickname)[0] ?? ''}</Text>
+        <Text style={styles.initialText}>{Array.from(name)[0] ?? ''}</Text>
       </View>
       <Text style={styles.personName} numberOfLines={1}>
-        {p.nickname}
+        {name}
       </Text>
       {tags !== '' ? <Text style={styles.personTag}>{tags}</Text> : null}
-      {onKick ? (
-        <Text style={[styles.textButton, styles.kick, disabled && styles.dim]} onPress={disabled ? undefined : onKick}>
-          내보내기
+      {action && onAction ? (
+        <Text style={[styles.textButton, styles.trailing, disabled && styles.dim]} onPress={disabled ? undefined : onAction}>
+          {action}
         </Text>
+      ) : status ? (
+        <Text style={[styles.personTag, styles.trailing]}>{status}</Text>
       ) : null}
     </View>
   );
@@ -349,42 +236,32 @@ function ParticipantRow({
 
 // ───────────────────────── 대기실 ─────────────────────────
 
-export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: WaitingViewProps) {
+/** 주최자 [시작하기] 버튼 아래 설명(설계서 §0-1 규칙 7) */
+export const START_HINT = '누르면 모두의 위치가 서로 보여요. 아직 안 들어온 친구는 나중에 들어와도 돼요';
+/** 게스트 footer 안내 */
+export const GUEST_WAIT_HINT = '주최자가 시작하면 위치가 보여요';
+
+export function WaitingView({ live, isHost, api, refresh, stale, unseenChanges, ackChanges, onLeft }: WaitingViewProps) {
   const router = useRouter();
   const params = useLocalSearchParams<{ invite?: string }>();
-  const { refresh: refreshHome } = useLateBet();
   const { busy, act } = useAct(refresh);
   const { notice, forget } = useRosterNotice(live);
 
   const a = live.appointment;
   const stake = a.policy.stake;
-  const actives = live.participants.filter((p) => p.state === 'active');
-  const pendings = live.participants.filter((p) => p.state === 'pending');
-  const otherActives = actives.filter((p) => p.userId !== live.myUserId);
-  /** 다른 행(요청 포함)이 하나도 없다 = 시간·장소·조건을 고칠 수 있다 (서버 LB_EDIT_LOCKED 와 같은 조건) */
-  const alone = live.participants.every((p) => p.userId === live.myUserId);
+  const host = live.participants.find((p) => p.userId === a.hostId) ?? null;
+  const others = live.participants.filter((p) => p.userId !== a.hostId);
+  const byUser = new Map(live.participants.map((p) => [p.userId, p] as const));
+  const claimed = a.invitees.filter((i) => i.claimedByUserId !== null);
+  const missing = a.invitees.filter((i) => i.claimedByUserId === null);
   const disabled = busy !== null || stale;
-  /** 취소하고 새로 만든 약속이면 /late/<id>?invite=changed 로 들어온다 → 공유 문구 앞에 [변경] */
+  /** /late/<id>?invite=changed 로 들어오면 공유 문구 앞에 [변경] */
   const changed = params.invite === 'changed';
 
-  // 제목·장소 메모 고치기 (언제든 — lb_update_memo)
+  // 제목·장소 메모 고치기 (언제든 — lb_update_memo, version 안 올림)
   const [memoOpen, setMemoOpen] = useState(false);
   const [titleText, setTitleText] = useState(a.title);
   const [noteText, setNoteText] = useState(a.placeNote);
-
-  // 안드로이드 정확한 알림 권한(§5.4). P0 에서는 항상 true 라 경고가 뜨지 않는다
-  const [exactAlarmOk, setExactAlarmOk] = useState(true);
-  useEffect(() => {
-    let alive = true;
-    canScheduleExactAlarms()
-      .then((ok) => {
-        if (alive) setExactAlarmOk(ok);
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   // 조건(version)·제목이 바뀌면 로컬 알림을 다시 예약한다. 키가 (id + version) 이라 여러 번 불러도 같다
   useEffect(() => {
@@ -394,10 +271,9 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
       title: a.title,
       tz: a.tz,
       meetAtMs: a.meetAtMs,
-      shareStartMs: a.shareStartMs,
       closeMs: a.closeMs,
     });
-  }, [a.id, a.version, a.title, a.tz, a.meetAtMs, a.shareStartMs, a.closeMs]);
+  }, [a.id, a.version, a.title, a.tz, a.meetAtMs, a.closeMs]);
 
   // 생성 직후(?invite=…) 공유 시트를 한 번 연다. 웹은 사용자 제스처 없이 공유를 열 수 없어 건너뛴다
   const autoShared = useRef(false);
@@ -409,20 +285,33 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, params.invite, a.inviteCode]);
 
-  /** 눌렀을 때 이미 잠겼으면 서버에 묻지 않고 같은 문구로 안내한다 */
-  const blockedByLock = (title: string, code: 'LB_LEAVE_CLOSED' | 'LB_KICK_CLOSED' | 'LB_CANCEL_CLOSED'): boolean => {
-    if (!isLocked(a, serverNow())) return false;
-    alertDialog(title, errorMessage(code));
-    void refresh();
-    return true;
+  // ── 주최자: [시작하기] (약속 시각 전이면 언제든. 되돌릴 수 없다) ──
+  const startNow = () =>
+    void act('start', '시작하지 못했어요', async () => {
+      await api.start(a.id);
+      await refresh(); // phase 가 live 로 바뀌어 컨테이너가 LiveView 를 그린다
+    });
+  const askStart = () => {
+    // 약속 시각이 지났으면 서버도 LB_START_CLOSED 다. 묻기 전에 같은 문구로 안내하고 다시 읽는다(무효 화면으로 넘어간다)
+    if (serverNow() >= a.meetAtMs) {
+      alertDialog('시작할 수 없어요', errorMessage('LB_START_CLOSED'));
+      void refresh();
+      return;
+    }
+    if (others.length === 0) {
+      confirmDialog('아직 아무도 안 들어왔어요', '지금 시작할까요? 친구는 나중에 들어와도 돼요.', startNow, { confirmText: '시작하기' });
+      return;
+    }
+    startNow();
   };
 
-  // ── 게스트: 나가기 ──
+  // ── 게스트: 나가기 (시작 전, 전액 환불. 이름은 명단에 빈 칸으로 남는다) ──
   const askLeave = () => {
-    if (blockedByLock('지금은 나갈 수 없어요', 'LB_LEAVE_CLOSED')) return;
     confirmDialog(
       '약속에서 나갈까요?',
-      stake > 0 ? `건 ${stake}P는 바로 돌려드려요. 초대 링크로 다시 들어올 수 있어요.` : '초대 링크로 다시 들어올 수 있어요.',
+      stake > 0
+        ? `건 ${stake}P는 바로 돌려드려요. 내 이름은 명단에 남아 초대 링크로 다시 들어올 수 있어요.`
+        : '내 이름은 명단에 남아 초대 링크로 다시 들어올 수 있어요.',
       () =>
         void act('leave', '나가지 못했어요', async () => {
           await api.leave(a.id);
@@ -432,12 +321,11 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
     );
   };
 
-  // ── 주최자: 내보내기 (전액 환불 + 기본으로 차단) ──
+  // ── 주최자: 내보내기 (전액 환불 + 명단에서 제거 + 기본 차단) ──
   const askKick = (p: LbLiveParticipant) => {
-    if (blockedByLock('지금은 내보낼 수 없어요', 'LB_KICK_CLOSED')) return;
     confirmDialog(
       `${p.nickname}님을 내보낼까요?`,
-      `${stake > 0 ? `건 ${stake}P는 돌려드려요. ` : ''}이 약속에는 다시 들어올 수 없어요.`,
+      `${stake > 0 ? `건 ${stake}P는 돌려드려요. ` : ''}명단에서도 빠지고, 이 약속에는 다시 들어올 수 없어요.`,
       () =>
         void act(`kick:${p.userId}`, '내보내지 못했어요', async () => {
           await api.kick(a.id, p.userId, true);
@@ -448,16 +336,41 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
     );
   };
 
-  // ── 주최자: 약속 취소 ──
+  // ── 주최자: 명단 편집. 오류는 InviteeEditor 가 칸 아래에 그리므로 alert 없이 문구만 돌려준다 ──
+  const addInvitee = async (raw: string): Promise<string | void> => {
+    const name = cleanName(raw);
+    const n = Array.from(name).length;
+    if (n < 1 || n > 12) return errorMessage('LB_BAD_NICKNAME');
+    const key = nameKey(name);
+    if ([a.hostNickname, ...a.invitees.map((i) => i.name)].some((s) => nameKey(s) === key)) {
+      return errorMessage('LB_NICKNAME_TAKEN');
+    }
+    const failed = await act(
+      'invitees:add',
+      '이름을 추가하지 못했어요',
+      async () => {
+        await api.editInvitees(a.id, { add: [name] });
+        await refresh();
+      },
+      true,
+    );
+    return failed ?? undefined;
+  };
+  const removeInvitee = (name: string) =>
+    void act(`invitees:remove:${name}`, '명단에서 빼지 못했어요', async () => {
+      await api.editInvitees(a.id, { remove: [name] });
+      await refresh();
+    });
+
+  // ── 주최자: 약속 취소 (시작 전까지. 전원 환불) ──
   const refundLine =
     stake === 0
       ? ''
-      : otherActives.length > 0
-        ? `친구 ${otherActives.length}명이 건 포인트는 모두 돌려드려요.`
+      : others.length > 0
+        ? `친구 ${others.length}명이 건 포인트는 모두 돌려드려요.`
         : `건 ${stake}P는 돌려드려요.`;
 
   const askCancel = () => {
-    if (otherActives.length > 0 && blockedByLock('지금은 취소할 수 없어요', 'LB_CANCEL_CLOSED')) return;
     confirmDialog(
       '약속을 취소할까요?',
       [refundLine, '취소하면 되돌릴 수 없어요.'].filter((s) => s !== '').join(' '),
@@ -467,24 +380,6 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
           await refresh(); // 컨테이너가 취소 안내를 그리고 알림·홈 목록을 정리한다
         }),
       { confirmText: '네, 취소할게요', destructive: true },
-    );
-  };
-
-  // ── 주최자: 취소하고 새로 만들기 (친구가 있어 조건을 못 바꿀 때) ──
-  const askCancelAndRecreate = () => {
-    if (otherActives.length > 0 && blockedByLock('지금은 바꿀 수 없어요', 'LB_CANCEL_CLOSED')) return;
-    confirmDialog(
-      '취소하고 새로 만들까요?',
-      [refundLine, '새 링크를 다시 보내야 해요.'].filter((s) => s !== '').join(' '),
-      () =>
-        void act('recreate', '취소하지 못했어요', async () => {
-          await api.cancel(a.id);
-          // 여기서는 refresh 하지 않는다 — 취소 안내가 번쩍이지 않게 곧바로 생성 화면으로 바꾼다
-          void cancelLateNotifications(a.id);
-          void refreshHome();
-          router.replace(`/late/new?from=${a.id}`);
-        }),
-      { confirmText: '취소하고 새로 만들기', destructive: true },
     );
   };
 
@@ -501,39 +396,49 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
       await refresh();
     });
 
-  const openSettings = () => {
-    Linking.openSettings().catch(() => alertDialog('설정을 열 수 없어요'));
-  };
-
-  const footer = (
+  const footer = isHost ? (
     <>
-      <LockNotice appointment={a} isHost={isHost} />
-      {isHost ? (
-        <PrimaryButton label="친구 초대하기" onPress={() => void shareInvite(a, changed)} disabled={a.joinClosed || !a.inviteCode} />
-      ) : (
-        <PrimaryButton
-          label={stake > 0 ? '나가기 (포인트 돌려받기)' : '나가기'}
-          variant="ghost"
-          onPress={askLeave}
-          disabled={disabled}
-        />
-      )}
+      <Text style={styles.notice}>{START_HINT}</Text>
+      <PrimaryButton label="시작하기" onPress={askStart} disabled={disabled} />
+    </>
+  ) : (
+    <>
+      <Text style={styles.notice}>{GUEST_WAIT_HINT}</Text>
+      <PrimaryButton
+        label={stake > 0 ? '나가기 (포인트 돌려받기)' : '나가기'}
+        variant="ghost"
+        onPress={askLeave}
+        disabled={disabled}
+      />
     </>
   );
+
+  const hostTags = ['주최자', host && host.userId === live.myUserId ? '나' : ''].filter((s) => s !== '').join(' · ');
+
+  const inviteeRow = (i: LbInvitee) => {
+    if (i.claimedByUserId === null) {
+      return <RosterRow key={i.name} name={i.name} tags="" status="아직 안 들어옴" dim disabled={disabled} />;
+    }
+    const p = byUser.get(i.claimedByUserId) ?? null;
+    const isMe = i.claimedByUserId === live.myUserId;
+    const kickable = isHost && !isMe && p !== null;
+    return (
+      <RosterRow
+        key={i.name}
+        name={p?.nickname ?? i.name}
+        tags={isMe ? '나' : ''}
+        status="참여 완료"
+        action={kickable ? '내보내기' : undefined}
+        onAction={kickable && p ? () => askKick(p) : undefined}
+        disabled={disabled}
+      />
+    );
+  };
 
   return (
     <View style={styles.fill}>
       <Screen footer={footer}>
-        <JoinRequests live={live} isHost={isHost} api={api} refresh={refresh} stale={stale} />
-
-        {!exactAlarmOk ? (
-          <Card>
-            <Text style={styles.body}>알림이 늦게 올 수 있어요</Text>
-            <Text style={styles.textButton} onPress={openSettings}>
-              설정 열기
-            </Text>
-          </Card>
-        ) : null}
+        <ChangeBanner changes={unseenChanges} tz={a.tz} onAck={ackChanges} />
 
         <SectionTitle>약속</SectionTitle>
         <ConditionCard
@@ -541,69 +446,69 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
           pinHint={isHost ? '핀 위치가 맞는지 확인해 주세요' : '핀 위치가 이상하면 주최자에게 알려 주세요'}
         />
 
-        <SectionTitle>참가자 {actives.length}명</SectionTitle>
+        <SectionTitle>
+          명단 {a.invitees.length + 1}명 · 참여 {claimed.length + 1}명
+        </SectionTitle>
         <Card>
-          {actives.map((p) => (
-            <ParticipantRow
-              key={p.userId}
-              p={p}
-              isMe={p.userId === live.myUserId}
-              isHostRow={p.userId === a.hostId}
-              onKick={isHost && p.userId !== live.myUserId ? () => askKick(p) : undefined}
-              disabled={disabled}
-            />
-          ))}
-          {otherActives.length === 0 ? (
+          <RosterRow name={host?.nickname ?? a.hostNickname} tags={hostTags} status="참여 완료" disabled={disabled} />
+          {a.invitees.map(inviteeRow)}
+          {a.invitees.length === 0 ? (
             <Text style={styles.muted}>
-              {isHost ? '아직 혼자예요. 친구를 초대해 보세요.' : '아직 다른 참가자가 없어요.'}
+              {isHost ? '아직 초대한 친구가 없어요. 아래에서 이름을 추가해 보세요.' : '아직 초대된 친구가 없어요.'}
             </Text>
-          ) : stake > 0 ? (
-            <Text style={styles.muted}>한 사람당 {stake}P씩 걸었어요.</Text>
+          ) : missing.length > 0 ? (
+            <Text style={styles.muted}>아직 안 들어온 친구: {missing.map((i) => i.name).join(', ')}</Text>
           ) : null}
-          {!isHost && pendings.length > 0 ? (
-            <Text style={styles.muted}>수락을 기다리는 친구: {pendings.map((p) => p.nickname).join(', ')}</Text>
-          ) : null}
+          {stake > 0 && claimed.length > 0 ? <Text style={styles.muted}>한 사람당 {stake}P씩 걸었어요.</Text> : null}
+          <Text style={styles.muted}>
+            {isHost
+              ? '약속 시각까지 시작하지 않으면 약속이 무효가 되고 건 포인트는 모두 돌려드려요. 약속 시각까지 안 들어온 이름은 명단에서 자동으로 빠져요.'
+              : '주최자가 시작하기 전에는 아무도 위치를 볼 수 없어요. 약속 시각까지 시작하지 않으면 약속은 무효가 되고 건 포인트는 돌려드려요.'}
+          </Text>
         </Card>
 
         {isHost ? (
           <>
-            <SectionTitle>주최자 도구</SectionTitle>
+            <SectionTitle>초대 명단</SectionTitle>
             <Card>
-              {a.inviteCode ? (
+              <Text style={styles.muted}>
+                이름을 추가하거나, 아직 안 들어온 이름을 눌러 뺄 수 있어요. 들어온 친구는 위 명단에서 내보내기로 빼요.
+              </Text>
+              <InviteeEditor
+                names={a.invitees.map((i) => i.name)}
+                claimedNames={claimed.map((i) => i.name)}
+                onAdd={addInvitee}
+                onRemove={removeInvitee}
+                disabled={disabled}
+              />
+            </Card>
+
+            <SectionTitle>주최자 도구</SectionTitle>
+            {a.inviteCode ? (
+              <Card>
                 <View style={styles.codeRow}>
                   <Text style={styles.muted}>초대 코드</Text>
                   <Text style={styles.code}>{a.inviteCode}</Text>
-                  <Text style={[styles.textButton, styles.kick]} onPress={() => void copyInvite(a, changed)}>
+                  <Text style={[styles.textButton, styles.trailing]} onPress={() => void copyInvite(a, changed)}>
                     초대 문구 복사
                   </Text>
                 </View>
-              ) : null}
-              <JoinClosedButton appointment={a} api={api} refresh={refresh} stale={stale} />
-            </Card>
+                <Text style={styles.muted}>친구는 링크를 열고 명단에서 자기 이름을 골라 참여해요. 시작한 뒤에도 약속 시각까지는 들어올 수 있어요.</Text>
+                <PrimaryButton label="친구 초대하기" variant="ghost" onPress={() => void shareInvite(a, changed)} />
+              </Card>
+            ) : null}
 
             <Card>
-              {alone ? (
-                <>
-                  <Text style={styles.muted}>
-                    혼자일 때는 시간·장소·내기 조건을 모두 바꿀 수 있어요. 친구가 들어온 뒤에는 바꿀 수 없어요.
-                  </Text>
-                  <PrimaryButton
-                    label="약속 수정"
-                    variant="ghost"
-                    onPress={() => router.push(`/late/new?edit=${a.id}`)}
-                    disabled={disabled}
-                  />
-                </>
-              ) : (
-                <>
-                  <Text style={styles.body}>{errorMessage('LB_EDIT_LOCKED')}</Text>
-                  <Text style={styles.muted}>
-                    {refundLine !== '' ? `${refundLine} ` : ''}새 링크를 다시 보내야 해요. 제목과 장소 메모는 취소하지 않고도 고칠
-                    수 있어요.
-                  </Text>
-                  <PrimaryButton label="취소하고 새로 만들기" variant="ghost" onPress={askCancelAndRecreate} disabled={disabled} />
-                </>
-              )}
+              <Text style={styles.muted}>
+                시작 전에는 시간·장소·걸 포인트·지각 규칙을 바꿀 수 있어요. 들어온 친구에게는 바뀐 내용이 보여요. 걸 포인트를
+                올리면 차액이 자동으로 더 걸리고, 내리면 돌려드려요.
+              </Text>
+              <PrimaryButton
+                label="약속 수정"
+                variant="ghost"
+                onPress={() => router.push(`/late/new?edit=${a.id}`)}
+                disabled={disabled}
+              />
 
               {memoOpen ? (
                 <View style={styles.stack}>
@@ -630,8 +535,9 @@ export function WaitingView({ live, isHost, api, refresh, stale, onLeft }: Waiti
 
             <Card>
               <Text style={styles.muted}>
-                위치 공유가 시작되면 친구를 내보낼 수 없고, 친구가 있으면 약속도 취소할 수 없어요. 그 뒤에 들어오는 친구는 한 명씩
-                수락해 주세요.
+                {others.length > 0
+                  ? '시작하기 전까지만 취소할 수 있어요. 취소하면 친구들이 건 포인트는 모두 돌려드려요.'
+                  : '취소하면 이 약속은 사라져요.'}
               </Text>
               <PrimaryButton label="약속 취소" variant="ghost" onPress={askCancel} disabled={disabled} />
             </Card>
@@ -653,14 +559,13 @@ const styles = StyleSheet.create({
   stack: { gap: spacing.sm },
   pair: { flexDirection: 'row', gap: spacing.sm },
   pairItem: { flex: 1 },
-  body: { fontSize: fontSize.md, fontWeight: '600', color: colors.text, lineHeight: 22 },
   muted: { fontSize: fontSize.sm, color: colors.subtext, lineHeight: 20 },
   dim: { opacity: 0.4 },
+  dimRow: { opacity: 0.55 },
   textButton: { fontSize: fontSize.sm, fontWeight: '700', color: colors.text, textDecorationLine: 'underline', paddingVertical: spacing.xs },
 
-  requests: { gap: spacing.md },
-  requestCard: { borderWidth: 1, borderColor: colors.text },
-  requestTitle: { fontSize: fontSize.md, fontWeight: '800', color: colors.text },
+  banner: { borderWidth: 1, borderColor: colors.text },
+  bannerText: { fontSize: fontSize.md, fontWeight: '700', color: colors.text, lineHeight: 22 },
 
   personRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 36 },
   initial: {
@@ -674,12 +579,12 @@ const styles = StyleSheet.create({
   initialText: { fontSize: fontSize.sm, fontWeight: '700', color: colors.text },
   personName: { flexShrink: 1, fontSize: fontSize.md, fontWeight: '700', color: colors.text },
   personTag: { fontSize: fontSize.xs, fontWeight: '600', color: colors.subtext },
-  kick: { marginLeft: 'auto' },
+  trailing: { marginLeft: 'auto' },
 
   codeRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
   code: { fontSize: fontSize.md, fontWeight: '800', color: colors.text, letterSpacing: 2 },
 
-  lockNotice: { fontSize: fontSize.sm, color: colors.subtext, textAlign: 'center', lineHeight: 20 },
+  notice: { fontSize: fontSize.sm, color: colors.subtext, textAlign: 'center', lineHeight: 20 },
 
   toast: {
     pointerEvents: 'none',

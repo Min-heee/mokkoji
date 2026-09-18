@@ -1,31 +1,37 @@
 /**
- * 정산 대기·결과·무효 (설계서 §5.3-F settling · §5.3-G). 담당: [result]
+ * 정산 대기·결과·무효 (설계서 §5.3-F settling · §5.3-G, 오너 확정 흐름 2026-09-18). 담당: [result]
  *
  * - 순위·도착 시각·판정 근거(GPS ±Nm / 친구 확인)·증감 포인트. 표시 모델은 ../resultModel.ts(순수 함수, 테스트 있음).
  * - settling: '결과를 확정하는 중이에요' + 진행 중 순위(증감은 '예정').
+ * - 무효: noWinner "제시간에 온 사람이 없어 내기는 무효예요…" / notStarted(주최자가 약속 시각까지 [시작하기]를 안 누름)
+ *   "주최자가 시작하지 않아 내기는 무효예요. 건 포인트는 모두 돌려드렸어요" — 순위 없이 들어와 있던 이름만.
  * - [정산 시작] → 참가자 확인 시트(전원 체크, '오지 않음'은 라벨만) → startSettlement(멱등) → /session/<id>.
  *   이미 만든 정산이 있으면 '열까요?'.
- * - [결과 공유] 는 텍스트 공유(웹은 공유 시트가 없으면 복사).
+ * - [결과 공유] 는 텍스트 공유(웹은 공유 시트가 없으면 복사). 시작 없이 무효면 공유할 결과가 없어 버튼을 뺀다.
+ * - 변경 배너(unseenChanges): 결과 화면에 와서야 주최자의 변경(미루기 등)을 처음 보는 경우 — 상단에 한 줄 + [확인].
+ * - phase canceled 가 넘어오면(컨테이너가 이 뷰로 보내는 경우) canceledText + [홈으로]만 그린다.
  * 헤더 제목·연결 끊김 띠·FakeDevPanel 은 컨테이너(app/late/[id])가 그린다.
  */
 import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { shortPolicyLine } from '@/domain/latePresets';
 import { sessionCandidates, type SessionCandidate } from '@/domain/toSession';
-import { formatKoreanDateTime, SEOUL_TZ, tzLabel } from '@/domain/tzGuard';
+import { formatKoreanDateTime, formatKoreanTime, SEOUL_TZ, tzLabel } from '@/domain/tzGuard';
 import { useSessions } from '@/state/SessionsContext';
-import { Card, PrimaryButton, Screen } from '@/ui/components';
+import { Card, EmptyState, PrimaryButton, Screen } from '@/ui/components';
 import { alertDialog, confirmDialog } from '@/ui/dialogs';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
+import { describeChanges } from '../changes';
 import { SETTLE_DELAYED_NOTICE } from '../errors';
 import {
   buildResultModel,
   buildResultShareText,
+  canceledText,
   formatSignedPoints,
   resultRowDelta,
   resultRowDetail,
@@ -36,12 +42,17 @@ import {
 import { findSessionForLateBet, startSettlement } from '../startSettlement';
 import type { ResultViewProps } from './props';
 
-export function ResultView({ live, phase, settleDelayed }: ResultViewProps) {
+export function ResultView({ live, phase, isHost, settleDelayed, unseenChanges, ackChanges }: ResultViewProps) {
   const router = useRouter();
   const sessions = useSessions();
   const kind: ResultKind = phase === 'settled' ? 'settled' : phase === 'voided' ? 'voided' : 'settling';
   const model = useMemo(() => buildResultModel(live, kind), [live, kind]);
   const candidates = useMemo(() => sessionCandidates(live), [live]);
+  const changeText = useMemo(() => describeChanges(unseenChanges, live.appointment.tz), [unseenChanges, live.appointment.tz]);
+  // 실질 변화가 없는 변경(원래대로 되돌림)은 배너 없이 본 것으로 친다
+  useEffect(() => {
+    if (unseenChanges.length > 0 && changeText === '') ackChanges();
+  }, [unseenChanges, changeText, ackChanges]);
 
   const [sheetOpen, setSheetOpen] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
@@ -49,6 +60,12 @@ export function ResultView({ live, phase, settleDelayed }: ResultViewProps) {
   const a = live.appointment;
   const final = kind !== 'settling';
   const myRow = model.rows.find((r) => r.isMe) ?? null;
+
+  const goHome = () => {
+    // 스택에 홈이 있으면 거기까지 걷어 내고, 딥링크로 바로 들어온 경우에는 홈으로 바꾼다(컨테이너와 같은 규칙)
+    if (router.canGoBack()) router.dismissAll();
+    else router.replace('/');
+  };
 
   const onStart = () => {
     const existing = findSessionForLateBet(sessions.sessions, a.id);
@@ -104,6 +121,21 @@ export function ResultView({ live, phase, settleDelayed }: ResultViewProps) {
 
   const when = formatKoreanDateTime(a.meetAtMs, a.tz);
   const zone = a.tz === SEOUL_TZ ? '' : tzLabel(a.tz);
+  // 정산은 마감 + 15초 뒤 누군가의 조회에서 돈다(§3.5). 그 전이면 시각을, 지났으면 '곧'
+  const settleAtMs = a.closeMs + 15_000;
+  const settleText =
+    Number.isFinite(live.serverNowMs) && live.serverNowMs < settleAtMs
+      ? `지금까지의 순위예요. ${formatKoreanTime(settleAtMs, a.tz)}에 확정돼요.`
+      : '지금까지의 순위예요. 곧 확정돼요.';
+
+  // 취소된 약속: 결과가 없다. 컨테이너가 이 뷰로 보냈을 때만 온다
+  if (phase === 'canceled' || a.status === 'canceled') {
+    return (
+      <Screen footer={<PrimaryButton label="홈으로" onPress={goHome} />}>
+        <EmptyState title={canceledText(live, isHost)} />
+      </Screen>
+    );
+  }
 
   return (
     <>
@@ -116,10 +148,25 @@ export function ResultView({ live, phase, settleDelayed }: ResultViewProps) {
               onPress={onStart}
               disabled={sessions.loading}
             />
-            {final ? <PrimaryButton label="결과 공유" variant="ghost" onPress={() => void onShare()} /> : null}
+            {final && !model.notStarted ? (
+              <PrimaryButton label="결과 공유" variant="ghost" onPress={() => void onShare()} />
+            ) : null}
           </>
         }
       >
+        {changeText ? (
+          <View style={styles.banner}>
+            <Text style={styles.bannerText}>{changeText}</Text>
+            <Pressable
+              onPress={ackChanges}
+              hitSlop={8}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.bannerButton, pressed && { opacity: 0.6 }]}
+            >
+              <Text style={styles.bannerButtonText}>확인</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <View style={styles.head}>
           <Text style={styles.title}>{model.title}</Text>
           <Text style={styles.sub}>{[when, zone, a.placeName].filter((s) => s.trim() !== '').join(' · ')}</Text>
@@ -128,7 +175,7 @@ export function ResultView({ live, phase, settleDelayed }: ResultViewProps) {
 
         <Card>
           <Text style={styles.headline}>{model.headline}</Text>
-          {!final ? <Text style={styles.sub}>지금까지의 순위예요. 곧 확정돼요.</Text> : null}
+          {!final ? <Text style={styles.sub}>{settleText}</Text> : null}
           {!final && settleDelayed ? <Text style={styles.notice}>{SETTLE_DELAYED_NOTICE}</Text> : null}
           {final ? <MyLine model={model} row={myRow} balance={live.myBalance} /> : null}
         </Card>
@@ -139,7 +186,15 @@ export function ResultView({ live, phase, settleDelayed }: ResultViewProps) {
           </Card>
         ) : null}
 
-        {model.rows.length > 0 ? (
+        {model.notStarted ? (
+          // 시작한 적이 없으니 순위·도착·'오지 않음'이 없다 — 들어와 있던 사람만
+          model.rows.length > 0 ? (
+            <Card>
+              <Text style={styles.label}>들어와 있던 사람</Text>
+              <Text style={styles.names}>{model.rows.map((r) => r.nickname).join(', ')}</Text>
+            </Card>
+          ) : null
+        ) : model.rows.length > 0 ? (
           <Card style={styles.listCard}>
             {model.rows.map((r, i) => (
               <RankRow key={r.userId} model={model} row={r} first={i === 0} />
@@ -151,6 +206,8 @@ export function ResultView({ live, phase, settleDelayed }: ResultViewProps) {
         visible={sheetOpen}
         candidates={candidates}
         selected={selected}
+        // 시작한 적이 없으면 '오지 않음'은 판정이 아니라 라벨을 붙이지 않는다
+        showNoShow={!model.notStarted}
         onToggle={toggle}
         onConfirm={onConfirm}
         onClose={() => setSheetOpen(false)}
@@ -206,6 +263,7 @@ function ConfirmSheet({
   visible,
   candidates,
   selected,
+  showNoShow,
   onToggle,
   onConfirm,
   onClose,
@@ -213,6 +271,8 @@ function ConfirmSheet({
   visible: boolean;
   candidates: readonly SessionCandidate[];
   selected: ReadonlySet<string>;
+  /** false 면 '오지 않음' 라벨을 붙이지 않는다(시작 없이 무효된 약속) */
+  showNoShow: boolean;
   onToggle: (userId: string) => void;
   onConfirm: () => void;
   onClose: () => void;
@@ -244,7 +304,7 @@ function ConfirmSheet({
                   <Text style={styles.checkName} numberOfLines={1}>
                     {c.name}
                   </Text>
-                  {c.noShow ? <Text style={styles.noShow}>오지 않음</Text> : null}
+                  {showNoShow && c.noShow ? <Text style={styles.noShow}>오지 않음</Text> : null}
                 </Pressable>
               );
             })}
@@ -269,6 +329,20 @@ const styles = StyleSheet.create({
   myLine: { fontSize: fontSize.sm, color: colors.subtext },
   myNet: { fontWeight: '800', color: colors.text },
   loss: { color: colors.danger },
+  label: { fontSize: fontSize.xs, fontWeight: '700', color: colors.subtext },
+  names: { fontSize: fontSize.md, fontWeight: '600', color: colors.text, lineHeight: 24 },
+
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.cardAlt,
+  },
+  bannerText: { flex: 1, fontSize: fontSize.sm, fontWeight: '600', color: colors.text, lineHeight: 20 },
+  bannerButton: { paddingVertical: 4, paddingHorizontal: 12, borderRadius: radius.pill, backgroundColor: colors.primary },
+  bannerButtonText: { fontSize: fontSize.xs, fontWeight: '800', color: colors.onPrimary },
 
   listCard: { gap: 0, paddingVertical: spacing.xs },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.md },

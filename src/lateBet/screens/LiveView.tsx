@@ -1,11 +1,18 @@
 /**
- * 라이브·지각 구간: 지도 + 손실 티커 + 참가자 행 + [도착 확인] + 길찾기 + 위치 공유 토글
- * 설계서 §5.3-F(live·overtime), §5.4 실패 상태 동작표. 담당: [live]
+ * 라이브·지각 구간(공개 창 안): 지도 + 손실 티커 + 참가자 행 + [도착 확인] + 길찾기 + 위치 공유 토글
+ * 설계서 §5.3-F(live·overtime), §5.4 실패 상태 동작표, §0-1 오너 결정 변경(2026-09-18). 담당: [live]
  *
  * - 1초 티커는 LossTicker·ParticipantRows 안에만 있다. LiveView 본체는 폴링(5초)·판정 결과가 바뀔 때만 다시 그린다.
  * - 위치 보고 루프는 컨테이너(app/late/[id])가 돌린다. 여기서는 reporter 의 상태를 그리고 [도착 확인]만 부른다.
- * - ArrivedView 가 같이 쓰는 조각(ParticipantRows · JoinRequests · SmallButton · liveMarkers)도 이 파일에서 내보낸다.
+ * - 이 화면은 주최자가 [시작하기]를 누른 뒤(startedAtMs 있음)에만 온다. 그 순간부터 전원 위치가 서로 보이고 체크인이 열린다.
+ * - 아직 안 들어온 이름(명단의 빈 칸)은 약속 시각까지 계속 들어올 수 있다 — 표시만 하고 [명단에서 빼기]는 없다
+ *   (시작 후 명단은 동결, 약속 시각에 서버가 자동 삭제). 들어오면 다음 폴링부터 참가자 행·지도에 나타난다.
+ * - 변경 배너(주최자가 시간을 미루거나 장소를 바꿈)는 props 로 온다. 티커·행은 appointment 를 그대로 읽으므로
+ *   새 마감 기준으로 저절로 다시 계산된다.
+ * - 전액 몰수 뒤 30분 꼬리(closeMs 까지)에도 참가자 행·좌표는 그대로 보인다. 티커만 '전액' 문구로 바뀐다.
+ * - ArrivedView 가 같이 쓰는 조각(ChangeBanner · ParticipantRows · HostTools · SmallButton · liveMarkers · unclaimedNames)도 이 파일에서 내보낸다.
  */
+import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -13,17 +20,20 @@ import { fullForfeitAtMs, lateUnits, normalizeLatePolicy, projectedPenalty } fro
 import { onTimeUntilMs } from '@/domain/latePhase';
 import { describePolicy, formatLoss } from '@/domain/latePresets';
 import { mapRouteUrl } from '@/domain/mapRoute';
-import { formatKoreanTime } from '@/domain/tzGuard';
-import { Card, PrimaryButton, Screen, SectionTitle } from '@/ui/components';
+import { formatKoreanDateTime, formatKoreanTime, msToLocalAt } from '@/domain/tzGuard';
+import { Card, Chip, PrimaryButton, Screen, SectionTitle } from '@/ui/components';
 import { alertDialog, confirmDialog } from '@/ui/dialogs';
 import { formatDistance, MapPane, type MapPaneMarker } from '@/ui/MapPane';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 import type { LateBetApi } from '../api';
-import { APPROVE_INSUFFICIENT_MESSAGE, isConnectivityError, reportReasonMessage, toLateBetError } from '../errors';
+import { describeChanges } from '../changes';
+import { isConnectivityError, reportReasonMessage, toLateBetError } from '../errors';
+import { scheduleLateNotifications } from '../notifications';
 import { serverNow } from '../serverClock';
-import type { LbAppointment, LbLive, LbLiveParticipant } from '../types';
+import type { LbAppointment, LbAppointmentChange, LbLive, LbLiveParticipant } from '../types';
 import { useServerNow } from '../useServerNow';
+import { openExternal } from './ConditionCard';
 import type { LiveViewProps } from './props';
 
 const MINUTE_MS = 60_000;
@@ -33,6 +43,10 @@ const OFFLINE_RETRY_MS = 3_000;
 const ACCURACY_RETRY_MS = 5_000;
 /** 이보다 나쁜 정확도는 '대략적인 위치'로 본다(서버도 저장하지 않는다) */
 const COARSE_ACCURACY_M = 1000;
+/** [시간 미루기] 선택지(분). 서버 상한 +180분(LB_POSTPONE_TOO_FAR)과 같다 */
+const POSTPONE_CHOICES_MINUTES = [15, 30, 60, 120, 180] as const;
+/** 서버 규칙: 새 약속 시각은 지금부터 5분 뒤 이후(LB_TIME_IN_PAST) */
+const MIN_LEAD_MS = 5 * MINUTE_MS;
 
 // ───────────────────────── 표시 헬퍼 ─────────────────────────
 
@@ -63,6 +77,14 @@ function formatAgo(ms: number): string {
   return `${Math.floor(total / 60)}분 전`;
 }
 
+/** '15분' · '1시간' · '2시간 30분' */
+function formatDelta(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m}분`;
+  return m === 0 ? `${h}시간` : `${h}시간 ${m}분`;
+}
+
 function accuracyLabel(accuracyM: number | null): string {
   if (accuracyM === null || !(accuracyM >= 0)) return '';
   if (accuracyM <= 30) return '위치 정확도 좋음';
@@ -70,19 +92,22 @@ function accuracyLabel(accuracyM: number | null): string {
   return '위치 정확도 낮음';
 }
 
-/** 좌표 길찾기. 웹은 새 탭(같은 탭을 갈아치우면 앱이 지도로 대체된다 — app/session/[id] 의 openMap 과 같은 방식) */
+/** 좌표 길찾기(카카오맵). 웹은 새 탭(같은 탭을 갈아치우면 앱이 지도로 대체된다) */
 function openRoute(appointment: LbAppointment): void {
-  const url = mapRouteUrl(appointment.placeName, appointment.placeLat, appointment.placeLng);
-  if (Platform.OS === 'web') {
-    const opened = window.open(url, '_blank', 'noopener');
-    if (!opened) alertDialog('지도를 열 수 없어요');
-    return;
-  }
-  Linking.openURL(url).catch(() => alertDialog('지도를 열 수 없어요'));
+  openExternal(mapRouteUrl(appointment.placeName, appointment.placeLat, appointment.placeLng));
 }
 
 function openSettings(): void {
   Linking.openSettings().catch(() => alertDialog('설정을 열 수 없어요'));
+}
+
+/**
+ * 아직 안 들어온 이름(명단에서 아무도 고르지 않은 칸). 약속 시각까지 들어올 수 있고, 그 뒤에는 서버가 지운다.
+ * nowMs 를 주면 약속 시각이 지난 뒤(다음 폴링 전)에는 빈 배열 — 서버 삭제와 화면이 어긋나지 않게
+ */
+export function unclaimedNames(appointment: LbAppointment, nowMs?: number): string[] {
+  if (typeof nowMs === 'number' && nowMs >= appointment.meetAtMs) return [];
+  return appointment.invitees.filter((i) => i.claimedByUserId === null).map((i) => i.name);
 }
 
 /** 지도에 찍을 수 있는 마커 = 좌표가 보이는 미도착 참가자. 기준 데이터는 참가자 행(ParticipantRows)이다 */
@@ -99,12 +124,44 @@ export function liveMarkers(live: LbLive): MapPaneMarker[] {
     }));
 }
 
+// ───────────────────────── 변경 배너 ─────────────────────────
+
+/**
+ * "주최자가 약속을 바꿨어요: 오후 7:30 → 오후 8:00 · 건 포인트 100P → 200P" + [확인].
+ * 문구는 changes.describeChanges. 실질 변화가 없으면(중간에 바꿨다가 되돌린 경우) 그리지 않고 바로 확인 처리한다.
+ */
+export function ChangeBanner({
+  changes,
+  tz,
+  onAck,
+}: {
+  changes: readonly LbAppointmentChange[];
+  tz: string;
+  onAck: () => void;
+}) {
+  const text = describeChanges(changes, tz);
+  const pending = changes.length > 0 && text === '';
+  useEffect(() => {
+    if (pending) onAck();
+  }, [pending, onAck]);
+  if (text === '') return null;
+  return (
+    <Card style={styles.banner}>
+      <Text style={styles.bannerText}>{text}</Text>
+      <Text style={styles.bannerSub}>위치 공개·체크인 마감 시각도 새 약속 기준으로 다시 계산됐어요.</Text>
+      <PrimaryButton label="확인" variant="ghost" onPress={onAck} />
+    </Card>
+  );
+}
+
 // ───────────────────────── 손실 티커 (1초) ─────────────────────────
 
 /**
  * live    : 지금 도착하면 전액 돌려받아요 · 마감까지 12:34
  * overtime: 지금 도착하면 −20P(브릭) · 1분 20초 뒤 −30P · 오후 8:15 넘으면 전액
+ * 꼬리    : 지금 도착해도 −100P · 그래도 오후 8:45까지 오면 '지각'으로 남아요 · 체크인 마감까지 29:59
  * 단계는 props 의 phase 가 아니라 이 컴포넌트의 시각으로 다시 본다(경계에서 1초 어긋나지 않게).
+ * appointment 가 바뀌면(주최자가 시간을 미룸) 새 마감 기준으로 저절로 다시 계산된다.
  */
 function LossTicker({ appointment }: { appointment: LbAppointment }) {
   const now = useServerNow(1000);
@@ -138,13 +195,28 @@ function LossTicker({ appointment }: { appointment: LbAppointment }) {
     );
   }
 
+  const fullAt = fullForfeitAtMs(policy, meetAtMs) ?? closeMs;
+
+  // 전액 몰수 뒤 30분 꼬리: 잃는 건 확정, 그래도 오면 '지각'으로 남는다(오너 결정 변경 3)
+  if (now > fullAt) {
+    return (
+      <View style={styles.ticker}>
+        <Text style={styles.tickerMain}>
+          지금 도착해도 <Text style={styles.loss}>{formatLoss(policy.stake)}</Text>
+        </Text>
+        <Text style={styles.tickerSub}>
+          그래도 {formatKoreanTime(closeMs, tz)}까지 오면 &apos;지각&apos;으로 남아요 · {untilClose}
+        </Text>
+      </View>
+    );
+  }
+
   const loss = projectedPenalty(policy, meetAtMs, now);
   // 지금 k 단위째 → (k+1) 단위째는 onTimeUntil + k×단위 를 '넘는' 순간 시작된다
   const units = lateUnits(policy, meetAtMs, now);
   const nextAt = onTimeUntil + units * policy.unitMinutes * MINUTE_MS;
   const nextLoss = projectedPenalty(policy, meetAtMs, nextAt + 1);
-  const fullAt = fullForfeitAtMs(policy, meetAtMs) ?? closeMs;
-  const fullTime = formatKoreanTime(Math.min(fullAt, closeMs), tz);
+  const fullTime = formatKoreanTime(fullAt, tz);
 
   return (
     <View style={styles.ticker}>
@@ -175,57 +247,7 @@ function whereabouts(p: LbLiveParticipant, now: number, isMe: boolean, sharing: 
   return '위치 없음';
 }
 
-export interface ParticipantRowsProps {
-  live: LbLive;
-  /** 내 공유 토글(LiveView 만 안다). 꺼져 있으면 내 행은 '위치 공유 끔' */
-  sharing?: boolean;
-  /** 미도착 친구 행 오른쪽에 붙일 것 — ArrivedView 의 [같이 있어요] */
-  renderAction?: (p: LbLiveParticipant) => React.ReactNode;
-}
-
-/** 활성 참가자 목록(서버 순서 그대로). "N초 전"을 위해 이 컴포넌트만 1초마다 다시 그린다 */
-export function ParticipantRows({ live, sharing, renderAction }: ParticipantRowsProps) {
-  const now = useServerNow(1000);
-  const tz = live.appointment.tz;
-  const rows = live.participants.filter((p) => p.state === 'active');
-  return (
-    <Card>
-      {rows.map((p) => {
-        const isMe = p.userId === live.myUserId;
-        const arrived = p.arrivedAtMs !== null;
-        const line =
-          p.arrivedAtMs !== null
-            ? `도착 · ${formatKoreanTime(p.arrivedAtMs, tz)}${p.arrivalMethod === 'vouch' ? ' · 친구 확인' : ''}`
-            : whereabouts(p, now, isMe, sharing);
-        const action = !arrived && !isMe && renderAction ? renderAction(p) : null;
-        return (
-          <View key={p.userId} style={styles.personRow}>
-            <View style={[styles.initial, arrived && styles.initialArrived]}>
-              <Text style={[styles.initialText, arrived && styles.initialTextArrived]}>
-                {Array.from(p.nickname)[0] ?? ''}
-              </Text>
-            </View>
-            <View style={styles.personBody}>
-              <Text style={styles.personName} numberOfLines={1}>
-                {p.nickname}
-                {isMe ? ' (나)' : ''}
-                {p.userId === live.appointment.hostId ? ' · 주최자' : ''}
-              </Text>
-              <Text style={styles.personLine} numberOfLines={2}>
-                {line}
-              </Text>
-            </View>
-            {action}
-          </View>
-        );
-      })}
-    </Card>
-  );
-}
-
-// ───────────────────────── 참여 요청 (주최자) ─────────────────────────
-
-/** 행 안의 작은 버튼(수락·거절·같이 있어요). 풀폭 버튼 두 단계와 같은 솔리드/틴트 */
+/** 행 안의 작은 버튼(같이 있어요·명단에서 빼기). 풀폭 버튼 두 단계와 같은 솔리드/틴트 */
 export function SmallButton({
   label,
   onPress,
@@ -253,22 +275,96 @@ export function SmallButton({
   );
 }
 
-/**
- * 잠금 뒤에 들어온 참여 요청. 잠금 뒤의 요청은 라이브·도착 화면에 있는 주최자에게 오므로 여기서도 받는다.
- * 수락은 약속 시각까지만 된다(서버 규칙). 거절은 언제든 된다.
- */
-export function JoinRequests({
-  live,
-  isHost,
-  api,
-  refresh,
-}: {
+export interface ParticipantRowsProps {
   live: LbLive;
-  isHost: boolean;
+  /** 내 공유 토글(LiveView 만 안다). 꺼져 있으면 내 행은 '위치 공유 끔' */
+  sharing?: boolean;
+  /** 미도착 친구 행 오른쪽에 붙일 것 — ArrivedView 의 [같이 있어요] */
+  renderAction?: (p: LbLiveParticipant) => React.ReactNode;
+}
+
+/**
+ * 참가자 목록(서버 순서 그대로) + 아직 안 들어온 이름(명단의 빈 칸, 약속 시각까지만). "N초 전"을 위해 이 컴포넌트만 1초마다 다시 그린다.
+ * 전액 몰수 뒤 30분 꼬리에도 미도착 행과 좌표는 그대로 보인다(서버가 closeMs 까지 내려 준다).
+ * 안 들어온 이름에는 버튼이 없다 — 시작 후 명단은 동결이고, 약속 시각에 서버가 지운다.
+ */
+export function ParticipantRows({ live, sharing, renderAction }: ParticipantRowsProps) {
+  const now = useServerNow(1000);
+  const a = live.appointment;
+  const tz = a.tz;
+  const rows = live.participants.filter((p) => p.state === 'active');
+  const missing = unclaimedNames(a, now);
+  return (
+    <Card>
+      {rows.map((p) => {
+        const isMe = p.userId === live.myUserId;
+        const arrived = p.arrivedAtMs !== null;
+        const line =
+          p.arrivedAtMs !== null
+            ? `도착 · ${formatKoreanTime(p.arrivedAtMs, tz)}${p.arrivalMethod === 'vouch' ? ' · 친구 확인' : ''}`
+            : whereabouts(p, now, isMe, sharing);
+        const action = !arrived && !isMe && renderAction ? renderAction(p) : null;
+        return (
+          <View key={p.userId} style={styles.personRow}>
+            <View style={[styles.initial, arrived && styles.initialArrived]}>
+              <Text style={[styles.initialText, arrived && styles.initialTextArrived]}>
+                {Array.from(p.nickname)[0] ?? ''}
+              </Text>
+            </View>
+            <View style={styles.personBody}>
+              <Text style={styles.personName} numberOfLines={1}>
+                {p.nickname}
+                {isMe ? ' (나)' : ''}
+                {p.userId === a.hostId ? ' · 주최자' : ''}
+              </Text>
+              <Text style={styles.personLine} numberOfLines={2}>
+                {line}
+              </Text>
+            </View>
+            {action}
+          </View>
+        );
+      })}
+      {missing.map((name) => (
+        <View key={`unclaimed:${name}`} style={styles.personRow}>
+          <View style={[styles.initial, styles.initialMissing]}>
+            <Text style={[styles.initialText, styles.initialTextMissing]}>{Array.from(name)[0] ?? ''}</Text>
+          </View>
+          <View style={styles.personBody}>
+            <Text style={[styles.personName, styles.personNameMissing]} numberOfLines={1}>
+              {name}
+            </Text>
+            <Text style={styles.personLine}>아직 안 들어왔어요 · {formatKoreanTime(a.meetAtMs, tz)}까지 들어올 수 있어요</Text>
+          </View>
+        </View>
+      ))}
+    </Card>
+  );
+}
+
+// ───────────────────────── 주최자 도구: 시간 미루기 · 장소 바꾸기 ─────────────────────────
+
+export interface HostToolsProps {
+  live: LbLive;
   api: LateBetApi;
   refresh: () => Promise<LbLive | null>;
-}) {
-  const [busyId, setBusyId] = useState<string | null>(null);
+  /** 연결이 끊겨 있으면 버튼을 잠근다 */
+  disabled?: boolean;
+}
+
+/**
+ * 시작 후 주최자가 할 수 있는 두 가지(§0-1 규칙 5): 시간 '뒤로 미루기'(최대 +3시간)와 장소 변경.
+ * - 미루기: 약속 시각 + 15분/30분/1시간/2시간/3시간 중 지금부터 5분 뒤 이후인 것만(서버 LB_TIME_IN_PAST 규칙).
+ *   api.edit(id, { localAt }, version) → 서버가 마감·정산 시각을 새 시각 기준으로 다시 계산한다(startedAtMs 는 그대로).
+ *   앞당기면 LB_POSTPONE_ONLY, 3시간 넘게 미루면 LB_POSTPONE_TOO_FAR — 선택지 자체가 그 범위 안이라 평소엔 안 나온다.
+ * - 장소: 약속 잡기 화면의 수정 모드(/late/new?edit=<id>)로 들어간다. 시작 후 다른 조건을 건드리면 서버가 LB_EDIT_FROZEN 으로 막는다.
+ * 정산이 시작된 뒤(마감 지남·settlePending)에는 그리지 않는다(서버 LB_EDIT_CLOSED).
+ */
+export function HostTools({ live, api, refresh, disabled = false }: HostToolsProps) {
+  const router = useRouter();
+  const a = live.appointment;
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -277,67 +373,90 @@ export function JoinRequests({
     };
   }, []);
 
-  const requests = isHost ? live.participants.filter((p) => p.state === 'pending') : [];
-  if (requests.length === 0) return null;
+  const postponeTo = useCallback(
+    (targetMs: number) => {
+      const localAt = msToLocalAt(targetMs, a.tz);
+      if (localAt === '') {
+        alertDialog('미루지 못했어요', '시간대를 읽지 못했어요.');
+        return;
+      }
+      confirmDialog(
+        `약속을 ${formatKoreanDateTime(targetMs, a.tz)}(으)로 미룰까요?`,
+        '체크인 마감·결과 확정 시각도 새 약속 기준으로 다시 계산돼요. 이미 도착한 사람의 도착은 그대로예요.',
+        () => {
+          setBusy(true);
+          void (async () => {
+            try {
+              // 시간대는 그대로다 — 만들 때 이미 확인한 값이므로 다시 묻지 않는다
+              const next = await api.edit(a.id, { localAt, tzConfirmed: true }, a.version);
+              void scheduleLateNotifications({
+                id: next.id,
+                version: next.version,
+                title: next.title,
+                tz: next.tz,
+                meetAtMs: next.meetAtMs,
+                closeMs: next.closeMs,
+              });
+              if (alive.current) setOpen(false);
+            } catch (e) {
+              alertDialog('미루지 못했어요', toLateBetError(e).message);
+            } finally {
+              await refresh();
+              if (alive.current) setBusy(false);
+            }
+          })();
+        },
+        { confirmText: '미루기' },
+      );
+    },
+    [a.id, a.tz, a.version, api, refresh],
+  );
 
-  const appointmentId = live.appointment.id;
-  const stake = live.appointment.policy.stake;
+  // 정산이 시작됐거나 닫힌 약속은 못 바꾼다(서버 LB_EDIT_CLOSED)
+  if (a.status !== 'open' || live.settlePending) return null;
 
-  const run = async (userId: string, failTitle: string, work: () => Promise<void>) => {
-    if (busyId !== null) return;
-    setBusyId(userId);
-    try {
-      await work();
-    } catch (e) {
-      const err = toLateBetError(e);
-      const message =
-        err.code === 'LB_INSUFFICIENT_POINTS'
-          ? APPROVE_INSUFFICIENT_MESSAGE
-          : err.code === 'LB_JOIN_CLOSED'
-            ? '약속 시각이 지나 수락할 수 없어요.'
-            : err.message;
-      alertDialog(failTitle, message);
-    } finally {
-      await refresh();
-      if (alive.current) setBusyId(null);
-    }
-  };
-
-  const approve = (p: LbLiveParticipant) => {
-    if (serverNow() >= live.appointment.meetAtMs) {
-      alertDialog('수락하지 못했어요', '약속 시각이 지나 수락할 수 없어요.');
-      return;
-    }
-    void run(p.userId, '수락하지 못했어요', () => api.approve(appointmentId, p.userId));
-  };
-
-  const reject = (p: LbLiveParticipant) => {
-    confirmDialog(
-      `${p.nickname}님의 요청을 거절할까요?`,
-      '포인트는 걸린 적이 없어 돌려줄 것이 없어요.',
-      () => void run(p.userId, '거절하지 못했어요', () => api.kick(appointmentId, p.userId, false)),
-      { confirmText: '거절', destructive: true },
-    );
-  };
-
+  const now = serverNow();
+  const choices = POSTPONE_CHOICES_MINUTES.map((minutes) => ({ minutes, targetMs: a.meetAtMs + minutes * MINUTE_MS })).filter(
+    (c) => c.targetMs > now + MIN_LEAD_MS,
+  );
   return (
     <>
-      <SectionTitle>참여 요청</SectionTitle>
+      <SectionTitle>주최자</SectionTitle>
       <Card>
-        {requests.map((p) => (
-          <View key={p.userId} style={styles.personRow}>
-            <View style={styles.personBody}>
-              <Text style={styles.personName} numberOfLines={1}>
-                {p.nickname}님이 참여를 요청했어요
-              </Text>
-              <Text style={styles.personLine}>
-                {stake > 0 ? `수락하는 순간 이 친구의 ${stake}P가 걸려요.` : '수락하면 서로 위치가 보여요.'}
-              </Text>
-            </View>
-            <SmallButton label="수락" solid disabled={busyId !== null} onPress={() => approve(p)} />
-            <SmallButton label="거절" disabled={busyId !== null} onPress={() => reject(p)} />
+        <Text style={styles.muted}>
+          이미 시작한 약속이라 시간은 뒤로 미루기(최대 3시간)만, 장소는 바꿀 수 있어요. 바꾸면 친구들 화면에 알림 배너가 떠요.
+        </Text>
+        {open ? (
+          <View style={styles.stack}>
+            <Text style={styles.label}>언제로 미룰까요?</Text>
+            {choices.length === 0 ? (
+              <Text style={styles.muted}>더 미룰 수 있는 시각이 없어요. 약속 시각에서 최대 3시간까지만 미룰 수 있어요.</Text>
+            ) : (
+              <View style={styles.chips}>
+                {choices.map((c) => (
+                  <Chip
+                    key={c.minutes}
+                    label={`${formatKoreanTime(c.targetMs, a.tz)} (+${formatDelta(c.minutes)})`}
+                    selected={false}
+                    disabled={busy || disabled}
+                    onPress={() => postponeTo(c.targetMs)}
+                  />
+                ))}
+              </View>
+            )}
+            <PrimaryButton label="닫기" variant="ghost" onPress={() => setOpen(false)} disabled={busy} />
           </View>
-        ))}
+        ) : (
+          <View style={styles.stack}>
+            <PrimaryButton label="시간 미루기" variant="ghost" onPress={() => setOpen(true)} disabled={busy || disabled} />
+            <PrimaryButton
+              label="장소 바꾸기"
+              variant="ghost"
+              onPress={() => router.push(`/late/new?edit=${a.id}`)}
+              disabled={busy || disabled}
+            />
+          </View>
+        )}
       </Card>
     </>
   );
@@ -353,7 +472,7 @@ interface Notice {
 
 const VOUCH_HINT = "먼저 도착한 친구에게 '같이 있어요'를 눌러달라고 하세요.";
 
-export function LiveView({ live, phase, isHost, api, refresh, reporter }: LiveViewProps) {
+export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, unseenChanges, ackChanges }: LiveViewProps) {
   const appointment = live.appointment;
   const { permission, sharing, running, myDistanceM, myAccuracyM, lastResult } = reporter;
   const reportError = reporter.error;
@@ -364,7 +483,6 @@ export function LiveView({ live, phase, isHost, api, refresh, reporter }: LiveVi
   const [pressed, setPressed] = useState(false);
   /** 위치를 모르는 채로 눌렀다 */
   const [noPosition, setNoPosition] = useState(false);
-
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -381,13 +499,13 @@ export function LiveView({ live, phase, isHost, api, refresh, reporter }: LiveVi
     if (myDistanceM !== null) setNoPosition(false);
   }, [myDistanceM]);
 
-  // 체크인이 닫혔다는 판정을 받으면 바로 다시 읽어 결과 화면으로 넘어가게 한다
+  // 체크인이 닫혔다는 판정을 받으면 바로 다시 읽어 결과 화면으로 넘어가게 한다. 이미 도착이면 도착 화면으로
   const lastReason = lastResult?.reason ?? null;
   useEffect(() => {
     if (lastReason === 'closed' || lastReason === 'already_arrived') void refresh();
   }, [lastReason, refresh]);
 
-  // 자동 재시도: 연결 끊김 3초 · GPS 부정확 5초(보고 루프가 돌고 있으면 루프가 5초마다 다시 보낸다)
+  // 자동 재시도: 연결 끊김 3초 · GPS 부정확 5초(보고 루프가 돌고 있으면 루프가 5초마다 다시 보낸다). 언마운트 때 정리
   const offline = reportError !== null && isConnectivityError(reportError);
   const retryMs = offline ? OFFLINE_RETRY_MS : lastReason === 'low_accuracy' && !running ? ACCURACY_RETRY_MS : null;
   useEffect(() => {
@@ -455,7 +573,6 @@ export function LiveView({ live, phase, isHost, api, refresh, reporter }: LiveVi
         distanceM: lastResult.distanceM,
         accuracyM: myAccuracyM,
         radiusM: appointment.policy.radiusM,
-        shareStartMs: appointment.shareStartMs,
         closeMs: appointment.closeMs,
         tz: appointment.tz,
       });
@@ -484,6 +601,16 @@ export function LiveView({ live, phase, isHost, api, refresh, reporter }: LiveVi
     .filter((s) => s !== '')
     .join(' · ');
 
+  // 아직 안 들어온 이름 안내(약속 시각까지 들어올 수 있다). 본체는 폴링 때만 다시 그리므로 그때의 서버 시각으로 본다
+  const missing = unclaimedNames(appointment, live.serverNowMs);
+  const policy = normalizeLatePolicy(appointment.policy);
+  const fullAt = fullForfeitAtMs(policy, appointment.meetAtMs);
+  const tailLine =
+    fullAt !== null && fullAt < appointment.closeMs
+      ? `전액을 잃은 뒤에도 ${formatKoreanTime(appointment.closeMs, appointment.tz)}까지는 위치가 보이고, 그때까지 오면 '지각'으로 남아요.`
+      : '';
+  const placeNote = appointment.placeNote.trim();
+
   return (
     <Screen
       footer={
@@ -497,12 +624,18 @@ export function LiveView({ live, phase, isHost, api, refresh, reporter }: LiveVi
         </>
       }
     >
+      <ChangeBanner changes={unseenChanges} tz={appointment.tz} onAck={ackChanges} />
+
       <MapPane
         destination={{ name: appointment.placeName, lat: appointment.placeLat, lng: appointment.placeLng }}
         radiusM={appointment.policy.radiusM}
         markers={markers}
         me={myPoint}
       />
+      <Text style={styles.placeLine} numberOfLines={2}>
+        {appointment.placeName}
+        {placeNote !== '' ? ` · ${placeNote}` : ''}
+      </Text>
 
       <LossTicker appointment={appointment} />
 
@@ -536,15 +669,30 @@ export function LiveView({ live, phase, isHost, api, refresh, reporter }: LiveVi
         </Card>
       ) : null}
 
-      <JoinRequests live={live} isHost={isHost} api={api} refresh={refresh} />
+      {missing.length > 0 ? (
+        <Card>
+          <Text style={styles.noticeMain}>아직 안 들어온 친구: {missing.join(', ')}</Text>
+          <Text style={styles.noticeSub}>
+            {formatKoreanTime(appointment.meetAtMs, appointment.tz)}까지 들어올 수 있고, 들어오면 그때부터 위치가 보여요.
+            {isHost ? ' 그때까지도 안 들어온 이름은 명단에서 자동으로 빠져요.' : ''}
+          </Text>
+        </Card>
+      ) : null}
 
       <SectionTitle>참가자</SectionTitle>
       <ParticipantRows live={live} sharing={sharing} />
+      {tailLine !== '' ? <Text style={styles.hint}>{tailLine}</Text> : null}
+
+      {isHost ? <HostTools live={live} api={api} refresh={refresh} disabled={stale} /> : null}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  banner: { backgroundColor: colors.cardAlt },
+  bannerText: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
+  bannerSub: { fontSize: fontSize.sm, color: colors.subtext },
+  placeLine: { fontSize: fontSize.sm, color: colors.subtext },
   ticker: { gap: spacing.xs, paddingVertical: spacing.xs },
   tickerMain: { fontSize: fontSize.lg, fontWeight: '800', color: colors.text },
   tickerSub: { fontSize: fontSize.sm, color: colors.subtext, fontVariant: ['tabular-nums'] },
@@ -563,11 +711,16 @@ const styles = StyleSheet.create({
   toggleLabel: { fontSize: fontSize.sm, fontWeight: '600', color: colors.text },
   toggleLabelOn: { color: colors.onPrimary, fontWeight: '800' },
   hint: { fontSize: fontSize.xs, color: colors.subtext },
+  muted: { fontSize: fontSize.sm, color: colors.subtext, lineHeight: 20 },
+  label: { fontSize: fontSize.xs, fontWeight: '700', color: colors.subtext },
+  stack: { gap: spacing.sm },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   noticeMain: { fontSize: fontSize.sm, fontWeight: '700', color: colors.text },
   noticeSub: { fontSize: fontSize.sm, color: colors.subtext },
   personRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   personBody: { flex: 1, gap: 2 },
   personName: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
+  personNameMissing: { color: colors.subtext },
   personLine: { fontSize: fontSize.sm, color: colors.subtext, fontVariant: ['tabular-nums'] },
   initial: {
     width: 32,
@@ -578,8 +731,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   initialArrived: { backgroundColor: colors.primary },
+  initialMissing: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
   initialText: { fontSize: fontSize.sm, fontWeight: '700', color: colors.text },
   initialTextArrived: { color: colors.onPrimary },
+  initialTextMissing: { color: colors.subtext },
   smallButton: {
     borderRadius: radius.md,
     paddingVertical: 8,
