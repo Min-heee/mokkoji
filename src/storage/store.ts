@@ -53,6 +53,8 @@ export function normalizeSession(raw: Partial<Session> & { id: string }): Sessio
     lastFxRates: raw.lastFxRates ?? {},
     bet: raw.bet ?? null,
     appointment: normalizeAppointment(raw.appointment),
+    // 약속 내기에서 만든 세션만 갖는다. 없거나 문자열이 아니면 키 자체를 두지 않는다(기존 데이터 모양 그대로)
+    ...(typeof raw.lateBetId === 'string' && raw.lateBetId !== '' ? { lateBetId: raw.lateBetId } : {}),
   };
 }
 

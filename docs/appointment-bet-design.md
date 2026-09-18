@@ -24,6 +24,76 @@
 
 ---
 
+## 0-1. 오너 확정 흐름 (2026-09-18) — 최우선 명세
+
+**이 절이 본문의 어떤 문장보다 우선한다.** 본문 절은 고치지 않았고, 무효가 된 항목은 아래 둘째 표에서 가리킨다. 같은 날 앞서 적었던 '오너 결정 변경 3건'(초대 명단·전원 참여 시 자동 잠금·30분 꼬리) 중 **'전원 참여 시 자동 잠금(rosterCompleteAt = lockedAt)'과 '위치 공개 시점(N분 전)' 설정은 이 절로 폐기**됐고, 초대 명단·시작 전 변경 + 차액·시작 후 미루기/장소만·30분 꼬리는 유지된다. 클라이언트 계약(타입·API·phase)은 `docs/late-bet-p0-handoff.md` 계약서에, SQL(부록 A~D)은 [rules-sql] 이 같은 명세로 고친다. `src/lateBet/fakeApi.ts` 가 참조 구현이다.
+
+### 한 줄 요약
+
+**주최자가 약속을 만들고 친구를 초대 → 친구들이 수락(명단에서 자기 이름 고르고 포인트 걸기) → 주최자가 [시작하기]를 한 번 누르면 그 순간부터 전원 위치가 서로 보임 → 도착·지각 판정 → 정산.**
+
+### 규칙 9개
+
+| # | 주제 | 확정 규칙 |
+|---|---|---|
+| 1 | 위치 공개 시점 설정 | **삭제.** `LatePolicy.shareLocationMinutesBefore` 를 타입·정규화·프리셋·`describePolicy`·화면 입력·SQL 컬럼/CHECK 에서 전부 뺀다. `locationShareWindow(policy, deadlineMs, startedAtMs)`: `startMs = startedAtMs`, `endMs = closeAtMs`(전액 몰수 시각 + 30분, 상한 마감 + 180분, 전액 몰수 시각이 없으면 마감 + 60분). `startedAtMs` 가 null 이면 공개 창 없음(`isLocationShared = false`) |
+| 2 | 잠금 → 시작 | `rosterCompleteAt`/`lockedAt`(전원 참여 시 자동 잠금) 삭제 → **`startedAtMs`** = 주최자가 [시작하기]를 누른 서버 시각(`appointments.started_at`) |
+| 3 | 시작 조건 | 주최자만. **약속 시각(마감) 전이면 언제든**(참여 인원 조건 없음 — 혼자면 화면이 "아직 아무도 안 들어왔어요" confirmDialog 뒤 진행). 약속 시각이 지나면 시작 불가(`LB_START_CLOSED`). 한 번 시작하면 되돌릴 수 없음(`LB_ALREADY_STARTED`). 취소는 별개(시작 전까지, 혼자면 언제든) |
+| 4 | 시작 전(waiting) | 수락(참여)·나가기(환불)·내보내기(환불)·명단 편집·시간/장소/조건 전부 변경(배너 + 걸 포인트 차액 자동 에스크로/환불) 가능. **위치는 아무도 못 보고 체크인도 안 열림**(`not_open`) |
+| 5 | 시작 후(live/overtime) | 위치 공개 = `startedAt` 있음 ∧ now ≤ `closeMs` ∧ 대상 미도착 ∧ 3분 내 갱신. 체크인은 시작 ~ 마감(`closeMs`). **아직 수락 안 한 초대 이름은 약속 시각까지 계속 수락 가능**(`LbJoinResult.started = true`, 들어오면 그때부터 위치 공개·판정 대상). 나가기·내보내기·명단 편집 불가(`LB_LEAVE_CLOSED`·`LB_KICK_CLOSED`·`LB_EDIT_FROZEN`). 변경은 시간 뒤로 미루기(+3h 상한)·장소만(`LB_EDIT_FROZEN` / `LB_POSTPONE_ONLY` / `LB_POSTPONE_TOO_FAR`). 마감 뒤 `LB_EDIT_CLOSED` |
+| 6 | 정산(마감) 시점 | **시작이 안 된 약속은 약속 시각에 자동 무효**(`voidReason 'notStarted'`, 전원 환불 `refund/notStarted`, 전원 '오지 않음'). 약속 시각까지 수락 안 한 이름은 자동 삭제(환불 없음). 나머지는 `settleLateBet`. 정산 조건은 셋 중 하나: 마감 + 15초 / 전원 도착 ∧ 약속 시각 이후 / **시작 안 됨 ∧ 약속 시각 이후** |
+| 7 | 화면 | 대기실 주최자 하단 primary **[시작하기]** + 설명 "누르면 모두의 위치가 서로 보여요. 아직 안 들어온 친구는 나중에 들어와도 돼요". 게스트에겐 "주최자가 시작하면 위치가 보여요". 시작 후 대기실 대신 live 화면. 홈 카드 배지: [모이는 중](시작 전) / [진행 중](시작 후) / [정산 확인 중] / [끝남]. 변경 배너(version 비교)는 유지 |
+| 8 | fakeApi | 봇들이 차례로 수락(시작 후에 들어오는 봇 시나리오 포함), 주최자 시작은 실제 버튼으로. FakeDevPanel: '봇 한 명 수락', '시작 후 봇 수락', 시간 이동, 내 위치 이동, '봇 한 명 도착' 유지 |
+| 9 | SQL | `appointments.started_at`, `lb_start`(주최자만·약속 시각 전), `lb_get_live` 공개 조건, `lb_settle` 의 notStarted 무효·미수락 삭제, `share_minutes_before` 컬럼/CHECK 제거, 잠금 관련 로직을 `started_at` 기준으로. 원칙 7개(§1) 유지 |
+
+'마감'이라는 낱말: 이 절과 코드에서 **참여 마감·시작 마감·미수락 삭제·무효 판정의 기준은 약속 시각(`meetAtMs`)** 이고, **체크인·위치 공개·정산의 기준은 `closeMs`**(전액 몰수 + 30분 꼬리)다. 본문 §3.5 의 "마감" 도 약속 시각이다.
+
+### 이로 인해 무효가 된 본문 항목
+
+| 위치 | 무효가 된 내용 | 대신 |
+|---|---|---|
+| 요약 5 | "위치 공개가 시작된 뒤(=잠금 뒤)에 링크로 들어온 사람은 주최자가 [수락]해야…", "당일 번개 약속은 만들자마자 잠기므로…" | 초대 명단 + 주최자 [시작하기]. 수락제 없음. 시작 전에는 아무도 위치를 못 본다 |
+| 요약 6 | "친구가 한 명이라도 들어온 뒤에는 시간·장소·내기 조건을 못 바꾼다. 바꾸려면 [취소하고 새로 만들기]" | 시작 전 전부 변경(차액 에스크로/환불 + 배너), 시작 후 미루기·장소만 |
+| §0 표 '잠금 후 참여'·'잠금 후 강퇴'·'강퇴 뒤 재참여'·'시간·장소 변경'·'정책 수정' | 수락제·[참여 마감]·동결 전제 | 규칙 4·5. 차단 목록(`lb_bans`)은 내보내기 때 그대로 쓴다 |
+| §0.1 | "`locationShareWindow.endMs = min(전액 시각, 마감+180분)`" | `closeAtMs` = 전액 시각 + 30분(상한 마감 + 180분, 없으면 + 60분). 시작은 `startedAtMs` |
+| §1 구조도·§3.3 의 '공개 창 = 약속 N분 전 ~' | `share_start_at`, `shareLocationMinutesBefore` | 공개 창 = `started_at ~ close_at`. 정책에 공개 시점 없음 |
+| §2.1 | `participants.state`(active·pending), `appointments.join_closed`, `share_minutes_before`, `share_start_at` | pending·join_closed·share_minutes_before·share_start_at 삭제. `appointments.started_at`(nullable) + 명단 테이블(이름·claimed_by·claimed_at) + 변경 이력(version·전후 스냅샷) — 정확한 DDL 은 [rules-sql] |
+| §2.3 #3 `lb_peek_invite` | `needsApproval`·`joinClosed`·"닉네임 목록은 활성 멤버에게만" | 명단(이름·claimed·mine)·`startedAtMs`·`hostNickname` 을 누구에게나(자기 이름을 골라야 하므로) |
+| §2.3 #4 `lb_join` | 잠금 전 active / 잠금 후 pending, 닉네임 자유 입력 | `lb_claim_slot(p_appt, p_name, p_version, p_consent)`: 명단의 이름을 고른다. `LB_NOT_INVITED`·`LB_SLOT_TAKEN`. 약속 시각 전이면 시작 뒤에도 가능(`started` 반환) |
+| §2.3 #5 `lb_approve`, #8 `lb_set_join_closed` | 전부 | 삭제. 대신 `lb_edit_invitees(p_appt, add[], remove[])`(시작 전, 들어온 이름 삭제는 `LB_INVITEE_JOINED`, 시작 후 `LB_EDIT_FROZEN`) + **`lb_start(p_appt)`**(#17, 주최자만·약속 시각 전·한 번만) |
+| §2.3 #6 `lb_leave`, #7 `lb_kick` | "pending 은 언제든", "잠금 전까지" 의 잠금 = 공개 시작 | 시작 전까지. kick 은 명단에서도 그 이름을 지운다. leave 는 이름을 명단에 남기고 빈 칸으로 되돌린다 |
+| §2.3 #10 `lb_update_appointment` | "주최자, 혼자일 때만", `LB_EDIT_LOCKED` | `lb_edit_appointment(p_appt, patch, p_version)`: 규칙 4·5. 걸 포인트 차액 hold/refund(`policy_change`) |
+| §2.3 #11 `lb_cancel` | "다른 활성 참가자가 있으면 잠금 전까지" 의 잠금 | 시작 전까지(혼자면 언제든) |
+| §2.3 판정표 | "내가 pending → `pending`", "공개 창 전 → `not_open`" 의 공개 창 | pending 없음. `not_open` = 주최자가 아직 시작하지 않았다 |
+| §2.3 `lb_settle` | "delete pending 행", 정산 조건 2개 | pending 없음. 조건 셋(규칙 6). 시작 안 됨 → `notStarted` 무효 + 전원 `refund/notStarted`. 미수락 이름 삭제 |
+| §2.3 #14 `lb_vouch` | 공개 창 밖 `LB_CLOSED` 만 | 시작 전 `LB_NOT_STARTED`, 마감 뒤 `LB_CLOSED` |
+| §2.3 #15 `lb_get_live` | "pending 에게는 자기 행만, 좌표 없음" / 좌표 조건(공개 창) | 전원이 전 행을 본다. 좌표는 **시작됨 ∧ 마감 전** ∧ 미도착 ∧ 3분 안일 때만. 시작 안 된 채 약속 시각이 지났으면 여기서 무효 정산 |
+| §3.1 | "만들면 바로 위치 공개가 시작돼요…", 공개 시점 선택지 | 생성 폼에 명단 입력(InviteeEditor). 공개 시점 선택지 없음. 안내 "만든 뒤 대기실에서 [시작하기]를 누르면 그때부터 서로 위치가 보여요" |
+| §3.2 3~4 | 닉네임 자유 입력, "잠금 후(`needsApproval=true`) [참여 요청 보내기] … [요청 취소]" | 명단에서 이름 고르기 + 동의 2개 → [100P 걸고 참여]. 명단에 빈 이름이 없으면 안내 문구. 이미 시작한 약속이면 참여 직후 live 화면 |
+| §3.2 주최자 대기실 | 요청 카드 [수락][거절], [참여 마감] 토글 | 명단 편집(추가·빈 이름 삭제) + "아직 안 들어온 친구" 표시 + **[시작하기]** |
+| §3.3 | "약속 N분 전부터 마감까지", 실행 조건의 '본인 active' | 공개 창 = 시작 ~ 마감. 보고·체크인은 시작 뒤에만 |
+| §3.5 정산 조건·경합표 '참여 vs 주최자 수정' | 정산 조건 2개, "수정은 다른 참가자 행이 하나라도 있으면 거부" | 정산 조건 셋(규칙 6). 시작 전 수정은 항상 허용, version 으로 경합 감지(`LB_APPT_CHANGED`) |
+| §3.6 전부 | 혼자일 때만 수정, 취소하고 새로 만들기, 잠금 후 변경·취소 불가 | 규칙 4·5. 취소는 시작 전까지(혼자면 언제든) |
+| §3.7 | "참여 요청(pending)은 언제든 [요청 취소]", "잠금 후에는 요청 [거절]만", 잠금 = 공개 시작 | pending 없음. 나가기·내보내기는 시작 전까지 |
+| §5.1 | `latePhase` 의 `pending`·`locked`, `fakeApi` 의 "승인·차단", `SHARE_BEFORE_CHOICES` | phase = `waiting | live | overtime | arrived | settling | settled | voided | canceled`. 새 파일 `changes.ts`(변경 배너 문구), `screens/InviteeEditor.tsx`, `screens/ConditionCard.tsx`(PendingView 에 있던 공유 조각). `latePhase.lateTimes`·`sharesImmediately`·`isLocked`·`isLocationVisible(잠금 기준)` 삭제 → `lateCloseMs`·`isStarted` |
+| §5.3-A 배지 | [수락 대기]·[오늘] | [모이는 중](시작 전) / [진행 중](시작 후) / [정산 확인 중] / [끝남] |
+| §5.3-B | 공개 시점 선택지, "만들면 바로 위치 공개…" 경고 | 제목 아래 '초대할 친구' 명단(InviteeEditor). 공개 시점 없음 |
+| §5.3-D | 조건 변경 행의 "미리보기 새로고침"만 유지, 추가 행 | `LB_NOT_INVITED` "초대 명단에 없어요. 주최자에게 이름을 추가해 달라고 해주세요." / `LB_SLOT_TAKEN` / `LB_JOIN_CLOSED` 는 '약속 시각 지남·닫힘' |
+| §5.3-E | "약속 1시간 전부터" 문구 | "주최자가 시작하면 서로 위치가 보여요" (`LocationPrimerProps.shareMinutesBefore` 삭제) |
+| §5.3-F `pending`·`locked` 화면 | 전부 | 삭제. `waiting`(시작 전) 하나. 참가자 화면 상단에 변경 배너. 주최자 `live` 화면에는 안 들어온 이름 표시(명단 편집은 불가, 약속 시각에 자동 삭제) |
+| §5.3-F `waiting` 주최자 버튼 | "약속 수정(혼자일 때만), [참여 마감] 토글, 요청 카드 [수락][거절]", 하단 "오후 6:30부터 서로 위치가 보여요" | 명단 편집·조건 변경(전부)·내보내기·취소 + primary **[시작하기]**("누르면 모두의 위치가 서로 보여요. 아직 안 들어온 친구는 나중에 들어와도 돼요"). 게스트 하단 "주최자가 시작하면 위치가 보여요" |
+| §5.4 '수락 대기'·'내보내짐·거절됨'·'체크인 개시 전' 행 | pending 화면, "주최자가 요청을 받지 않았어요.", "체크인은 오후 6:30부터예요" | 삭제 / 내보내짐 문구만(`REMOVED_MESSAGE`) / `not_open` = "주최자가 시작하면 체크인할 수 있어요." |
+| §5.5 | `LB_EDIT_LOCKED`, `LB_KICK_CLOSED`("위치 공개가 시작돼…")·"모두 들어와 약속이 잠겼어요" 계열 문구 | `LB_EDIT_LOCKED` 삭제. 추가: `LB_NOT_INVITED`·`LB_SLOT_TAKEN`·`LB_INVITEE_JOINED`·`LB_EDIT_FROZEN`·`LB_POSTPONE_ONLY`·`LB_POSTPONE_TOO_FAR`·**`LB_START_CLOSED`·`LB_ALREADY_STARTED`·`LB_NOT_STARTED`**. `LB_LEAVE_CLOSED`·`LB_KICK_CLOSED`·`LB_CANCEL_CLOSED`·`LB_EDIT_FROZEN`·`LB_POSTPONE_ONLY` 문구는 "이미 시작한 약속…" 계열(`src/lateBet/errors.ts`) |
+| §10-2 | "잠금 = 위치 공개 시작 시각. 이후 나가기·취소·강퇴 불가", 공개 시점(30분~6시간 전) | 시작 = 주최자 [시작하기]. 공개 시점 설정 없음 |
+| §10-4 | "잠금 후 참여는 주최자 수락제" 전부 | 초대 명단 |
+| §10-5 | "친구가 들어온 뒤에는 변경 불가 → 취소하고 새로 만들기" | 규칙 4·5 |
+| §10-6 | "잠금 후 핀이 틀린 걸 발견하면 못 고친다" | 시작 후에도 장소(핀·이름)는 고칠 수 있다 |
+| §10-13 | "활성 20명 + 수락 대기 10명" | 명단 19명 + 주최자 = 20명. 수락 대기 없음 |
+| §11 악용 '초대 코드 유출' 방어 | 수락제가 방어 장치였다 | 명단에 없는 이름은 들어올 수 없고, 남이 고른 이름은 고를 수 없다. 시작 전에는 아무 위치도 안 보이고, 주최자가 시작 전 내보내기(차단)로 정리한다 |
+| 부록 A~D | pending·approve·join_closed·share_start_at·share_minutes_before·`LB_EDIT_LOCKED` 전제의 SQL·시나리오 | [rules-sql] 이 같은 명세로 고친다. 클라이언트 `fakeApi.ts` 가 참조 구현이다 |
+
+---
+
 ## 0. 통합본에서 달라진 것 (한 표)
 
 | 주제 | 통합 설계서 | 최종 |

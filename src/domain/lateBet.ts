@@ -21,8 +21,6 @@ export interface LatePolicy {
   penaltyPerUnit: number;
   /** 봐주는 시간 분 (기본 0) */
   graceMinutes: number;
-  /** 약속 몇 분 전부터 위치 공개 (예: 60, 120) */
-  shareLocationMinutesBefore: number;
 }
 
 const MINUTE_MS = 60_000;
@@ -41,6 +39,12 @@ const MAX_MINUTES = 24 * 60;
 export const MAX_SHARE_AFTER_DEADLINE_MINUTES = 180;
 /** 전액 몰수 시각이 없을 때(내기 없음·단위 차감 0) 마감 후 공개 시간(분) */
 export const DEFAULT_SHARE_AFTER_DEADLINE_MINUTES = 60;
+/**
+ * 전액 몰수 뒤에도 지각자 위치를 더 보여 주는 꼬리(분) — 오너 결정 변경 3(2026-09-18).
+ * 전액을 잃은 사람도 오고 있으면 친구들이 볼 수 있어야 한다. 이 시각까지 체크인도 열려 있어
+ * 꼬리 안에 온 사람은 '오지 않음'이 아니라 '지각(전액)'으로 남는다.
+ */
+export const SHARE_TAIL_AFTER_FULL_FORFEIT_MINUTES = 30;
 
 export const DEFAULT_LATE_POLICY: LatePolicy = {
   stake: 0,
@@ -48,7 +52,6 @@ export const DEFAULT_LATE_POLICY: LatePolicy = {
   unitMinutes: 5,
   penaltyPerUnit: 0,
   graceMinutes: 0,
-  shareLocationMinutesBefore: 60,
 };
 
 /**
@@ -71,12 +74,6 @@ export function normalizeLatePolicy(raw: unknown): LatePolicy {
     unitMinutes: toInt(p.unitMinutes, d.unitMinutes, 1, MAX_MINUTES),
     penaltyPerUnit: toInt(p.penaltyPerUnit, d.penaltyPerUnit, 0, MAX_STAKE),
     graceMinutes: toInt(p.graceMinutes, d.graceMinutes, 0, MAX_MINUTES),
-    shareLocationMinutesBefore: toInt(
-      p.shareLocationMinutesBefore,
-      d.shareLocationMinutesBefore,
-      0,
-      MAX_MINUTES,
-    ),
   };
 }
 
@@ -284,41 +281,56 @@ export function settleLateBet(
 }
 
 /**
- * 위치 공개 창 [startMs, endMs] (양끝 포함).
- * - startMs = deadlineMs - shareLocationMinutesBefore분
- * - endMs = 전액 몰수 시각(그 뒤엔 더 잃을 게 없어 위치를 볼 이유가 없다), 없으면 마감 + 60분.
- *   단 마감 + MAX_SHARE_AFTER_DEADLINE_MINUTES를 넘지 않는다 — 내기가 사실상 끝난 뒤에도
+ * 체크인·위치 공개 마감 시각. SQL private.lb_close_at 과 같은 식이어야 한다.
+ * - 전액 몰수 시각 + SHARE_TAIL_AFTER_FULL_FORFEIT_MINUTES(30분) — 전액을 잃은 뒤에도 오고 있는 사람을
+ *   30분 더 보여 준다(오너 결정 변경 3). 전액 몰수 시각이 없으면(내기 없음·단위 차감 0) 마감 + 60분.
+ * - 단 마감 + MAX_SHARE_AFTER_DEADLINE_MINUTES(180분)를 넘지 않는다 — 내기가 사실상 끝난 뒤에도
  *   위치가 계속 노출되면 안 된다(프라이버시).
- * - 마감이 유효하지 않으면 빈 창 {0, 0} (isLocationShared는 이때 항상 false)
+ * - 이 값이 곧 체크인 마감(closeMs)이자 정산 기준 시각이다.
+ * - 마감이 유효하지 않으면 null
+ */
+export function closeAtMs(policy: LatePolicy, deadlineMs: number): number | null {
+  if (!isValidMs(deadlineMs)) return null;
+  const p = normalizeLatePolicy(policy);
+  const full = fullForfeitAtMs(p, deadlineMs);
+  const cap = deadlineMs + MAX_SHARE_AFTER_DEADLINE_MINUTES * MINUTE_MS;
+  return full === null
+    ? deadlineMs + DEFAULT_SHARE_AFTER_DEADLINE_MINUTES * MINUTE_MS
+    : Math.min(full + SHARE_TAIL_AFTER_FULL_FORFEIT_MINUTES * MINUTE_MS, cap);
+}
+
+/**
+ * 위치 공개 창 [startMs, endMs] (양끝 포함).
+ * - startMs = startedAtMs — 주최자가 [시작하기]를 누른 서버 시각(오너 결정 2026-09-18). 그 전에는 아무도 위치를 못 본다.
+ * - endMs = closeAtMs (전액 몰수 시각 + 30분 꼬리, 상한 마감 + 180분, 전액 몰수 시각이 없으면 마감 + 60분)
+ * - 아직 시작하지 않았거나(startedAtMs null) 시각이 유효하지 않으면 공개 창이 없다 → null
  */
 export function locationShareWindow(
   policy: LatePolicy,
   deadlineMs: number,
-): { startMs: number; endMs: number } {
-  if (!isValidMs(deadlineMs)) return { startMs: 0, endMs: 0 };
-  const p = normalizeLatePolicy(policy);
-  const full = fullForfeitAtMs(p, deadlineMs);
-  const cap = deadlineMs + MAX_SHARE_AFTER_DEADLINE_MINUTES * MINUTE_MS;
-  const endMs =
-    full === null
-      ? deadlineMs + DEFAULT_SHARE_AFTER_DEADLINE_MINUTES * MINUTE_MS
-      : Math.min(full, cap);
-  return { startMs: deadlineMs - p.shareLocationMinutesBefore * MINUTE_MS, endMs };
+  startedAtMs: number | null,
+): { startMs: number; endMs: number } | null {
+  if (!isValidMs(startedAtMs)) return null;
+  const endMs = closeAtMs(policy, deadlineMs);
+  if (endMs === null) return null;
+  return { startMs: startedAtMs, endMs };
 }
 
 /**
  * 지금 이 사람의 위치를 다른 참가자에게 보여줘도 되는지.
- * 공개 창 안이고 아직 도착 전일 때만 true — 도착한 사람은 더 이상 위치를 공개하지 않는다.
- * 애매하면(쓰레기 시각) 공개하지 않는 쪽으로 닫는다.
+ * 주최자가 시작했고, 공개 창 안이고, 아직 도착 전일 때만 true — 도착한 사람은 더 이상 위치를 공개하지 않는다.
+ * 애매하면(쓰레기 시각·시작 전) 공개하지 않는 쪽으로 닫는다.
  */
 export function isLocationShared(
   policy: LatePolicy,
   deadlineMs: number,
+  startedAtMs: number | null,
   nowMs: number,
   hasArrived: boolean,
 ): boolean {
   if (hasArrived !== false) return false;
-  if (!isValidMs(deadlineMs) || !isValidMs(nowMs)) return false;
-  const { startMs, endMs } = locationShareWindow(policy, deadlineMs);
-  return nowMs >= startMs && nowMs <= endMs;
+  if (!isValidMs(nowMs)) return false;
+  const w = locationShareWindow(policy, deadlineMs, startedAtMs);
+  if (w === null) return false;
+  return nowMs >= w.startMs && nowMs <= w.endMs;
 }

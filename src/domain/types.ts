@@ -124,6 +124,8 @@ export interface Session {
   bet?: SessionBet | null;
   /** 약속(시간·장소). 예전 데이터엔 없을 수 있다 */
   appointment?: Appointment | null;
+  /** 약속 내기 결과의 [정산 시작]으로 만든 세션이면 그 서버 약속 id (같은 약속으로 두 번 만들지 않게) */
+  lateBetId?: string;
 }
 
 export interface PersonSettlement {
