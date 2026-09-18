@@ -1,33 +1,40 @@
 /**
- * 가짜 서버 조작 패널 — fake 모드(개발 번들)에서만 보인다. 그 외에는 null.
+ * 가짜 서버 조작 패널 — fake 모드(개발 번들, 또는 EAS 채널 'beta' 네이티브 빌드)에서만 보인다. 그 외에는 null.
  *
  * 접힌 띠 한 줄("가짜 서버 · 서버 시각")을 누르면 펼쳐진다.
  * - 시간 빨리 감기(+1분/+10분/+1시간, 약속 5분 전·약속 시각·마감 직전·마감 뒤로 점프)
  * - 내 가짜 위치(목적지로/300m 앞/1.5km 밖/GPS 부정확/모의 위치/위치 모름) → useArrivalReporter 가 읽어 보고한다
+ *   네이티브에서는 이 좌표가 실제 GPS 를 덮어쓴다. [실제 GPS 쓰기]로 오버라이드를 풀면 진짜 위치로 돌아간다(현재 출처 표시)
  * - 봇: 명단의 빈 이름을 차례로 고르며 수락한다('봇 한 명 수락', 성격별, '시작 후 봇 수락', '봇 한 명 도착')
  *   주최자의 [시작하기]는 패널이 대신 누르지 않는다 — 대기실의 실제 버튼으로 누른다.
  * - 주최자 조작: 시간 30분 미루기(시작 전후 규칙을 그대로 탄다)
  * - 연결 끊기, 초기화
  * 조작 뒤에는 서버 시계를 다시 맞추고 onChanged(보통 useLive.refresh)와 전역 refresh 를 부른다.
  */
-import React, { useCallback, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { formatKoreanDateTime, SEOUL_TZ } from '@/domain/tzGuard';
 import { Chip } from '@/ui/components';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
+import { fakeDevice } from '../arrivalShared';
 import { toLateBetError } from '../errors';
 import { useLateBet } from '../LateBetContext';
 import { serverClock } from '../serverClock';
-import { fakeDevice } from '../useArrivalReporter';
 import { useServerNow } from '../useServerNow';
 
-// 개발 번들에서만 가짜 서버 모듈을 싣는다
-const fakeModule: typeof import('../fakeApi') | null = __DEV__
-  ? // eslint-disable-next-line @typescript-eslint/no-require-imports
-    (require('../fakeApi') as typeof import('../fakeApi'))
-  : null;
+// 가짜 서버 모듈은 번들 env 가 fake 일 때만 싣는다(개발 번들·beta 채널 네이티브 빌드). 웹 릴리스(앱인토스)는 modeRule 상
+// fake 가 될 수 없으므로 개발 번들에서만 싣는다. __DEV__·EXPO_OS·env 비교는 이 자리에 정적으로 적어야 번들 시점에 치환돼
+// 해당 없는 번들에서 require 가 빠진다. 실제로 켜지는지는 useLateBet().fake(modeRule) 가 한 번 더 막는다
+const fakeModule: typeof import('../fakeApi') | null =
+  (__DEV__ || process.env.EXPO_OS !== 'web') && process.env.EXPO_PUBLIC_LATEBET_MODE === 'fake'
+    ? // eslint-disable-next-line @typescript-eslint/no-require-imports
+      (require('../fakeApi') as typeof import('../fakeApi'))
+    : null;
+
+/** 네이티브는 실제 GPS 가 있다 — 오버라이드 해제 버튼과 출처 표시 */
+const HAS_GPS = Platform.OS !== 'web';
 
 const MIN = 60_000;
 
@@ -42,6 +49,15 @@ export function FakeDevPanel({ appointmentId, onChanged }: FakeDevPanelProps) {
   const { fake } = useLateBet();
   if (!fake || !fakeModule) return null;
   return <Panel appointmentId={appointmentId ?? null} onChanged={onChanged} mod={fakeModule} />;
+}
+
+/** 지금 보고에 쓰는 내 위치의 출처 */
+function sourceLabel(): string {
+  if (!fakeDevice.isOverriding()) return HAS_GPS ? '실제 GPS' : '가짜 좌표(기본값)';
+  const p = fakeDevice.get();
+  if (!p) return '가짜 — 위치 모름';
+  const acc = p.accuracyM !== null ? ` · 오차 ${Math.round(p.accuracyM)}m` : '';
+  return `가짜 좌표${acc}${p.mocked ? ' · 모의 위치' : ''}`;
 }
 
 function Clock() {
@@ -63,6 +79,8 @@ function Panel({
   const [note, setNote] = useState('');
   const [offline, setOffline] = useState(mod.isFakeOffline());
   const [mocked, setMocked] = useState(fakeDevice.get()?.mocked === true);
+  const [source, setSource] = useState(sourceLabel);
+  useEffect(() => fakeDevice.subscribe(() => setSource(sourceLabel())), []);
   const server = mod.getFakeServer();
 
   const after = useCallback(
@@ -139,7 +157,7 @@ function Panel({
 
           {a ? (
             <>
-              <Text style={styles.label}>내 위치</Text>
+              <Text style={styles.label}>내 위치 — 지금: {source}</Text>
               <View style={styles.chips}>
                 <Chip label="목적지로" selected={false} onPress={place('목적지', 5, 10)} />
                 <Chip label="300m 앞" selected={false} onPress={place('300m 앞', 300, 12)} />
@@ -151,13 +169,26 @@ function Panel({
                   selected={mocked}
                   onPress={guard(() => {
                     const next = !mocked;
-                    setMocked(next);
                     const cur = fakeDevice.get();
-                    if (cur) fakeDevice.set({ ...cur, mocked: next });
+                    // 실제 GPS 에는 모의 표시를 붙일 수 없다 — 가짜 좌표를 먼저 고른다
+                    if (!cur) return '먼저 가짜 좌표(목적지로·300m 앞 등)를 고르세요';
+                    setMocked(next);
+                    fakeDevice.set({ ...cur, mocked: next });
                     return next ? '모의 위치 켬' : '모의 위치 끔';
                   })}
                 />
                 <Chip label="위치 모름" selected={false} onPress={guard(() => (fakeDevice.set(null), '내 위치: 모름'))} />
+                {HAS_GPS ? (
+                  <Chip
+                    label="실제 GPS 쓰기"
+                    selected={!fakeDevice.isOverriding()}
+                    onPress={guard(() => {
+                      fakeDevice.release();
+                      setMocked(false);
+                      return '내 위치: 실제 GPS (가짜 좌표 해제)';
+                    })}
+                  />
+                ) : null}
               </View>
 
               <Text style={styles.label}>
@@ -227,7 +258,7 @@ function Panel({
               selected={false}
               onPress={guard(() => {
                 server.reset();
-                fakeDevice.set(null);
+                fakeDevice.release();
                 return '초기화했어요. 홈으로 돌아가 주세요';
               })}
             />

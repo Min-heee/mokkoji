@@ -2,7 +2,7 @@
  * 약속 내기 — 서버 인터페이스.
  *
  * 화면·훅은 이 인터페이스만 안다. 구현은 둘이다.
- * - fakeApi.ts   메모리 가짜 서버 (모드 fake, 개발 번들 전용)
+ * - fakeApi.ts   메모리 가짜 서버 (모드 fake: 개발 번들, 또는 beta 채널 네이티브 빌드)
  * - supabaseApi  RPC 래퍼 + 타임아웃 8초 + 40P01/40001 1회 재시도 — P2 에서 만든다.
  *                그때까지 live/off 모드의 getLateBetApi() 는 모든 호출이 LB_NOT_CONFIGURED 로 실패하는 자리표시자다.
  *
@@ -131,10 +131,20 @@ const placeholderApi: LateBetApi = {
 
 let cached: LateBetApi | null = null;
 
-/** 모드에 맞는 구현. fake 구현은 개발 번들에서만 require 된다(릴리스 번들에 가짜 서버가 실리지 않게) */
+/**
+ * 모드에 맞는 구현. fake 구현은 번들 env 가 fake 일 때만 require 된다(개발 번들, 또는 beta 채널 네이티브 빌드).
+ * 웹 릴리스(앱인토스)는 modeRule 상 fake 가 될 수 없으므로 개발 번들에서만 싣는다.
+ * __DEV__·EXPO_OS·env 비교는 이 자리에 정적으로 적어야 번들 시점에 치환돼, 해당 없는 번들(production·웹 릴리스)에서
+ * require 가 통째로 빠진다. 실제로 켜지는지는 LATEBET_MODE(modeRule: 채널 'beta' 정확히 일치) 가 한 번 더 막는다.
+ * FakeDevPanel.tsx 의 fakeModule 조건과 같은 식이어야 한다.
+ */
 export function getLateBetApi(): LateBetApi {
   if (cached) return cached;
-  if (__DEV__ && LATEBET_MODE === 'fake') {
+  if (
+    (__DEV__ || process.env.EXPO_OS !== 'web') &&
+    process.env.EXPO_PUBLIC_LATEBET_MODE === 'fake' &&
+    LATEBET_MODE === 'fake'
+  ) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fake = require('./fakeApi') as typeof import('./fakeApi');
     cached = fake.getFakeApi();

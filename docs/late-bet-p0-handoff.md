@@ -1,6 +1,7 @@
 # 약속 내기 P0 — 진행 메모 (2026-09-18 2차 갱신)
 설계서: `docs/appointment-bet-design.md`. 이 파일은 P0 구현 워크플로의 인수인계 메모다. **설계서 §0-1(오너 확정 흐름 2026-09-18 — 주최자 [시작하기] 모델)이 본문보다 우선한다** — 아래 계약서는 그 흐름을 반영한 판이다.
 ## 상태
+- **2026-09-18 [P1 통합] 네이티브 토대(지도·장소 검색·GPS 보고·권한·햅틱·로컬 알림·기기 시간대) 완료 — 아래 'P1 상태' 절.** 브랜치 `feat/late-bet-p1`, 커밋 없음. 게이트 `npm run typecheck` 0 · `npm test` 587/587(적대 리뷰 수정 반영). 실기기 미확인(이 머신엔 Xcode 없음).
 - **2026-09-18 [통합] P0 화면 5묶음 + SQL + 통합 완료.** 게이트 `npm run typecheck` 오류 0 · `npm test` 393개 통과. `npx expo export --platform web`·`--platform ios` 둘 다 성공. 커밋 없음(브랜치 `feat/late-bet-p0`).
   - 흐름 연결(코드 리딩): 홈 [약속 잡기] → `/late/new`(InviteeEditor·`/late/place` 핀 왕복) → 생성 → `/late/<id>?invite=1`(대기실, 네이티브는 공유 시트 1회) → FakeDevPanel '봇 한 명 수락' → 주최자 [시작하기](`api.start`) → LiveView(위치 공개) → '시작 후 봇 수락' → 시간 이동 → 도착 → ArrivedView → 정산 → ResultView → [정산 시작] → `/session/<id>`. 초대: 홈 '코드 입력' → `/j` → `/j/<code>`(이름 고르기·동의) → `/late/<id>`. 주최자 수정: 대기실·LiveView [약속 수정]/[장소 바꾸기] → `/late/new?edit=<id>`(시작 전 전부 / 시작 후 미루기·장소만) → 변경 배너(version). 시작 없이 약속 시각 → notStarted 무효(홈 `refresh()`·`getLive`·위치 보고 모두에서 게으르게).
   - 통합 때 고친 것: (1) `app/late/[id]/index.tsx` 취소 문구를 `resultModel.canceledText` 한 곳으로. (2) `fakeApi` 를 SQL 에 맞춤 — 시작 없이 약속 시각이 지난 약속은 `edit`·`editInvitees` → `LB_EDIT_CLOSED`, `reportLocation` → 게으른 무효 뒤 `closed`, `settlePending` 에 `(미시작 ∧ now ≥ meetAt)` 포함(+테스트 1개). (3) `app/late/new.tsx` 생성 성공 시 `?invite=1` 로 이동(WaitingView 의 자동 공유 시트가 실제로 열리게). (4) `.env.local` 에 `EXPO_PUBLIC_LATEBET_MODE=fake`(gitignore `.env*.local` 확인).
@@ -18,6 +19,70 @@
   - 소유 밖 최소 수정 2건(보고): `src/domain/latePresets.ts`(+test) 의 `describePolicy.close` 문장 — 마감이 전액 시각과 분리돼 "오후 8:45에 체크인이 닫혀요. 그 뒤에 와도 도착으로 남지 않아요." 로; `src/lateBet/homeModel.ts` 의 `pending` 배지·`pendingCount` → `gathering`(모이는 중)·`unclaimedCount`, `homePendingLine` → `homeUnclaimedLine`.
 - 완료(9/17): P0-a 도메인 모듈 6개, Supabase SQL·테스트·스크립트 이식, Foundation(mode·api·fakeApi·Context·useLive·화면 골격)
 - ~~미완: 화면 5묶음~~ → 9/18 [create]·[join]·[waiting]·[live]·[result]·[rules-sql] 완료, 위 [통합] 항목 참고. 각 담당이 fake 모드 웹 프리뷰 실클릭까지 확인했다(create·join·result). 안 한 것: 적대적 리뷰, 실기기.
+
+---
+
+## P1 상태 (2026-09-18, [setup]·[map]·[picker]·[location]·[notify] + 통합)
+
+### 한 것
+- **패키지(0.4.0 바이너리)**: react-native-maps 1.20.1, expo-location ~19.0.8, expo-notifications ~0.32.17, expo-haptics ~15.0.8, expo-localization ~17.0.9 (+ 미리 넣음: expo-web-browser·expo-crypto·expo-secure-store). supabase-js 없음(P2).
+- **플랫폼 분기 규칙**: 네이티브 모듈은 `*.native.ts(x)` 안에서만 import. 같은 이름의 기본 파일은 웹·앱인토스 폴백. `.native` 에서 `./X` 를 import 하면 자기 자신으로 resolve 되므로 공통 로직·타입은 별도 파일로 뺐다.
+
+| 기능 | 기본(웹·폴백) | 네이티브 | 공통(순수·타입) |
+|---|---|---|---|
+| 모드 채널 | `releaseChannel.ts`(null) | `releaseChannel.native.ts`(`Updates.channel`) | `modeRule.ts` — fake = `__DEV__` ∨ (네이티브 ∧ 채널 정확히 `'beta'`) |
+| 기기 시간대 | `deviceTz.ts`(Intl) | `deviceTz.native.ts`(expo-localization) | `deviceTzRule.ts` — `readDeviceTz()` 는 null 대신 `'Asia/Seoul'` |
+| 지도 | `MapPane.tsx` | `MapPane.native.tsx` | `mapPaneTypes.ts`, `mapGeometry.ts`, `MapPaneFallback.tsx`(목록형) |
+| 장소 고르기 | `PlacePicker.tsx` | `PlacePicker.native.tsx` | `placePickerShared.ts`(타입·new↔place 핀 통로), `PlacePickerFallback.tsx`, `placePickerModel.ts`, `src/lateBet/placeSearch.ts`(카카오 → 기기 geocoder) |
+| 위치 권한 | `permissions.ts`(항상 unavailable) | `permissions.native.ts` | `permissionRule.ts` |
+| 위치 보고 | `useArrivalReporter.ts`(fakeDevice 만) | `useArrivalReporter.native.ts`(포그라운드 watch) | `arrivalShared.ts`(ArrivalReporter 타입·fakeDevice·shareOffStore), `reportPolicy.ts` |
+| 햅틱 | `haptics.ts`(무동작) | `haptics.native.ts` | — |
+| 로컬 알림 | `notifications.ts`(무동작) | `notifications.native.ts` | `reminderPlan.ts`, `useLateReminders.ts` |
+
+- **모드·가짜 서버**: 가짜 서버 require 조건은 `api.ts`·`FakeDevPanel.tsx` 두 곳이 같은 식 `(__DEV__ || EXPO_OS !== 'web') && EXPO_PUBLIC_LATEBET_MODE === 'fake'`(+ api 는 `LATEBET_MODE === 'fake'`). 번들 시점 치환이라 production·웹 릴리스 번들에서는 require 가 빠진다(아래 검증). beta 채널 네이티브 빌드에서는 api·패널 둘 다 가짜 서버에 붙는다.
+- **지도(MapPane)**: iOS 애플 지도(키 불필요), 안드로이드는 **바이너리에 박힌** `extra.hasGoogleMapsKey === true` 일 때만 구글 지도, 아니면 목록 폴백(`src/ui/googleMapsKey.native.ts` 가 `ExponentConstants.manifest` 를 읽는다 — `Constants.expoConfig` 는 OTA 매니페스트를 따르므로 쓰지 않는다). 안드로이드 사용자 정의 마커는 100px 상자 가운데 + 마운트 직후 600ms `tracksViewChanges`. 권한이 있어 OS 파란 점을 그려도 내 좌표는 자동 맞춤 영역에 넣는다. 로딩 실패·15초 무응답도 폴백. 자동 맞춤·[전체 보기]·readonly 제스처 끔·접근성 라벨. `locationGranted` 가 true 일 때만 OS 내 위치 점. 권한은 묻지 않는다.
+  - LiveView 가 `me`(기기 위치 우선, 없으면 서버가 준 내 좌표)·`locationGranted`(권한 허용 ∧ 실제 GPS)를 넘기고, 기기 위치로 '나'를 그릴 때는 서버의 내 마커를 뺀다. 마커에 `lastSeenMs`·`stale`(서버 시각 기준 60초 넘은 좌표는 흐리게)을 채운다.
+- **장소 고르기**: 가운데 고정 핀 + 반경 원 + 검색 + [현재 위치로] + '핀에서 가장 가까운 주소' 한 줄. `placePickerUsesMap()` 이 true 면 부모(`app/late/place.tsx`)가 `Screen scroll={false}`. 권한은 공용 `@/lateBet/permissions` 로 읽고 요청한다(통합 때 연결 — 사용자 동작에서만 프롬프트, 영구 거부는 [설정 열기]). 카카오 키 `EXPO_PUBLIC_KAKAO_REST_KEY`(선택) — 없으면 기기 geocoder.
+- **위치 보고**: 도는 조건 = 기능 켜짐 ∧ open ∧ 시작됨 ∧ 공개 창 안 ∧ 활성·미도착 ∧ 화면 포커스 ∧ AppState active ∧ 공유 켬 ∧ 권한 허용. 이때만 `watchPositionAsync`(High). 조건이 깨지면 즉시 구독 해제 + `stopSharing` 1회. 간격 30/10/3초(2km·300m 경계), 반경 추정 진입 즉시, 1000m 초과 버림, 백오프, 제자리 60초. 백그라운드 위치 없음(app.json 이 막는다). [도착 확인] = `getCurrentPositionAsync(Highest, 15초)`.
+  - **FakeDevPanel ↔ reporter 계약**: `fakeDevice.set(pos|null)` = 오버라이드(가짜 좌표 또는 '위치 모름') → 네이티브 reporter 는 GPS 대신 그 좌표를 보내고, 오버라이드 중에는 권한이 없어도 돈다. `fakeDevice.release()` = 실제 GPS 로 복귀(패널 [실제 GPS 쓰기]·초기화). `isOverriding()`·`subscribe()`. 웹 훅은 오버라이드가 없으면 P0 처럼 목적지 북쪽 1.5km 를 한 번 심는다.
+- **권한 안내 순서**: (1) 참여 직후 `LocationPrimer` 가 위치 권한을 직접 요청(네이티브) → 허용되면 `onAllow` → 부모는 약속 화면으로 넘기기만 한다(통합 때 부모의 중복 요청·설정 열기를 뺐다 — 설정에서 허용하고 돌아와도 옛 권한 값 때문에 설정이 또 열리던 문제). (2) 알림 권한은 약속 화면의 `NotifyCard` 에서만 묻는다(앱 전체 1회, `yaho.late.notifyPrompt.v1`). 시작 뒤에는 위치 권한이 아직 undetermined 면 알림 카드를 미룬다(위치 안내 먼저). 생성·참여 화면은 알림을 묻지 않는다.
+- **알림**: `reminderPlan.planReminders` — 주최자 시작 재촉(30분 전), 15분 전, 5분 전, 약속 시각. 키 `late:<id>:v<version>:<종류>`(시간을 미루면 전부 바뀐다). `useLateReminders` 가 응답마다 서버 시각 → 기기 시각으로 옮겨 맞추고(60초마다 한 번은 재동기), 도착·취소·정산이면 비워 취소, 내보내지면 `cancelAll`. `LateBetProvider`(활성 분기)가 `LateNotificationRouting`(탭 → `/late/<id>`, 콜드 스타트 포함)을 마운트하고 목록을 읽을 때마다 열린 약속이 아닌 것의 예약을 거둔다(`pruneReminders`). 안드로이드는 정확 알람 권한을 선언하지 않았으므로 부정확 알람(몇 분 늦을 수 있음). 안드로이드 작은 아이콘은 `assets/notification-icon.png`(96x96, 투명 배경 흰 실루엣 — 로고 글자에서 뽑음)를 `expo-notifications` 플러그인 `icon` 으로 지정(프리빌드 때 박히므로 새 빌드부터). GPS watch 구간(near/mid/far)은 `watchTier(d, 지금 구간)` 이력(300m ±30, 2km ±100)으로 경계 흔들림에 재구독하지 않는다. P0 의 `ensureNotificationPermission`(이제 읽기만)·`scheduleLateNotifications`(무동작) 호출은 통합 때 생성·참여·대기실·미루기에서 지웠다. `cancelLateNotifications` = `cancelAll` 별칭(컨테이너가 부른다).
+- **햅틱**: ArrivedView 도착 연출 때 약속당 1회.
+- **기기 시간대**: `app/late/new.tsx` 가 `readDeviceTz()` 를 쓴다(통합 때 교체).
+
+### 검증 (이 머신에서 할 수 있는 것만)
+- 게이트: typecheck 0, `npm test` 571/571.
+- `expo export --clear`: web·ios·android 성공. 웹 번들(`.env.local` 의 fake env 로 릴리스 export)에서 `react-native-maps`·`expo-location`·`expo-notifications`·`expo-haptics`·`expo-localization`·`ExpoLocation`·`ExpoNotifications`·`ExpoHaptics`·`ExpoLocalization`·`AIRMap`·`watchPositionAsync`·`getFakeServer`·`dapi.kakao` 전부 0건. iOS·Android(fake env) Hermes 바이트코드에는 네이티브 모듈과 `getFakeServer` 가 있고, env 없이(`EXPO_NO_DOTENV=1`) 만든 iOS 번들에는 `getFakeServer`·데모 코드 0건.
+- `npm run ait:build` 성공, `dist/` 에 위 네이티브 문자열·가짜 서버 0건.
+- `expo prebuild --no-install --clean`: Info.plist 위치 문구 3개(한국어 한 문장), `UIBackgroundModes` 없음, 0.4.0, entitlements `aps-environment`. AndroidManifest: COARSE·FINE, BACKGROUND_LOCATION·FOREGROUND_SERVICE_LOCATION 은 `tools:node="remove"`, SCHEDULE_EXACT_ALARM 없음, 키 없으면 구글맵 meta-data 없음. 생성된 ios/·android/ 는 지웠다.
+- mode off(코드 경로): `LATEBET_MODE` off → `LateBetProvider` 가 children 만 돌려준다(알림 라우팅·prune 없음). 권한·위치·알림을 부르는 곳(`/late/[id]` 의 reporter·useLateReminders, `/j/[code]` 의 reporter·LocationPrimer, `/late/place`·`/late/new` 의 PlacePicker)은 전부 `enabled` 가 false 면 `LateBetUnavailable` 을 먼저 돌려주는 라우트 안에 있다. 네이티브 reporter 는 `enabled` 가 false 면 권한도 읽지 않는다. 모듈 최상단에서 권한·구독·예약을 부르는 파일은 없다(expo-notifications 등은 import 만 된다).
+
+### 실기기에서만 확인할 수 있는 것 (beta 빌드 체크리스트)
+- [ ] react-native-maps 1.20.1 × New Architecture 렌더(iOS 애플 지도·안드로이드 구글 지도): 마커 첫 글자 원, 반경 원, 자동 맞춤, [전체 보기], 마커가 비어 보이지 않는지. 깨지면 설계서 §6 폴백(버전 올림 또는 `newArchEnabled: false`).
+- [ ] 장소 고르기: 지도 끌기(`onTouchStart` 전달), 검색(카카오 키 유무 둘 다), [현재 위치로], 가까운 주소 한 줄, 확정 후 new 폼에 핀 반영.
+- [ ] 권한 흐름: 참여 직후 [위치 허용하기] → OS 프롬프트 → 약속 화면. 거부 → [다시 허용하기], 영구 거부 → [설정 열기] → 허용하고 돌아오면 자동 진행. **iOS '정확한 위치' 끔** → 'coarse' 안내("설정에서 '정확한 위치'를 켜주세요"). 안드로이드 '대략적 위치'만 허용.
+- [ ] 걸어서 반경 진입 → 자동 도착 → ArrivedView 연출 + 햅틱 1회.
+- [ ] 앱 백그라운드/화면 끔 → 보고 중단 + `stopSharing` → 몇 분 뒤 친구 화면에서 사라짐(3분 숨김). 복귀하면 다시 보고.
+- [ ] 알림: [알림 켜기] 프롬프트(안드로이드 13 — 채널 먼저), 5분 전 알림 도착(부정확 알람 지연 폭 확인), 앱이 떠 있을 때 배너, 알림 탭 → 약속 화면(앱 실행 중·완전 종료 둘 다), 시간 미루기 뒤 옛 알림 취소, 도착·정산 뒤 남은 알림 없음.
+- [ ] 안드로이드에 구글 지도 키가 없을 때: MapPane 목록 폴백 + PlacePicker 폴백(프리셋·좌표 + 검색·[현재 위치로 정하기]).
+- [ ] FakeDevPanel(beta): 가짜 좌표 ↔ [실제 GPS 쓰기] 전환, 모의 위치 표시.
+
+### beta 채널 빌드 (가짜 서버 + 진짜 지도·GPS·알림)
+- iOS: `eas build -p ios --profile beta` → `eas submit -p ios --profile beta`(또는 `eas build -p ios --profile beta --auto-submit`, `submit.beta` 에 ascAppId 있음) → TestFlight.
+- 안드로이드: `eas build -p android --profile beta` (store 배포 프로필).
+- beta 바이너리는 채널 `beta` 라 `npm run ota`(production) 업데이트를 받지 않는다. beta 에 OTA 는 `eas update --channel beta`. production 프로필 env 는 비어 있어 production 빌드는 mode off(가짜 서버 코드도 번들에 없음).
+
+### 오너가 할 일
+- 안드로이드 구글 지도 키: Google Cloud 에서 Maps SDK for Android 키(패키지명 + 서명 SHA-1 제한) 발급 → `eas env:create` 로 `GOOGLE_MAPS_ANDROID_KEY` 등록(beta·production). 없는 동안 안드로이드는 목록 폴백. 키와 키 유무 판단 모두 바이너리에 박힌 값만 쓴다 — `eas update` 는 app.config.js 를 그때의 env 로 다시 평가해 OTA 매니페스트의 `extra.hasGoogleMapsKey` 를 바꾸지만 앱은 그 값을 읽지 않는다. 그러니 키를 등록한 뒤에는 **새 안드로이드 빌드**를 내야 지도가 나온다(OTA 로는 켜지지도 꺼지지도 않는다).
+- (선택) 카카오 REST 키 `EXPO_PUBLIC_KAKAO_REST_KEY` 를 `eas env` 에 — 네이티브 번들에 평문으로 들어가므로 카카오 콘솔에서 쿼터·도메인 제한. 검색 시 지도 중심 좌표가 카카오로 간다.
+- beta 빌드 1회 → 위 체크리스트.
+
+### 남은 것·주의
+- 설계서 §5.4 '알림이 늦게 올 수 있어요 [설정 열기]' 배너는 만들지 않았다(정확 알람 권한을 선언하지 않아 설정에서 켤 것이 없다).
+- 앱이 완전히 닫힌 사이 취소된 약속의 알림은 울린다(원격 푸시 P5 전까지). 홈 목록을 열면 거둔다.
+- `react-native.config.js` 의 `unstable_reactLegacyComponentNames` 는 넣지 않았다(RN 0.74+ 자동 등록으로 판단, 미검증).
+- AndroidManifest 에 Expo 템플릿 기본 권한(READ/WRITE_EXTERNAL_STORAGE·SYSTEM_ALERT_WINDOW·VIBRATE)이 남아 있다 — 스토어 심사 전에 `blockedPermissions` 로 뺄지 판단 필요(이번 변경과 무관, 기존부터).
+- FakeDevPanel 에 '알림 10초 뒤 테스트' 버튼은 없다(지금은 약속을 7분 뒤로 만들거나 '약속 30분 전'으로 감은 뒤 기다린다).
 
 ---
 
@@ -209,6 +274,8 @@
 
 - fake 모드: `cd /Users/byungheemin/.openclaw/workspace/nbbang && EXPO_PUBLIC_LATEBET_MODE=fake npx expo start --web --port <각자 포트>`. `.env.local`은 만들지 않았습니다. 참고는 `.env.example`.
 - 모드 규칙은 `src/lateBet/modeRule.ts`(테스트 있음)에 있고 `src/lateBet/mode.ts`가 상수를 냅니다: `LATEBET_MODE`, `LATEBET_ENABLED`, `LATEBET_FAKE`.
+  - 규칙(P1, 9/18 [setup]): `fake` 는 개발 번들(`__DEV__`, 웹 프리뷰 포함)이거나 **네이티브이고 EAS 채널(`Updates.channel`)이 정확히 `'beta'`** 일 때만 켜진다. 웹 릴리스는 `__DEV__` 만. production·preview·채널 없음·대소문자 변형 등 그 밖의 모든 릴리스는 `off`(불변식은 `modeRule.test.ts`). `live` 는 웹이 아니고 Supabase 키 둘 다 있을 때만. 채널은 `src/lateBet/releaseChannel(.native).ts` 가 읽는다(웹은 항상 null).
+  - beta 채널 = `eas.json` 의 `beta` 프로필(store 배포, `EXPO_PUBLIC_LATEBET_MODE=fake`). Supabase 전에 TestFlight 실기기에서 진짜 지도·GPS·알림을 가짜 서버로 체험하는 용도. production 프로필 env 는 비어 있다.
 - 화면은 `useLateBet().enabled`로만 분기합니다. off면 약속 UI를 아무것도 그리지 않습니다.
 
 ## 1. 파일 (전부 `/Users/byungheemin/.openclaw/workspace/nbbang/` 아래)
@@ -219,7 +286,8 @@
   - `modeRule.ts`(+test), `mode.ts`
   - `fakeApi.ts`(+test) — 참조 구현(SQL 이 이걸 따라간다)
   - `serverClock.ts`(+test), `useServerNow.ts`
-  - `LateBetContext.tsx`, `useLive.ts`, `useArrivalReporter.ts`
+  - `LateBetContext.tsx`, `useLive.ts`, `useArrivalReporter.ts`(+ `.native.ts`, 공통 `arrivalShared.ts`·`reportPolicy.ts`)
+  - P1: `permissions(.native).ts`·`permissionRule.ts`, `haptics(.native).ts`, `notifications.native.ts`·`reminderPlan.ts`·`useLateReminders.ts`, `deviceTz(.native).ts`·`deviceTzRule.ts`, `releaseChannel(.native).ts`, `placeSearch.ts` — 'P1 상태' 절 표 참고
   - `startSettlement.ts`, `notifications.ts`
   - `homeModel.ts`, `resultModel.ts` — 표시 모델([result])
 - **`src/lateBet/screens/`**
@@ -229,7 +297,7 @@
   - `InviteeEditor.tsx` — 초대 명단 편집기(완성, [create] 9/18).
   - `WaitingView.tsx`, `LiveView.tsx`, `ArrivedView.tsx`, `ResultView.tsx`, `LocationPrimer.tsx` — 화면 담당.
   - ~~`PendingView.tsx`~~ 삭제됨.
-- **`src/ui/`**: `MapPane.tsx`(완성), `PlacePicker.tsx`(완성 — 프리셋 8곳 + 좌표 입력 + 미리보기)
+- **`src/ui/`**: `MapPane.tsx`(웹·폴백) + `MapPane.native.tsx` + `mapPaneTypes.ts`·`mapGeometry.ts`·`MapPaneFallback.tsx`, `PlacePicker.tsx`(웹·폴백) + `PlacePicker.native.tsx` + `placePickerShared.ts`·`PlacePickerFallback.tsx`·`placePickerModel.ts` (P1)
 - **`app/`**
   - `app/late/[id]/index.tsx` — 완성된 컨테이너입니다.
   - `app/late/new.tsx`, `app/late/place.tsx`, `app/late/points.tsx`, `app/j/[code].tsx`, `app/j/index.tsx` — 완성(9/18).
@@ -422,16 +490,16 @@ LocationPrimerProps = { onAllow(), onLater(), busy?, permission? }       // shar
 - 내가 빠지는 동작(게스트 나가기) 뒤에는 `refresh` 대신 `onLeft()`를 부르세요. 안 그러면 "주최자가 내보냈어요"가 뜹니다.
 - 주최자 취소는 `api.cancel` → `refresh`를 하면 컨테이너가 취소 안내를 그립니다. '취소하고 새로 만들기' 강제는 없습니다(원하면 `router.replace('/late/new?from=<id>')` 는 그대로 쓸 수 있음).
 - `ArrivalReporter`
-  - 필드: `permission`, `sharing`, `setSharing(on)`, `running`, `myDistanceM`, `myAccuracyM`, `lastResult`, `error`, `checking`
-  - 메서드: `checkInNow(): Promise<LbReportResult | null>`, `requestPermission()`
+  - 필드: `permission`, `canAskAgain`, `precise`, `sharing`, `setSharing(on): Promise<void>`(끄면 `stopSharing` 1회까지 기다린다 — 화면이 따로 부르지 않는다), `running`, `myDistanceM`, `myAccuracyM`, `myPosition`, `source`('gps'|'fake'|'none'), `sampleQuality`, `mocked`, `positionUnavailable`, `lastResult`, `error`, `checking` (P1 추가: canAskAgain·precise·myPosition·source·sampleQuality·mocked·positionUnavailable·openSettings, 타입은 `arrivalShared.ts`)
+  - 메서드: `checkInNow(): Promise<LbReportResult | null>`, `requestPermission()`, `openSettings(): Promise<boolean>`
   - `checkInNow`는 공유가 꺼져 있으면 `share=false`로 판정만 받습니다. 도착이 찍히면 컨테이너가 `refresh`하고 `justArrived=true`로 바꿉니다.
   - 보고 루프는 `isCheckInOpen`(시작 후 ∧ 마감 전)일 때만 돕니다. 시작 전에는 `running=false`.
-  - P0에서 `permission`은 fake면 `'granted'`, 아니면 `'unsupported'`입니다.
+  - `permission`: 웹은 fake면 `'granted'`, 아니면 `'unsupported'`. 네이티브는 실제 권한(영구 거부는 `'denied'` + `canAskAgain=false`, iOS 정확한 위치 끔은 샘플 정확도로 `'coarse'`). fake 오버라이드 중에는 권한이 없어도 `'granted'`.
 - [정산 시작]
   - `findSessionForLateBet(sessions.sessions, live.appointment.id)`가 있으면 `confirmDialog('이미 만든 정산이 있어요', '열까요?', ...)`.
   - 없으면 `startSettlement({ live, selectedUserIds, sessions: useSessions() })` → `{ sessionId, existed }` → `router.replace('/session/' + sessionId)`.
   - 확인 시트의 후보 목록은 `toSession.sessionCandidates(live)`입니다.
-- `notifications.ts`는 P0 무동작입니다. 참여·생성·조건 변경 뒤에 `ensureNotificationPermission()`과 `scheduleLateNotifications({ id, version, title, tz, meetAtMs, closeMs })`(`shareStartMs` 없음)를, 끝날 때 `cancelLateNotifications(id)`를 지금부터 호출해 두세요.
+- 알림(P1)은 약속 화면(`useLateReminders` — 응답마다 예약을 맞춤, `NotifyCard` — 알림 권한 1회 안내)과 `LateBetProvider`(`LateNotificationRouting`·`pruneReminders`)가 맡는다. 화면은 알림 함수를 부르지 않는다. `ensureNotificationPermission()` 은 이제 읽기만, `scheduleLateNotifications()` 는 무동작(호환용으로만 남음).
 
 ## 7-1. `InviteeEditor` (`@/lateBet/screens/InviteeEditor`) — 완성([create] 9/18)
 
@@ -452,7 +520,9 @@ interface InviteeEditorProps {
 
 ## 8. MapPane / PlacePicker
 
-변경 없음.
+P1 에서 네이티브 구현이 생겼다(위 'P1 상태'). 아래 P0 계약은 그대로이고 선택 필드만 늘었다.
+- MapPane 선택 props(`mapPaneTypes.ts`): `locationGranted?`(기본 false — true 일 때만 OS 내 위치 점), `onPress?`, `accessibilityLabel?`. 마커 선택 필드: `lastSeenMs?`, `stale?`(흐리게).
+- PlacePicker: 새 export `placePickerUsesMap()` — true 면 부모가 `Screen scroll={false}` 로 감싼다. `openPlaceDraft`·`takePlaceResult`·`PlacePickerValue` 는 그대로 `@/ui/PlacePicker` 에서(실제 위치 `placePickerShared.ts`).
 
 - `MapPane` props: `{ destination: { name, lat, lng }, radiusM, markers?: MapPaneMarker[], me?, readonly?, height?, style? }`
   - `MapPaneMarker = { id, label, lat: number | null, lng: number | null, distanceM?, caption?, arrived?, isMe? }`
@@ -471,7 +541,7 @@ interface InviteeEditorProps {
 | `/j` | 코드 입력 |
 | `/j/[code]` | 딥링크 `nbbang://j/CODE` |
 
-- 참여 흐름(`/j/[code]`): `peekInvite(code)` → 명단에서 빈 이름 고르기(`invitees` 중 `!claimed`; `mine` 이 있으면 바로 약속 화면으로) + 동의 2개 → `claimSlot(preview.id, name, preview.version, true)` → `router.replace('/late/' + appointmentId)`(이미 시작한 약속이면 `result.started === true` 이고 컨테이너가 바로 LiveView 를 그린다). 빈 이름이 없으면 "초대 명단에 없어요. 주최자에게 이름을 추가해 달라고 해주세요." + [홈으로]. `serverNowMs >= meetAtMs` 이거나 status 가 open 이 아니면 `LB_JOIN_CLOSED` 문구. `startedAtMs` 가 있으면 카드에 "주최자가 이미 시작했어요. 들어오면 바로 위치가 보여요". `LB_SLOT_TAKEN`·`LB_APPT_CHANGED` 는 미리보기를 다시 읽는다. `LocationPrimer` 문구는 "주최자가 시작하면 서로 위치가 보여요".
+- 참여 흐름(`/j/[code]`): `peekInvite(code)` → 명단에서 빈 이름 고르기(`invitees` 중 `!claimed`; `mine` 이 있으면 바로 약속 화면으로) + 동의 2개 → `claimSlot(preview.id, name, preview.version, true)` → `router.replace('/late/' + appointmentId)`(이미 시작한 약속이면 `result.started === true` 이고 컨테이너가 바로 LiveView 를 그린다). 빈 이름이 없으면 "초대 명단에 없어요. 주최자에게 이름을 추가해 달라고 해주세요." + [홈으로]. `serverNowMs >= meetAtMs` 이거나 status 가 open 이 아니면 `LB_JOIN_CLOSED` 문구. `startedAtMs` 가 있으면 카드에 "주최자가 이미 시작했어요. 들어오면 바로 위치가 보여요". `LB_SLOT_TAKEN`·`LB_APPT_CHANGED` 는 미리보기를 다시 읽는다. `LocationPrimer` 문구는 "주최자가 시작하면 서로 위치가 보여요". P1: 네이티브에서는 LocationPrimer 가 OS 권한을 직접 요청하고 허용됐을 때만 `onAllow` 를 부른다 — 부모는 약속 화면으로 넘기기만 한다(알림은 약속 화면에서).
 - 생성 성공도 같은 경로로 replace합니다.
 
 ## 10. FakeDevPanel
@@ -515,7 +585,7 @@ interface InviteeEditorProps {
 
 1. **단계 경계**: `live`·`overtime` 경계 등 phase 규칙은 domain 보고대로입니다. `settling`은 `ResultView`가 받습니다.
 2. **정산 멱등**: [정산 시작]의 멱등은 AsyncStorage 맵이 아니라 `Session.lateBetId` + 메모리 맵으로 했습니다. 세션을 지우면 연결도 같이 사라집니다.
-3. **공유 토글 저장**: 약속별 공유 토글은 P0에서 메모리에만 있습니다(P1에 AsyncStorage).
+3. **공유 토글 저장**: 약속별 공유 토글은 P1 부터 live 모드에서 AsyncStorage `yaho.late.shareOff.v1`(최대 50개), fake 모드는 메모리(`arrivalShared.shareOffStore`).
 4. **웹 백그라운드**: 웹에서 탭·패널이 가려져 있으면 AppState가 background로 잡혀 폴링이 멈춥니다(의도한 동작). 프리뷰에서 첫 로드가 몇 초 늦을 수 있습니다.
 5. **공통 금지 사항**
    - `Alert.alert` 금지 → `confirmDialog` / `alertDialog`.
