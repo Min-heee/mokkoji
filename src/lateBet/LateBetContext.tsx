@@ -11,10 +11,10 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { AppState, Platform } from 'react-native';
 
 import { getLateBetApi, type LateBetApi } from './api';
-import { LateBetError, toLateBetError } from './errors';
+import { LateBetError, isConnectivityError, toLateBetError } from './errors';
 import { LATEBET_ENABLED, LATEBET_FAKE, LATEBET_MODE, type LateBetMode } from './mode';
 import { LateNotificationRouting, pruneReminders } from './notifications';
-import { serverClock, withClockSample } from './serverClock';
+import { serverClock } from './serverClock';
 import type { LbMyAppointment, LbPing, LbProfile } from './types';
 
 export type LateBetStatus =
@@ -54,6 +54,13 @@ export interface LateBetContextValue {
   failCount: number;
   /** 오류가 났지만 이전 목록을 보여 주는 중 */
   stale: boolean;
+  /** 마지막 오류가 연결 문제(LB_OFFLINE·LB_TIMEOUT)다 → 홈은 STALE_NOTICE 띠만 그리고 목록은 그대로 */
+  offline: boolean;
+  /**
+   * 세션을 잃고(refresh 토큰 무효 등) 다시 로그인했더니 다른 익명 계정이 됐다 → 이전 계정의 프로필·목록은 비웠다.
+   * 홈은 ACCOUNT_RESET_NOTICE 를 띄운다(조용히 계정이 바뀐 채 빈 목록만 보이지 않게)
+   */
+  accountReset: boolean;
   /** 프로필·잔액·목록 다시 읽기(홈 포커스, 변경 RPC 뒤). 세션이 없으면 아무것도 안 한다. 던지지 않는다 */
   refresh(): Promise<void>;
   /** 약속 기능 진입: 익명 로그인 → ping → refresh. 프로필(없으면 null)을 돌려준다. 실패하면 LateBetError 를 던진다 */
@@ -80,6 +87,8 @@ const OFF_VALUE: LateBetContextValue = {
   error: null,
   failCount: 0,
   stale: false,
+  offline: false,
+  accountReset: false,
   refresh: () => Promise.resolve(),
   ensureReady: () => Promise.reject(new LateBetError('LB_NOT_CONFIGURED')),
   ensureProfile: () => Promise.reject(new LateBetError('LB_NOT_CONFIGURED')),
@@ -103,8 +112,13 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<LateBetError | null>(null);
   const [failCount, setFailCount] = useState(0);
   const [loadedOnce, setLoadedOnce] = useState(false);
+  const [accountReset, setAccountReset] = useState(false);
 
   const userIdRef = useRef<string | null>(null);
+  /** 이 앱 실행에서 마지막으로 쓴 계정. fail 이 userIdRef 를 비워도 남는다 — 다시 로그인한 계정이 다르면 상태를 비운다 */
+  const lastUidRef = useRef<string | null>(null);
+  /** live: 이 세션에서 lb_ping(minBuild·설치 링크)을 받았는가. 시계 샘플은 getLive 등으로도 생기므로 따로 센다 */
+  const pingLoaded = useRef(false);
   const inflight = useRef<Promise<void> | null>(null);
   const alive = useRef(true);
   useEffect(() => {
@@ -114,8 +128,23 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  /** 세션의 userId 를 받아들인다. 이전 계정과 다르면(세션을 잃고 새 익명 계정) 이전 계정의 상태를 버린다 */
+  const adoptUid = useCallback((uid: string) => {
+    const prev = lastUidRef.current;
+    lastUidRef.current = uid;
+    userIdRef.current = uid;
+    if (!alive.current) return;
+    setUserId(uid);
+    if (prev !== null && prev !== uid) {
+      setProfile(null);
+      setAppointments([]);
+      setAccountReset(true);
+    }
+  }, []);
+
   const doPing = useCallback(async () => {
-    const res = await withClockSample(() => api.ping());
+    const res = await api.ping(); // 시계 샘플은 api 안에서(한 곳에서만 잰다)
+    pingLoaded.current = true;
     if (alive.current) setPing(res);
   }, [api]);
 
@@ -127,9 +156,9 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
         if (alive.current) setStatus('idle');
         return null;
       }
-      userIdRef.current = uid;
-      if (alive.current) setUserId(uid);
-      if (!serverClock.hasSample()) await doPing();
+      adoptUid(uid);
+      // live 는 minBuild 비교를 위해 첫 로드에 꼭 한 번 ping 한다(fake 는 기존대로 시계 샘플이 없을 때만)
+      if (!serverClock.hasSample() || (LATEBET_MODE === 'live' && !pingLoaded.current)) await doPing();
 
       let [me, list] = await Promise.all([api.getMyProfile(), api.listMyAppointments()]);
       // 마감이 지난 열린 약속(그리고 시작 없이 약속 시각을 넘긴 약속)은 한 번 열어 준다 — 서버가 그때 정산·무효 처리한다(§3.5)
@@ -151,11 +180,14 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
       }
       return me;
     },
-    [api, doPing],
+    [api, doPing, adoptUid],
   );
 
   const fail = useCallback((e: unknown): LateBetError => {
     const err = toLateBetError(e);
+    // 세션이 무효가 됐다(refresh 까지 실패 — supabaseApi 가 토큰 거부 때 refresh 1회를 이미 했다) → 기억한 userId 를 버린다.
+    // 일반 RPC·refresh() 는 새로 가입하지 않는다. 다음 ensureReady(약속 기능 진입)가 다시 로그인하고, 계정이 바뀌었으면 adoptUid 가 알린다
+    if (err.code === 'LB_NOT_SIGNED_IN') userIdRef.current = null;
     if (alive.current) {
       setError(err);
       setFailCount((n) => n + 1);
@@ -190,10 +222,7 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
   const ensureProfile = useCallback(
     async (nickname: string): Promise<LbProfile> => {
       try {
-        if (!userIdRef.current) {
-          userIdRef.current = await api.ensureSignedIn();
-          if (alive.current) setUserId(userIdRef.current);
-        }
+        if (!userIdRef.current) adoptUid(await api.ensureSignedIn());
         const me = await api.ensureProfile(nickname);
         if (alive.current) setProfile(me);
         return me;
@@ -201,7 +230,7 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
         throw toLateBetError(e);
       }
     },
-    [api],
+    [api, adoptUid],
   );
 
   const applyBalance = useCallback((balance: number | null | undefined) => {
@@ -246,12 +275,14 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
       error,
       failCount,
       stale: status === 'error' && loadedOnce,
+      offline: status === 'error' && isConnectivityError(error),
+      accountReset,
       refresh,
       ensureReady,
       ensureProfile,
       applyBalance,
     };
-  }, [api, status, userId, profile, appointments, ping, error, failCount, loadedOnce, refresh, ensureReady, ensureProfile, applyBalance]);
+  }, [api, status, userId, profile, appointments, ping, error, failCount, loadedOnce, accountReset, refresh, ensureReady, ensureProfile, applyBalance]);
 
   return (
     <LateBetContext.Provider value={value}>

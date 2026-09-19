@@ -208,7 +208,7 @@ describe('planForLive', () => {
   const live = (over: { settlePending?: boolean; myUserId?: string; arrivedAtMs?: number | null } = {}) => ({
     myUserId: over.myUserId ?? GUEST,
     settlePending: over.settlePending ?? false,
-    appointment: { ...appt(), inviteCode: 'X', hostNickname: '지수', localAt: '', tz: 'Asia/Seoul', placeName: '', placeNote: '', placeLat: 0, placeLng: 0, voidReason: null, invitees: [], changes: [] },
+    appointment: { ...appt(), inviteCode: 'X', hostNickname: '지수', localAt: '', tz: 'Asia/Seoul', placeName: '', placeNote: '', placeLat: 0, placeLng: 0, voidReason: null, invitees: [], changes: [], startMeetAtMs: null, startPlaceLat: null, startPlaceLng: null, startableAtMs: null },
     participants: [
       { userId: HOST, arrivedAtMs: null },
       { userId: GUEST, arrivedAtMs: over.arrivedAtMs ?? null },

@@ -18,10 +18,13 @@
     "deploy": "ait deploy",
     "ait:build": "ait build",
     "ait:deploy": "ait deploy",
-    "check:native": "node scripts/check-native-deps.mjs"
+    "check:native": "node scripts/check-native-deps.mjs",
+    "test:conformance": "bash scripts/test-conformance.sh",
+    "ota:beta": "bash scripts/ota.sh --beta"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@supabase/supabase-js": "^2.116.0",
     "expo": "~54.0.37",
     "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.14",
@@ -46,7 +49,9 @@
   },
   "devDependencies": {
     "@apps-in-toss/web-framework": "^2.10.6",
+    "@types/pg": "^8.23.1",
     "@types/react": "~19.1.10",
+    "pg": "^8.23.0",
     "tsx": "^4.21.0",
     "typescript": "~5.9.2"
   },

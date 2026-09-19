@@ -2,6 +2,9 @@
 // 1) public.lb_settle_preview ↔ settleLateBet (authenticated 로 실행)
 // 2) private.lb_close_at ↔ locationShareWindow(policy, deadline, startedAt).endMs — 체크인·위치 공개 마감(전액 몰수 + 30분 꼬리, 상한 180분).
 //    공개 창 시작은 주최자의 [시작하기] 시각(startedAtMs)이라 정책과 무관하다(startMs = startedAtMs 인지도 여기서 같이 확인). private 라 슈퍼유저로 실행
+// 3) private.lb_haversine_m ↔ haversineMeters — 공정성 규칙 R2(시작 후 새 핀은 시작 시점 핀에서 500m 이내)의 판정. 거리 1e-6m 이내 + '500m 초과' 판정 일치.
+//    벡터 절반은 500m 경계 ±2m 에 몰아 둔다(클라이언트가 미리 막는 판정과 서버 판정이 경계에서 갈리지 않는지)
+import { haversineMeters } from '../src/domain/geo';
 import { locationShareWindow, settleLateBet, type LatePolicy } from '../src/domain/lateBet';
 let seed = 12345;
 const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -34,5 +37,18 @@ for (let i = 0; i < 2000; i++) {
     continue;
   }
   lines.push(`select 'w${i}' as i where private.lb_ms(private.lb_close_at(to_timestamp(${deadline / 1000}), ${policy.stake}, ${policy.unitMinutes}, ${policy.penaltyPerUnit}, ${policy.graceMinutes})) <> ${w.endMs};`);
+}
+const MOVE_AFTER_START_MAX_M = 500;   // SQL lb_edit_appointment 의 R2 한도와 같은 값
+for (let i = 0; i < 2000; i++) {
+  const a = { lat: -80 + rnd() * 160, lng: -179 + rnd() * 358 };
+  const nearBoundary = i % 2 === 0;
+  const distM = nearBoundary ? MOVE_AFTER_START_MAX_M - 2 + rnd() * 4 : rnd() * 3000;
+  const bearing = rnd() * 2 * Math.PI;
+  const dLat = (distM * Math.cos(bearing)) / 111195;
+  const dLng = (distM * Math.sin(bearing)) / (111195 * Math.max(0.05, Math.cos((a.lat * Math.PI) / 180)));
+  const b = { lat: Math.max(-90, Math.min(90, a.lat + dLat)), lng: a.lng + dLng };
+  const d = haversineMeters(a, b);
+  const far = d > MOVE_AFTER_START_MAX_M;
+  lines.push(`select 'h${i}' as i from (select private.lb_haversine_m(${a.lat}, ${a.lng}, ${b.lat}, ${b.lng}) as d) x where abs(x.d - ${d}) > 1e-6 or (x.d > ${MOVE_AFTER_START_MAX_M}) <> ${far};`);
 }
 console.log(lines.join('\n'));

@@ -10,7 +10,13 @@
 --  2. 시작(started_at) = 주최자가 [시작하기]를 누른 서버 시각(lb_start). 주최자만, 약속 시각 전이면 언제든(인원 조건 없음), 되돌릴 수 없다.
 --     위치 공개 창 = started_at ~ close_at. 남의 위치는 시작됨 ∧ 창 안 ∧ 대상 미도착 ∧ 3분 내 갱신일 때만. 체크인도 시작~close_at.
 --     시작 전: 참여·나가기(환불)·내보내기(환불)·명단 편집·조건 전부 변경(version+1, 걸 포인트 차액은 전원 자동 에스크로/환불) 가능.
---     시작 후: 나가기·내보내기·명단 편집 불가. 변경은 시간 뒤로 미루기(최대 +3시간)·장소만(lb_edit_appointment).
+--     시작 후: 나가기·명단 편집 불가. 변경은 시간 뒤로 미루기·장소만(lb_edit_appointment).
+--  4. 공정성 규칙(오너 결정 2026-09-19 — 주최자가 친구 포인트를 부당하게 가져가는 경로 4개 차단. 판정은 전부 서버 시계, 약속 행 FOR UPDATE 아래):
+--     R1 시작 후 미루기는 지금 약속 시각 전에만, 시작하던 순간의 약속 시각(start_meet_at) + 180분까지 누적(LB_POSTPONE_AFTER_MEET / LB_POSTPONE_TOO_FAR).
+--     R2 시작 후 새 핀은 시작하던 순간의 핀에서 500m 이내(누적, LB_MOVE_TOO_FAR). 장소 이름만은 자유.
+--     R3 참가자가 있을 때 시각·시간대·핀·정책을 바꾸면(시작 전) 5분 동안 시작 불가(material_changed_at, LB_START_COOLDOWN).
+--     R4 시작 후에도 '시작 뒤에 들어온 사람'은 정산 전까지 내보낼 수 있다(환불·좌표 삭제·차단·이름 칸 비움). 시작 전부터 있던 사람은 LB_KICK_CLOSED.
+--     상수: 클라이언트 POSTPONE_MAX_MINUTES_AFTER_START=180, MOVE_AFTER_START_MAX_M=500, START_COOLDOWN_MS=5분과 같은 값이어야 한다.
 --  3. 정산: 시작이 안 된 약속은 약속 시각에 자동 무효(void_reason 'notStarted', 전원 환불). 약속 시각까지 안 들어온 이름은 자동 삭제(환불 없음).
 --     체크인·위치 공개 마감(close_at) = 전액 몰수 시각 + 30분 꼬리(상한 약속 + 180분). 전액 몰수 시각이 없으면 약속 + 60분.
 
@@ -19,6 +25,10 @@ alter default privileges for role postgres in schema public revoke select, inser
 alter default privileges for role postgres in schema public revoke execute on functions from anon, authenticated, service_role;
 alter default privileges for role postgres in schema public revoke usage, select on sequences from anon, authenticated, service_role;
 alter default privileges for role postgres in schema public revoke execute on functions from public;
+-- 위 한 줄은 효과가 없다: PUBLIC 의 함수 EXECUTE 는 '전역' 기본 권한이고, 스키마별 기본 권한은 전역 위에 더하기만 한다(PG 문서 ALTER DEFAULT PRIVILEGES).
+-- 그래서 전역으로 한 번 더 회수한다 — 이후 postgres 가 만드는 새 함수(어느 스키마든)는 anon·authenticated 가 PUBLIC 경유로 부를 수 없다.
+-- (로컬 PG16 에서 확인: 이 줄이 없으면 새 public 함수의 proacl 이 null = PUBLIC 실행 가능.) 새 RPC 는 맨 끝 do-block 을 다시 돌려 authenticated 에만 준다.
+alter default privileges for role postgres revoke execute on functions from public;
 
 create schema if not exists private;
 grant usage on schema private to authenticated;   -- RLS 정책이 private.lb_is_member 를 부르기 때문. 함수 EXECUTE 는 맨 끝에서 개별 통제.
@@ -63,15 +73,22 @@ create table public.appointments (
   status           text not null default 'open' check (status in ('open','settled','voided','canceled')),
   void_reason      text,                             -- noStake | noWinner (엔진) | notStarted (약속 시각까지 주최자가 시작하지 않음)
   constraint started_before_meet check (started_at is null or started_at < meet_at),   -- 미루기는 meet_at 을 뒤로만 옮기므로 유지된다
+  -- 공정성 규칙(오너 결정 2026-09-19). 시작하던 순간의 약속 시각·핀을 박제해 두고 시작 후 변경의 누적 한도를 이 값 기준으로 잰다
+  start_meet_at    timestamptz,                      -- R1: 시작 후 미루기 상한 = start_meet_at + 180분(반복 미루기로 늘어나지 않는다)
+  start_place_lat  double precision,                 -- R2: 시작 후 새 핀은 이 점에서 500m 이내(여러 번 옮겨도 누적 기준)
+  start_place_lng  double precision,
+  material_changed_at timestamptz,                   -- R3: 주최자 말고 참가자가 있을 때 시각·시간대·핀·정책 5개가 실제로 바뀐 마지막 서버 시각. 이후 5분간 lb_start 거부
   settled_at       timestamptz,
   version          integer not null default 1,       -- 제목·메모·명단 외의 어떤 값이든 바뀌면 +1 (peek→claim 사이 변경 감지, 수정 RPC 의 낙관적 잠금)
   created_at       timestamptz not null default now(),
+  request_id       uuid,                             -- 생성 멱등 키(클라이언트가 폼 제출마다 만든 uuid). 타임아웃 뒤 [만들기] 재시도가 약속·에스크로를 두 번 만들지 않게
   constraint policy_reaches_full_within_cap check (  -- "179분 지각 −179P, 181분 지각 전액" 같은 절벽 금지
     penalty_per_unit = 0 or stake = 0 or
     (ceil(stake::numeric / penalty_per_unit) - 1) * unit_minutes + grace_minutes <= 180)
 );
 create index appointments_open_close_idx on public.appointments (close_at) where status = 'open';
 create index appointments_host_open_idx  on public.appointments (host_id) where status = 'open';
+create unique index appointments_host_request_uq on public.appointments (host_id, request_id) where request_id is not null;
 
 create table public.participants (                   -- 참가자 = 주최자 + 명단에서 자기 이름을 고른 사람. 상태는 active 하나(수락제 없음)
   appointment_id uuid not null references public.appointments(id) on delete restrict,
@@ -390,7 +407,13 @@ create function private.lb_appointment_json(a public.appointments) returns jsonb
     'status', a.status, 'voidReason', a.void_reason, 'version', a.version,
     'policy', private.lb_policy_json(a),
     'invitees', private.lb_invitees_json(a.id),
-    'changes', a.changes);
+    'changes', a.changes,
+    -- 공정성 규칙: 시작하던 순간의 약속 시각·핀(시작 전 null) + 시작 가능 시각(R3 쿨다운이 아직 안 끝났을 때만, 서버 시계 기준)
+    'startMeetAtMs', private.lb_ms(a.start_meet_at),
+    'startPlaceLat', a.start_place_lat, 'startPlaceLng', a.start_place_lng,
+    'startableAtMs', case when a.material_changed_at is not null
+                           and a.material_changed_at + interval '5 minutes' > clock_timestamp()   -- START_COOLDOWN_MS(계약: 아직 미래일 때만. 화면은 시작 전에만 쓴다)
+                          then private.lb_ms(a.material_changed_at + interval '5 minutes') end);
 $$;
 
 -- 명단에 이름 추가. 보이지 않는 문자 제거 후 1~12자(아니면 LB_BAD_NICKNAME). 주최자 이름·이미 있는 이름(비교 키 기준)은 조용히 건너뛴다.
@@ -533,10 +556,14 @@ begin
 end $$;
 
 -- 2) 약속 생성(초대 명단 + 주최자 자동 참여 + 스테이크 에스크로). 시작 전(started_at null) 상태로 만들어진다.
+--    p_request_id(선택) = 멱등 키: 같은 주최자가 같은 키로 다시 부르면 새로 만들지 않고 그때 만든 약속을 그대로 돌려준다
+--    (8초 타임아웃 뒤 서버는 커밋했는데 클라이언트가 [만들기]를 다시 누른 경우 — 약속·에스크로·초대 코드가 두 번 생기지 않게).
+--    검사(동의·열린 약속 10개 등)보다 먼저 본다 — 첫 요청이 이미 통과했으므로. 같은 키 동시 요청은 advisory lock 으로 줄 세운다.
 create function public.lb_create_appointment(
   p_title text, p_local_at text, p_tz text,
   p_place_name text, p_place_note text, p_lat float8, p_lng float8,
-  p_policy jsonb, p_invitees text[], p_consent boolean, p_tz_confirmed boolean default false
+  p_policy jsonb, p_invitees text[], p_consent boolean, p_tz_confirmed boolean default false,
+  p_request_id uuid default null
 ) returns jsonb
 language plpgsql volatile security definer set search_path = '' as $$
 declare
@@ -549,21 +576,28 @@ declare
 begin
   select * into v_me from public.profiles where user_id = v_uid;
   if not found then raise exception 'LB_NO_PROFILE'; end if;
+  if p_request_id is not null then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('lb_create:' || v_uid::text || ':' || p_request_id::text, 0));
+    select * into a from public.appointments where host_id = v_uid and request_id = p_request_id;
+    if found then return private.lb_appointment_json(a); end if;   -- 재시도: 같은 약속(에스크로 추가 없음)
+  end if;
   if not coalesce(p_consent, false) then raise exception 'LB_CONSENT_REQUIRED'; end if;
   if (select count(*) from public.appointments where host_id = v_uid and status = 'open') >= 10 then
     raise exception 'LB_TOO_MANY_OPEN';
   end if;
-  if p_lat is null or p_lng is null then raise exception 'LB_BAD_POSITION'; end if;
+  if p_lat is null or p_lng is null or p_lat not between -90 and 90 or p_lng not between -180 and 180 then
+    raise exception 'LB_BAD_POSITION';                                  -- 범위 밖 핀도 CHECK(23514) 가 아니라 위치 오류(수정·fakeApi 와 같다)
+  end if;
   v_meet := private.lb_resolve_meet(p_local_at, p_tz, p_lng, p_tz_confirmed);
 
   insert into public.appointments (invite_code, host_id, title, local_at, tz, meet_at,
       place_name, place_note, place_lat, place_lng,
-      stake, radius_m, unit_minutes, penalty_per_unit, grace_minutes, close_at)
+      stake, radius_m, unit_minutes, penalty_per_unit, grace_minutes, close_at, request_id)
   values (private.lb_new_invite_code(), v_uid, btrim(p_title),
       to_char(v_meet at time zone p_tz, 'YYYY-MM-DD"T"HH24:MI'), p_tz, v_meet,   -- DST 로 없는 시각을 넣어도 표시와 판정이 일치하도록 서버가 다시 쓴다
-      btrim(p_place_name), coalesce(p_place_note, ''), p_lat, p_lng,
+      btrim(p_place_name), btrim(coalesce(p_place_note, '')), p_lat, p_lng,   -- 메모도 제목·장소처럼 양끝 공백을 지운다
       v_stake, v_radius, v_unit, v_ppu, v_grace,
-      private.lb_close_at(v_meet, v_stake, v_unit, v_ppu, v_grace))
+      private.lb_close_at(v_meet, v_stake, v_unit, v_ppu, v_grace), p_request_id)
   returning * into a;   -- 범위 위반은 CHECK 제약이 거른다(23514)
 
   insert into public.participants (appointment_id, user_id, nickname) values (a.id, v_uid, v_me.nickname);
@@ -573,13 +607,20 @@ begin
 end $$;
 
 -- 3) 초대 코드 미리보기(참여 전 조건 확인용). 명단은 멤버가 아니어도 보인다(자기 이름을 골라야 하므로) — 누가 골랐는지는 claimed 로만.
+--    약속 시각이 지났으면 여기서도 게으른 참여 마감(안 들어온 이름 삭제)·시작 안 된 약속의 자동 무효를 먼저 한다(fakeApi 의 tick 과 같은 타이밍 —
+--    약속 시각이 지난 초대장에 고를 수 있는 빈 이름이 남아 보이지 않게).
 create function public.lb_peek_invite(p_code text) returns jsonb
-language plpgsql stable security definer set search_path = '' as $$
+language plpgsql volatile security definer set search_path = '' as $$
 declare v_uid uuid := private.lb_uid(); a public.appointments; v_member boolean;
 begin
   select * into a from public.appointments where invite_code = upper(btrim(coalesce(p_code, '')));
   if not found or exists (select 1 from private.lb_bans where appointment_id = a.id and user_id = v_uid) then
     raise exception 'LB_INVITE_NOT_FOUND';
+  end if;
+  if a.status = 'open' and now() >= a.meet_at then
+    perform private.lb_close_roster(a.id);
+    if a.started_at is null or now() > a.close_at + interval '15 seconds' then perform private.lb_try_settle(a.id); end if;
+    select * into a from public.appointments where id = a.id;
   end if;
   v_member := exists (select 1 from public.participants where appointment_id = a.id and user_id = v_uid);
   return jsonb_build_object(
@@ -639,6 +680,8 @@ end $$;
 -- 4.5) 시작하기(주최자): 이 순간부터 전원 위치가 서로 보이고 체크인이 열린다. 약속 시각 전이면 언제든(참여 인원 조건 없음 — 혼자여도 된다).
 --    이미 시작됐으면 LB_ALREADY_STARTED(되돌릴 수 없다 — 취소는 별개). 약속 시각이 지났거나 닫힌 약속 → LB_START_CLOSED.
 --    started_at = 이 트랜잭션의 now()(도착 시각과 같은 기준). 락을 잡은 뒤 clock_timestamp() 로 약속 시각을 다시 본다.
+--    R3: 참가자가 있을 때 조건을 바꿨다면(material_changed_at) 그 뒤 5분(START_COOLDOWN_MS)이 지나야 시작할 수 있다(LB_START_COOLDOWN).
+--    시작하는 순간의 약속 시각·핀을 start_meet_at·start_place_* 에 박제한다(R1·R2 누적 한도의 기준).
 create function public.lb_start(p_appt uuid) returns jsonb
 language plpgsql volatile security definer set search_path = '' as $$
 declare v_uid uuid := private.lb_uid(); a public.appointments;
@@ -647,7 +690,13 @@ begin
   if not found or a.host_id <> v_uid then raise exception 'LB_NOT_HOST'; end if;
   if a.started_at is not null then raise exception 'LB_ALREADY_STARTED'; end if;
   if a.status <> 'open' or clock_timestamp() >= a.meet_at then raise exception 'LB_START_CLOSED'; end if;
-  update public.appointments set started_at = date_trunc('milliseconds', now()) where id = p_appt returning * into a;
+  if a.material_changed_at is not null and clock_timestamp() < a.material_changed_at + interval '5 minutes' then
+    raise exception 'LB_START_COOLDOWN';                                -- 친구들이 바뀐 내용을 볼 시간
+  end if;
+  update public.appointments
+     set started_at = date_trunc('milliseconds', now()),
+         start_meet_at = meet_at, start_place_lat = place_lat, start_place_lng = place_lng
+   where id = p_appt returning * into a;
   return private.lb_appointment_json(a);
 end $$;
 
@@ -689,18 +738,33 @@ begin
   if a.stake > 0 then perform private.lb_post(v_uid, p_appt, 'refund', a.stake, '{"reason":"leave"}'); end if;
 end $$;
 
--- 7) 내보내기(주최자): 시작 전까지만(전액 환불). 명단에서도 그 이름을 뺀다. p_ban 이면 같은 계정의 재참여를 막는다.
+-- 7) 내보내기(주최자, 정산 전까지). 전액 환불 + 좌표 즉시 삭제(FK cascade) + p_ban 이면 같은 계정의 재참여 금지.
+--    - 시작 전: 누구든. 명단에서도 그 이름을 뺀다(주최자가 명단 편집으로 다시 넣을 수 있다).
+--    - 시작 후(R4, 오너 결정 2026-09-19): '시작 뒤에 들어온 사람'(invitees.claimed_at > started_at)만, 마감(close_at) 전까지. 초대 코드가 새서 남의 이름으로
+--      들어온 낯선 사람 대처용이라, 이름 칸은 지우지 않고 비운다(명단 편집이 막힌 뒤라 진짜 그 사람이 약속 시각 전까지 다시 고를 수 있게).
+--      시작 전부터 있던 참가자는 LB_KICK_CLOSED(정산 직전 당첨자를 빼서 주최자 몫을 키우는 악용 방지).
 create function public.lb_kick(p_appt uuid, p_target uuid, p_ban boolean default true) returns void
 language plpgsql volatile security definer set search_path = '' as $$
-declare v_uid uuid := private.lb_uid(); a public.appointments;
+declare v_uid uuid := private.lb_uid(); a public.appointments; v_claimed_at timestamptz;
 begin
   select * into a from public.appointments where id = p_appt for update;
   if not found or a.host_id <> v_uid then raise exception 'LB_NOT_HOST'; end if;
   if p_target = v_uid then raise exception 'LB_HOST_CANNOT_LEAVE'; end if;
   if not exists (select 1 from public.participants where appointment_id = p_appt and user_id = p_target) then return; end if;
-  if a.status <> 'open' or a.started_at is not null then raise exception 'LB_KICK_CLOSED'; end if;
+  if a.status <> 'open' then raise exception 'LB_KICK_CLOSED'; end if;
+  if a.started_at is not null then
+    -- 정산이 시작된 뒤(now > close_at — 결과가 이미 정해진 뒤, 게으른 정산이 아직 안 돌았어도)에는 못 내보낸다. 화면의 settlePending 과 같은 기준
+    if clock_timestamp() > a.close_at then raise exception 'LB_KICK_CLOSED'; end if;
+    select claimed_at into v_claimed_at from public.invitees where appointment_id = p_appt and claimed_by = p_target;
+    -- ms 로 비교한다: started_at 은 ms 절삭, claimed_at 은 μs 라 시작 직전 같은 ms 에 고른 사람이 '시작 뒤'로 잘못 잡히지 않게(애매하면 못 내보내는 쪽)
+    if v_claimed_at is null or private.lb_ms(v_claimed_at) <= private.lb_ms(a.started_at) then raise exception 'LB_KICK_CLOSED'; end if;
+  end if;
   delete from public.participants where appointment_id = p_appt and user_id = p_target;
-  delete from public.invitees where appointment_id = p_appt and claimed_by = p_target;
+  if a.started_at is null then
+    delete from public.invitees where appointment_id = p_appt and claimed_by = p_target;
+  else
+    update public.invitees set claimed_by = null, claimed_at = null where appointment_id = p_appt and claimed_by = p_target;
+  end if;
   if a.stake > 0 then perform private.lb_post(p_target, p_appt, 'refund', a.stake, '{"reason":"kicked"}'); end if;
   if coalesce(p_ban, true) then
     insert into private.lb_bans (appointment_id, user_id) values (p_appt, p_target) on conflict do nothing;
@@ -712,7 +776,7 @@ create function public.lb_update_memo(p_appt uuid, p_title text, p_place_note te
 language plpgsql volatile security definer set search_path = '' as $$
 declare v_uid uuid := private.lb_uid();
 begin
-  update public.appointments set title = btrim(p_title), place_note = coalesce(p_place_note, '')
+  update public.appointments set title = btrim(p_title), place_note = btrim(coalesce(p_place_note, ''))
    where id = p_appt and host_id = v_uid and status = 'open';
   if not found then raise exception 'LB_NOT_HOST'; end if;
 end $$;
@@ -720,8 +784,13 @@ end $$;
 -- 10) 조건 수정(주최자). p_patch 는 바꿀 필드만: {localAt, tz, placeName, lat, lng, policy{…}, tzConfirmed}. p_version = 마지막으로 본 version.
 --    - 시작 전: 전부. 걸 포인트가 오르면 참가자 전원에게 차액 추가 에스크로(부족분 자동 채움, 안 되면 LB_INSUFFICIENT_POINTS + detail=닉네임),
 --      내리면 전원 차액 환불. 항상 user_id 오름차순(교착 방지).
---    - 시작 후: 시간은 뒤로 미루기만(최대 +3시간: LB_POSTPONE_ONLY / LB_POSTPONE_TOO_FAR), 장소(이름·핀)는 변경 가능.
---      걸 포인트·지각 규칙·반경이 바뀌면 LB_EDIT_FROZEN. 이미 찍힌 도착은 유지.
+--    - 시작 후: 시간은 뒤로 미루기만(LB_POSTPONE_ONLY), 장소(이름·핀)는 변경 가능. 걸 포인트·지각 규칙·반경이 바뀌면 LB_EDIT_FROZEN. 이미 찍힌 도착은 유지.
+--      공정성 규칙(오너 결정 2026-09-19, 판정은 전부 서버 시계·약속 행 잠금 아래):
+--      R1 미루기는 지금 약속 시각 전에만(LB_POSTPONE_AFTER_MEET), 한도는 시작하던 순간의 약속 시각(start_meet_at) + 180분 누적
+--         (POSTPONE_MAX_MINUTES_AFTER_START, 넘으면 LB_POSTPONE_TOO_FAR).
+--      R2 새 핀은 시작하던 순간의 핀(start_place_*)에서 500m 이내(MOVE_AFTER_START_MAX_M, 서버 haversine, 넘으면 LB_MOVE_TOO_FAR). 이름만 바꾸는 건 자유.
+--    - R3: 주최자 말고 참가자가 있을 때 시각·시간대·핀·정책 5개 중 하나라도 실제로 바뀌면 material_changed_at = now()
+--      (이후 5분간 lb_start 거부). 혼자일 때·장소 이름만 바꾼 건 기록하지 않는다.
 --    - 정산이 시작된 뒤(now > close_at)·시작 없이 약속 시각이 지남(곧 자동 무효)·닫힌 약속은 LB_EDIT_CLOSED.
 --    무엇이든 바뀌면 version+1 + changes 에 전후 스냅샷. 마감(전액 몰수 + 꼬리)은 새 값으로 재계산.
 create function public.lb_edit_appointment(p_appt uuid, p_patch jsonb, p_version int) returns jsonb
@@ -731,7 +800,7 @@ declare
   v_patch jsonb := coalesce(p_patch, '{}'::jsonb); v_pol jsonb;
   v_started boolean; v_confirmed boolean; v_meet timestamptz;
   v_local_at text; v_tz text; v_place_name text; v_lat float8; v_lng float8;
-  v_stake int; v_radius int; v_unit int; v_ppu int; v_grace int; v_diff int; v_changed boolean;
+  v_stake int; v_radius int; v_unit int; v_ppu int; v_grace int; v_diff int; v_changed boolean; v_material boolean;
 begin
   select * into a from public.appointments where id = p_appt for update;
   if not found or a.host_id <> v_uid then raise exception 'LB_NOT_HOST'; end if;
@@ -747,12 +816,18 @@ begin
   v_place_name := btrim(coalesce(v_patch->>'placeName', a.place_name));
   v_lat        := coalesce((v_patch->>'lat')::float8, a.place_lat);
   v_lng        := coalesce((v_patch->>'lng')::float8, a.place_lng);
+  if (v_patch ? 'lat') <> (v_patch ? 'lng') then raise exception 'LB_BAD_POSITION'; end if;   -- 핀은 lat·lng 둘 다(fakeApi 와 같다)
   v_stake  := coalesce((v_pol->>'stake')::int, a.stake);
   v_radius := coalesce((v_pol->>'radiusM')::int, a.radius_m);
   v_unit   := coalesce((v_pol->>'unitMinutes')::int, a.unit_minutes);
   v_ppu    := coalesce((v_pol->>'penaltyPerUnit')::int, a.penalty_per_unit);
   v_grace  := coalesce((v_pol->>'graceMinutes')::int, a.grace_minutes);
   if v_lat not between -90 and 90 or v_lng not between -180 and 180 then raise exception 'LB_BAD_POSITION'; end if;
+
+  -- R1: 시작 후 시각 변경은 지금 약속 시각 전에만. '지금+5분' 검사(LB_TIME_IN_PAST)보다 먼저 본다(약속 시각이 지난 뒤의 미루기가 엉뚱한 오류로 막히지 않게)
+  if v_started and (v_local_at <> a.local_at or v_tz <> a.tz) and clock_timestamp() >= a.meet_at then
+    raise exception 'LB_POSTPONE_AFTER_MEET';
+  end if;
 
   if v_local_at <> a.local_at or v_tz <> a.tz then
     v_meet := private.lb_resolve_meet(v_local_at, v_tz, v_lng, v_confirmed);   -- 시각이 바뀔 때만 '지금+5분~90일' 검사(지각 중 장소만 바꾸는 경우를 막지 않게)
@@ -767,13 +842,24 @@ begin
       raise exception 'LB_EDIT_FROZEN';
     end if;
     if v_meet < a.meet_at then raise exception 'LB_POSTPONE_ONLY'; end if;
-    if v_meet > a.meet_at + interval '3 hours' then raise exception 'LB_POSTPONE_TOO_FAR'; end if;
+    if v_meet > coalesce(a.start_meet_at, a.meet_at) + interval '180 minutes' then   -- R1: 시작 시점 기준 누적 한도
+      raise exception 'LB_POSTPONE_TOO_FAR';
+    end if;
+    if (v_lat <> a.place_lat or v_lng <> a.place_lng)                                 -- R2: 시작 시점 핀 기준 누적 거리
+       and private.lb_haversine_m(coalesce(a.start_place_lat, a.place_lat), coalesce(a.start_place_lng, a.place_lng), v_lat, v_lng) > 500 then
+      raise exception 'LB_MOVE_TOO_FAR';
+    end if;
   end if;
 
   v_changed := v_meet <> a.meet_at or v_tz <> a.tz or v_place_name <> a.place_name or v_lat <> a.place_lat or v_lng <> a.place_lng
             or v_stake <> a.stake or v_radius <> a.radius_m or v_unit <> a.unit_minutes or v_ppu <> a.penalty_per_unit
             or v_grace <> a.grace_minutes;
   if not v_changed then return private.lb_appointment_json(a); end if;
+  -- R3: 조건(시각·시간대·핀·정책)이 실제로 바뀌었고 주최자 말고 참가자가 있다 → 쿨다운 기록(시작 후에도 기록은 하지만 lb_start 가 다시 불릴 일이 없어 무해)
+  v_material := (v_meet <> a.meet_at or v_tz <> a.tz or v_lat <> a.place_lat or v_lng <> a.place_lng
+                 or v_stake <> a.stake or v_radius <> a.radius_m or v_unit <> a.unit_minutes or v_ppu <> a.penalty_per_unit
+                 or v_grace <> a.grace_minutes)
+            and exists (select 1 from public.participants where appointment_id = p_appt and user_id <> a.host_id);
 
   v_diff := v_stake - a.stake;   -- 시작 후에는 0 (위에서 동결 검사)
   if v_diff <> 0 then
@@ -799,6 +885,7 @@ begin
     place_name = v_place_name, place_lat = v_lat, place_lng = v_lng,
     stake = v_stake, radius_m = v_radius, unit_minutes = v_unit, penalty_per_unit = v_ppu, grace_minutes = v_grace,
     close_at = private.lb_close_at(v_meet, v_stake, v_unit, v_ppu, v_grace),   -- 새 값으로 다시 계산(공개 창 끝 = 체크인 마감)
+    material_changed_at = case when v_material then date_trunc('milliseconds', now()) else a.material_changed_at end,
     version = a.version + 1
   where id = p_appt returning * into a;                                -- 범위 위반은 CHECK 제약이 거른다(23514)
   update public.appointments
@@ -979,6 +1066,10 @@ begin
         'arrivedAtMs', private.lb_ms(p.arrived_at),
         'arrivalMethod', p.arrival_method, 'arrivalDistanceM', p.arrival_distance_m, 'arrivalAccuracyM', p.arrival_accuracy_m,
         'vouchedBy', p.vouched_by,
+        -- R4: 시작 뒤에 이름을 고른 사람(시작 후에도 내보낼 수 있다). 시작 전·주최자는 false
+        'joinedAfterStart', coalesce(a.started_at is not null and p.user_id <> a.host_id
+          and (select private.lb_ms(i.claimed_at) from public.invitees i where i.appointment_id = p.appointment_id and i.claimed_by = p.user_id)
+              > private.lb_ms(a.started_at), false),                      -- lb_kick 과 같은 ms 비교
         'resultStatus', p.result_status, 'forfeited', p.forfeited, 'received', p.received,
         'lastSeenMs', case when v_share_open and p.arrived_at is null and l.user_id is not null then private.lb_ms(l.updated_at) end,
         -- 좌표는 (시작됨 ∧ 공개 창 안) ∧ (미도착) ∧ (3분 안에 갱신됨) 일 때만
@@ -991,6 +1082,54 @@ begin
       from public.participants p
       left join public.locations l on l.appointment_id = p.appointment_id and l.user_id = p.user_id
       where p.appointment_id = p_appt));
+end $$;
+
+-- 15.5) 홈 목록(LbMyAppointment[]): 내가 멤버인 약속. 열린 약속(약속 시각 가까운 순) → 끝난 약속(최근 순).
+--      약속 시각이 지난 열린 약속은 여기서 게으른 참여 마감·정산을 먼저 한다(lb_get_live 와 같은 조건 — 홈만 열어도 무효·정산이 확정된다).
+create function public.lb_list_my_appointments() returns jsonb
+language plpgsql volatile security definer set search_path = '' as $$
+declare v_uid uuid := private.lb_uid(); r record;
+begin
+  for r in select a.id, a.started_at, a.meet_at, a.close_at
+             from public.appointments a join public.participants p on p.appointment_id = a.id and p.user_id = v_uid
+            where a.status = 'open' and now() >= a.meet_at
+            order by a.id loop
+    perform private.lb_close_roster(r.id);
+    if r.started_at is null or now() > r.close_at + interval '15 seconds'
+       or not exists (select 1 from public.participants x where x.appointment_id = r.id and x.arrived_at is null) then
+      perform private.lb_try_settle(r.id);
+    end if;
+  end loop;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', a.id, 'title', a.title, 'localAt', a.local_at, 'tz', a.tz, 'meetAtMs', private.lb_ms(a.meet_at),
+             'startedAtMs', private.lb_ms(a.started_at), 'closeMs', private.lb_ms(a.close_at), 'placeName', a.place_name,
+             'status', a.status, 'policy', private.lb_policy_json(a), 'hostId', a.host_id, 'isHost', a.host_id = v_uid,
+             'myState', 'active',
+             'memberCount', (select count(*) from public.participants x where x.appointment_id = a.id),
+             'unclaimedCount', (select count(*) from public.invitees i where i.appointment_id = a.id and i.claimed_by is null))
+           order by (a.status <> 'open'),
+                    case when a.status = 'open' then a.meet_at end asc,
+                    case when a.status <> 'open' then a.meet_at end desc,
+                    a.created_at, a.id)                                  -- 같은 약속 시각끼리는 만든 순서
+      from public.appointments a join public.participants p on p.appointment_id = a.id and p.user_id = v_uid), '[]'::jsonb);
+end $$;
+
+-- 15.6) 내 원장(LbLedgerEntry[], 최신순). RLS select 로도 읽을 수 있지만 내보내진 약속의 제목은 RLS 로 못 보므로 여기서 붙인다.
+--      p_limit 는 1~500(기본 100).
+create function public.lb_list_ledger(p_limit int default 100) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare v_uid uuid := private.lb_uid();
+begin
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+           'id', l.id, 'kind', l.kind, 'amount', l.amount, 'balanceAfter', l.balance_after,
+           'appointmentId', l.appointment_id, 'appointmentTitle', a.title,
+           'reason', l.meta->>'reason', 'reliefFor', l.meta->>'for', 'createdAtMs', private.lb_ms(l.created_at))
+         order by l.id desc), '[]'::jsonb)
+    from (select * from public.ledger
+           where user_id = v_uid
+           order by id desc limit least(greatest(coalesce(p_limit, 100), 1), 500)) l
+    left join public.appointments a on a.id = l.appointment_id);
 end $$;
 
 -- 16) 감사(오너가 SQL 에디터에서): 0행이면 정상
@@ -1044,7 +1183,12 @@ language sql stable security definer set search_path = '' as $$
    where p.arrived_at is not null and (a.started_at is null or p.arrived_at < a.started_at)
   union all
   select 'notStarted void with started_at', a.id::text, a.started_at::text
-    from public.appointments a where a.void_reason = 'notStarted' and a.started_at is not null;
+    from public.appointments a where a.void_reason = 'notStarted' and a.started_at is not null
+  union all
+  select 'start snapshot mismatch', a.id::text, coalesce(a.start_meet_at::text, 'null')             -- 시작했으면 시작 시점 약속 시각·핀이 박제돼 있어야 한다
+    from public.appointments a
+   where (a.started_at is null) <> (a.start_meet_at is null)
+      or (a.started_at is null) <> (a.start_place_lat is null) or (a.started_at is null) <> (a.start_place_lng is null);
 $$;
 
 -- ───────────────────────── 6. 권한 (맨 끝에서 일괄) ─────────────────────────

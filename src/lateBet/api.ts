@@ -3,13 +3,15 @@
  *
  * 화면·훅은 이 인터페이스만 안다. 구현은 둘이다.
  * - fakeApi.ts   메모리 가짜 서버 (모드 fake: 개발 번들, 또는 beta 채널 네이티브 빌드)
- * - supabaseApi  RPC 래퍼 + 타임아웃 8초 + 40P01/40001 1회 재시도 — P2 에서 만든다.
- *                그때까지 live/off 모드의 getLateBetApi() 는 모든 호출이 LB_NOT_CONFIGURED 로 실패하는 자리표시자다.
+ * - supabaseApi.ts  RPC 래퍼 + 타임아웃 8초 + 40P01/40001 1회 재시도 (모드 live). 클라이언트는 supabase.native.ts 가
+ *                   처음 필요할 때 만든다(웹은 supabase.ts — supabase-js 없음, 모든 호출 LB_NOT_CONFIGURED).
+ * - off 모드의 getLateBetApi() 는 모든 호출이 LB_NOT_CONFIGURED 로 실패하는 자리표시자다.
  *
  * 규칙: 모든 메서드는 Promise 이고, 실패는 항상 LateBetError(code) 로 던진다(errors.ts). 낙관적 업데이트는 하지 않는다.
  */
 import { LateBetError } from './errors';
 import { LATEBET_MODE } from './mode';
+import { serverClock } from './serverClock';
 import type {
   LbAppointment,
   LbCreateInput,
@@ -60,22 +62,30 @@ export interface LateBetApi {
   /**
    * #17 lb_start (주최자) — [시작하기]. 그 순간부터 전원 위치가 서로 보이고 체크인이 열린다. 되돌릴 수 없다.
    * 약속 시각 전이면 언제든(참여 인원 조건 없음 — 혼자면 화면이 confirmDialog 로 한 번 묻는다).
-   * 약속 시각이 지났거나 닫혔으면 LB_START_CLOSED, 이미 시작했으면 LB_ALREADY_STARTED
+   * 약속 시각이 지났거나 닫혔으면 LB_START_CLOSED, 이미 시작했으면 LB_ALREADY_STARTED.
+   * R3: 친구가 있을 때 조건(시각·시간대·핀·정책)을 바꾼 뒤 5분 안이면 LB_START_COOLDOWN(appointment.startableAtMs 참고)
    */
   start(appointmentId: string): Promise<LbAppointment>;
   /** #16 lb_edit_invitees (주최자, 시작 전) — 이름 추가·아직 안 들어온 이름 삭제. 들어온 이름 삭제는 LB_INVITEE_JOINED. 시작 후 LB_EDIT_FROZEN */
   editInvitees(appointmentId: string, patch: LbInviteesPatch): Promise<LbAppointment>;
   /** #6 lb_leave — 시작 전까지(전액 환불, 이름은 명단에 빈 칸으로 남는다). 주최자는 불가. 시작 후 LB_LEAVE_CLOSED */
   leave(appointmentId: string): Promise<void>;
-  /** #7 lb_kick (주최자) — 시작 전까지(전액 환불 + 명단에서도 제거). ban 기본 true. 시작 후 LB_KICK_CLOSED */
+  /**
+   * #7 lb_kick (주최자) — 시작 전: 누구든(전액 환불 + 명단에서도 제거). ban 기본 true.
+   * 시작 후(정산 전까지, R4): 시작 뒤에 들어온 사람(participant.joinedAfterStart)만 — 전액 환불·좌표 삭제·차단,
+   * 그 이름 칸은 빈 칸으로 돌아가 약속 시각 전이면 다른 사람이 고를 수 있다. 시작 전부터 있던 사람은 LB_KICK_CLOSED
+   */
   kick(appointmentId: string, targetUserId: string, ban?: boolean): Promise<void>;
   /** #9 lb_update_memo (주최자) — 제목·장소 메모만. 열려 있는 동안 언제든. version 안 올림 */
   updateMemo(appointmentId: string, title: string, placeNote: string): Promise<void>;
   /**
    * #10 lb_edit_appointment (주최자) — 부분 갱신. version 은 마지막으로 본 값(어긋나면 LB_APPT_CHANGED).
    * - 시작 전: 시간·장소·정책 전부. 걸 포인트 차액은 전원 자동 추가 에스크로/환불. version+1
-   * - 시작 후: 시간 뒤로 미루기(최대 +3시간)·장소만. 그 외가 바뀌면 LB_EDIT_FROZEN, 앞당기면 LB_POSTPONE_ONLY,
-   *   3시간 넘게 미루면 LB_POSTPONE_TOO_FAR. 마감·정산 시각은 새 시각 기준으로 재계산(시작 시각은 그대로)
+   * - 시작 후: 시간 뒤로 미루기·장소만. 그 외가 바뀌면 LB_EDIT_FROZEN, 앞당기면 LB_POSTPONE_ONLY,
+   *   약속 시각이 지난 뒤 미루면 LB_POSTPONE_AFTER_MEET(R1), 시작하던 순간의 약속 시각 + 3시간을 넘기면 LB_POSTPONE_TOO_FAR(누적),
+   *   핀을 시작하던 순간의 핀에서 500m 넘게 옮기면 LB_MOVE_TOO_FAR(R2, 누적 — 이름만 바꾸는 건 자유).
+   *   마감·정산 시각은 새 시각 기준으로 재계산(시작 시각은 그대로)
+   * - R3: 친구가 있을 때 중요 변경(시각·시간대·핀·정책)이면 서버가 그 시각을 남긴다 → 5분 동안 start 가 LB_START_COOLDOWN
    * - 마감(closeMs)이 지났거나 닫혔으면 LB_EDIT_CLOSED
    */
   edit(appointmentId: string, patch: LbEditPatch, version: number): Promise<LbAppointment>;
@@ -104,7 +114,7 @@ export interface LateBetApi {
 
 const notConfigured = (): Promise<never> => Promise.reject(new LateBetError('LB_NOT_CONFIGURED'));
 
-/** live 구현(P2)이 들어오기 전까지의 자리표시자. 저장된 세션도 없다고 답한다 */
+/** off 모드(와 live 구현을 못 만든 경우)의 자리표시자. 저장된 세션도 없다고 답한다 */
 const placeholderApi: LateBetApi = {
   restoreSession: () => Promise.resolve(null),
   ensureSignedIn: notConfigured,
@@ -148,6 +158,14 @@ export function getLateBetApi(): LateBetApi {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fake = require('./fakeApi') as typeof import('./fakeApi');
     cached = fake.getFakeApi();
+  } else if (process.env.EXPO_OS !== 'web' && LATEBET_MODE === 'live') {
+    // live: supabase-js 는 이 가지에서만 require 된다(off·fake 는 모듈 평가조차 안 한다). 웹 번들은 EXPO_OS 치환으로 가지째 빠지고,
+    // 빠지지 않더라도 './supabase' 는 웹에서 supabase.ts(자리표시자)로 resolve 된다.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const backend = (require('./supabase') as typeof import('./supabase')).getLiveBackend();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createSupabaseApi } = require('./supabaseApi') as typeof import('./supabaseApi');
+    cached = createSupabaseApi({ ...backend, clock: serverClock });
   } else {
     cached = placeholderApi;
   }

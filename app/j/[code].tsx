@@ -37,7 +37,6 @@ import { FromNowPill, openExternal } from '@/lateBet/screens/ConditionCard';
 import { FakeDevPanel } from '@/lateBet/screens/FakeDevPanel';
 import { LocationPrimer } from '@/lateBet/screens/LocationPrimer';
 import { LateBetUnavailable } from '@/lateBet/screens/NicknameGate';
-import { withClockSample } from '@/lateBet/serverClock';
 import type { LbInvitePreview, LbJoinResult } from '@/lateBet/types';
 import { useArrivalReporter } from '@/lateBet/useArrivalReporter';
 import { markSeenVersion } from '@/lateBet/useLive';
@@ -173,7 +172,7 @@ function Inner() {
           await ensureReady();
           ready.current = true;
         }
-        const next = await withClockSample(() => api.peekInvite(code));
+        const next = await api.peekInvite(code);
         if (!alive.current || mySeq !== seq.current || joinedRef.current) return;
         const prev = previewRef.current;
         // 조건이 바뀌었으면 동의를 다시 받는다 — 본 적 없는 조건으로는 포인트가 걸리지 않는다(§1 원칙 6)

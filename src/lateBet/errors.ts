@@ -44,8 +44,14 @@ export type LbServerErrorCode =
   | 'LB_EDIT_FROZEN'
   /** 시작 후: 시간은 뒤로만 */
   | 'LB_POSTPONE_ONLY'
-  /** 시작 후: 최대 +3시간 */
+  /** 시작 후: 처음(시작하던 순간) 약속 시각에서 최대 +3시간(누적) */
   | 'LB_POSTPONE_TOO_FAR'
+  /** 시작 후: 약속 시각이 지나면 더 미룰 수 없다 */
+  | 'LB_POSTPONE_AFTER_MEET'
+  /** 시작 후: 처음(시작하던 순간) 핀에서 500m 안으로만 옮길 수 있다(누적) */
+  | 'LB_MOVE_TOO_FAR'
+  /** [시작하기]: 친구가 있을 때 조건을 바꾼 뒤 5분이 안 지났다 */
+  | 'LB_START_COOLDOWN'
   | 'LB_CANCEL_CLOSED'
   /** [시작하기]: 약속 시각이 지났거나 닫힌 약속 */
   | 'LB_START_CLOSED'
@@ -72,6 +78,8 @@ export type LbClientErrorCode =
   | 'LB_CHECK_VIOLATION'
   /** 교착·직렬화 실패(SQLSTATE 40P01·40001) — api 래퍼가 조용히 1회 재시도한다 */
   | 'LB_RETRYABLE'
+  /** 서버 응답이 계약(types.ts)과 모양이 다르다(필수 필드 누락·타입 불일치) — rpcMap 검증 */
+  | 'LB_BAD_RESPONSE'
   | 'LB_UNKNOWN';
 
 export type LateBetErrorCode = LbServerErrorCode | LbClientErrorCode;
@@ -105,11 +113,14 @@ export const LATE_BET_ERROR_MESSAGES: Record<LateBetErrorCode, string> = {
   LB_NOT_MEMBER: '이 약속의 참가자가 아니에요.',
   LB_HOST_CANNOT_LEAVE: '주최자는 나갈 수 없어요. 약속을 취소해 주세요.',
   LB_LEAVE_CLOSED: '주최자가 시작해서 지금은 빠질 수 없어요. 못 오면 건 포인트를 잃어요.',
-  LB_KICK_CLOSED: '이미 시작한 약속에서는 내보낼 수 없어요.',
+  LB_KICK_CLOSED: '시작 전부터 함께한 친구는 시작한 뒤에 내보낼 수 없어요.',
   LB_EDIT_CLOSED: '끝나가는 약속은 바꿀 수 없어요.',
   LB_EDIT_FROZEN: '이미 시작한 약속은 시간을 미루거나 장소만 바꿀 수 있어요.',
   LB_POSTPONE_ONLY: '시작한 뒤에는 시간을 뒤로 미룰 수만 있어요.',
-  LB_POSTPONE_TOO_FAR: '시간은 최대 3시간까지만 미룰 수 있어요.',
+  LB_POSTPONE_TOO_FAR: '처음 약속 시각에서 3시간까지만 미룰 수 있어요.',
+  LB_POSTPONE_AFTER_MEET: '약속 시각이 지나서 더 미룰 수 없어요.',
+  LB_MOVE_TOO_FAR: '시작한 뒤에는 처음 장소에서 500m 안으로만 옮길 수 있어요.',
+  LB_START_COOLDOWN: '친구들이 바뀐 내용을 볼 수 있게, 바꾼 뒤 5분이 지나야 시작할 수 있어요.',
   LB_CANCEL_CLOSED: '이미 시작한 약속은 취소할 수 없어요.',
   LB_START_CLOSED: '약속 시각이 지나 이제 시작할 수 없어요.',
   LB_ALREADY_STARTED: '이미 시작한 약속이에요.',
@@ -124,6 +135,7 @@ export const LATE_BET_ERROR_MESSAGES: Record<LateBetErrorCode, string> = {
   LB_RATE_LIMITED: '잠시 후 다시 시도해 주세요.',
   LB_CHECK_VIOLATION: '설정 값을 확인해 주세요.',
   LB_RETRYABLE: FALLBACK,
+  LB_BAD_RESPONSE: '서버 응답을 읽지 못했어요. 앱을 최신 버전으로 업데이트해 주세요.',
   LB_UNKNOWN: FALLBACK,
 };
 
@@ -135,6 +147,8 @@ export const REMOVED_MESSAGE = '주최자가 내보냈어요. 건 포인트는 �
 export const REPEATED_FAILURE_MESSAGE = '문제가 계속되면 만든 사람에게 알려 주세요.';
 /** 오프라인으로 캐시를 보여 줄 때(§5.3-A) */
 export const STALE_NOTICE = '연결이 없어 마지막으로 본 내용을 보여드려요.';
+/** 로그인이 풀려(refresh 토큰 무효 등) 새 익명 계정으로 다시 시작했다 — 이전 계정은 되살릴 수 없다 */
+export const ACCOUNT_RESET_NOTICE = '로그인이 풀려서 새로 시작했어요. 이전에 걸어 둔 약속과 포인트는 이 기기에서 더 볼 수 없어요.';
 /** 서버 장애(§5.3-A) */
 export const SERVER_DOWN_NOTICE = '지금은 약속 서버에 연결할 수 없어요.';
 /** settlePending 이 1분 넘게 이어질 때(§5.4) */

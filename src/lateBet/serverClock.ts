@@ -66,7 +66,8 @@ export const serverNow = (): number => serverClock.now();
 
 /**
  * serverNowMs 가 든 응답을 돌려주는 호출을 감싸 왕복 시간을 재고 시계를 보정한다.
- *   const live = await withClockSample(() => api.getLive(id));
+ * 앱 화면에서는 쓰지 않는다 — LateBetApi(supabaseApi·fakeApi)가 이미 rpc 왕복만으로 잰다. api 호출을 이것으로 또 감싸면
+ * 세션 확인·재시도 시간이 섞인 바깥 샘플이 나중에 기록돼 정확한 안쪽 샘플을 덮는다. api 밖의 호출을 잴 때만 쓴다.
  */
 export async function withClockSample<T extends { serverNowMs: number }>(
   call: () => Promise<T>,

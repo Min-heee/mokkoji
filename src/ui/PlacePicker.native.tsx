@@ -51,6 +51,7 @@ import {
   geocoderNeedsPermission,
   nameForCenter,
   pickerPermissionFromStatus,
+  pinLimitStatus,
   placeSearchMode,
   regionAround,
   regionCenter,
@@ -60,10 +61,10 @@ import {
   type PickerPermission,
   type PlaceSearchMode,
 } from './placePickerModel';
-import type { PlacePickerProps, PlacePickerValue } from './placePickerShared';
+import { limitExceededText, type PlacePickerProps, type PlacePickerValue } from './placePickerShared';
 import { colors, fontSize, radius, spacing } from './theme';
 
-export { openPlaceDraft, readPlaceDraft, setPlaceResult, takePlaceResult } from './placePickerShared';
+export { limitExceededText, openPlaceDraft, readPlaceDraft, setPlaceResult, takePlaceResult } from './placePickerShared';
 export type { PlaceDraft, PlacePickerProps, PlacePickerValue } from './placePickerShared';
 
 /** 바이너리에 박힌 키 유무(OTA 로 바뀌지 않는다) */
@@ -422,13 +423,20 @@ function PlaceSearchBox({ mode, initialQuery, near, prepareGeocoder, onPick, emp
 
 // ───────────────────────── 지도 방식 ─────────────────────────
 
-function MapPicker({ value, radiusM, placeName, onChange }: PlacePickerProps) {
+function MapPicker({ value, radiusM, placeName, onChange, limitCenter, limitRadiusM }: PlacePickerProps) {
   const mapRef = useRef<MapView>(null);
   const { permission, permissionRef, ask } = useLocationPermission();
   const circleRadius = Number.isFinite(radiusM) && radiusM > 0 ? radiusM : 100;
+  // 옮길 수 있는 한도(시작한 약속의 장소 바꾸기, R2). 있으면 첫 화면이 한도 원 전체를 담게 넓게 잡는다
+  const limit =
+    limitCenter && typeof limitRadiusM === 'number' && Number.isFinite(limitRadiusM) && limitRadiusM > 0
+      ? { center: limitCenter, radiusM: limitRadiusM }
+      : null;
 
   const [initialRegion] = useState<Region>(() =>
-    value ? regionAround({ lat: value.lat, lng: value.lng }, circleRadius) : regionAround(DEFAULT_CENTER),
+    value
+      ? regionAround({ lat: value.lat, lng: value.lng }, limit ? Math.max(circleRadius, limit.radiusM) : circleRadius)
+      : regionAround(limit ? limit.center : DEFAULT_CENTER, limit ? limit.radiusM : undefined),
   );
   // 반경 원의 중심 = 마지막으로 멈춘 지도 중심
   const [center, setCenter] = useState<GeoPoint>(() => (value ? { lat: value.lat, lng: value.lng } : DEFAULT_CENTER));
@@ -523,6 +531,8 @@ function MapPicker({ value, radiusM, placeName, onChange }: PlacePickerProps) {
   const address = useNearestAddress(value, permission, moving);
   const addressPossible = !geocoderNeedsPermission(Platform.OS, permission);
   const near = value ? { lat: value.lat, lng: value.lng } : center;
+  const overLimit = limit !== null && pinLimitStatus(value, limit.center, limit.radiusM).over;
+  const bubble = overLimit && limit ? limitExceededText(limit.radiusM) : (notice ?? (!value ? '지도를 움직여 핀을 약속 장소에 맞춰주세요' : null));
 
   return (
     <View style={styles.mapRoot}>
@@ -569,6 +579,17 @@ function MapPicker({ value, radiusM, placeName, onChange }: PlacePickerProps) {
             userInterfaceStyle="light"
             accessibilityLabel="약속 장소 지도. 지도를 움직이면 가운데 핀이 약속 장소가 돼요"
           >
+            {limit ? (
+              // 한도 원: 이 안으로만 핀을 옮길 수 있다(점선, 채우지 않음)
+              <Circle
+                center={{ latitude: limit.center.lat, longitude: limit.center.lng }}
+                radius={limit.radiusM}
+                strokeColor={colors.subtext}
+                strokeWidth={1.5}
+                lineDashPattern={[6, 6]}
+                fillColor="transparent"
+              />
+            ) : null}
             {!moving ? (
               <Circle
                 center={{ latitude: center.lat, longitude: center.lng }}
@@ -595,9 +616,9 @@ function MapPicker({ value, radiusM, placeName, onChange }: PlacePickerProps) {
         </View>
 
         {/* 안내는 지도 위 말풍선으로 — 지도 아래에 줄이 생겼다 없어지면 지도 높이가 흔들린다 */}
-        {notice || !value ? (
+        {bubble !== null ? (
           <View pointerEvents="none" style={styles.hintBubbleWrap}>
-            <Text style={styles.hintBubble}>{notice ?? '지도를 움직여 핀을 약속 장소에 맞춰주세요'}</Text>
+            <Text style={styles.hintBubble}>{bubble}</Text>
           </View>
         ) : null}
 

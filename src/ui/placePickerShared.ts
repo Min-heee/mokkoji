@@ -23,6 +23,18 @@ export interface PlacePickerProps {
   placeName?: string;
   /** 핀이 바뀔 때마다. 확정 버튼은 부모(app/late/place.tsx)가 그린다 */
   onChange: (value: PlacePickerValue) => void;
+  /**
+   * 옮길 수 있는 한도의 중심(선택). 시작한 약속의 장소 바꾸기 = 시작하던 순간의 핀(공정성 규칙 R2).
+   * 있으면 지도에 한도 원을 그리고(폴백은 거리 한 줄), 넘으면 안내한다. 확정 버튼 비활성은 부모 몫
+   */
+  limitCenter?: { lat: number; lng: number } | null;
+  /** 한도 반경(m). limitCenter 와 같이 준다 */
+  limitRadiusM?: number;
+}
+
+/** 한도를 넘은 핀 안내(부모의 확정 버튼 아래·지도 말풍선) */
+export function limitExceededText(radiusM: number): string {
+  return `처음 장소에서 ${radiusM}m 안으로만 옮길 수 있어요`;
 }
 
 /**
@@ -41,6 +53,8 @@ export interface PlaceDraft {
   value: PlacePickerValue | null;
   radiusM: number;
   placeName: string;
+  /** 옮길 수 있는 한도(시작한 약속의 장소 바꾸기). 없으면 제한 없음 */
+  limit?: { lat: number; lng: number; radiusM: number } | null;
 }
 
 const DEFAULT_DRAFT_RADIUS_M = 100;

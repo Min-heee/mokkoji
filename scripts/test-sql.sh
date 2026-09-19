@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 로컬 PostgreSQL 16 이 떠 있어야 한다(PGHOST/PGPORT/PGUSER 환경변수 사용, 접속 롤은 슈퍼유저). 매번 새 DB 를 만든다.
+# 클러스터가 없으면: `bash scripts/local-pg.sh start && eval "$(bash scripts/local-pg.sh env)"` (127.0.0.1:54329, 슈퍼유저 postgres).
 # 마이그레이션은 `set role postgres` 로 적용한다(Supabase 와 같은 소유자 → 기본 권한 회수가 실제로 검증된다).
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -87,6 +87,16 @@ export interface LbAppointment {
   meetAtMs: number;
   /** 주최자가 [시작하기]를 누른 서버 시각 = 위치 공개·체크인 시작. null = 아직 시작 전 */
   startedAtMs: number | null;
+  /** 시작하던 순간의 약속 시각(R1: 시작 후 미루기 한도 = 이 값 + 180분, 누적). 시작 전 null */
+  startMeetAtMs: number | null;
+  /** 시작하던 순간의 핀(R2: 시작 후 장소 옮기기는 이 점에서 500m 안, 누적). 시작 전 null */
+  startPlaceLat: number | null;
+  startPlaceLng: number | null;
+  /**
+   * R3: 참가자가 있을 때 중요 변경(시각·시간대·핀·정책)을 한 뒤 5분이 지나야 [시작하기] 가능.
+   * 그 시각(ms, 서버 시계)이 아직 미래면 그 값, 아니면 null. 서버가 계산해 내려준다(시작 뒤 변경에도 값이 생기지만 화면은 시작 전에만 쓴다)
+   */
+  startableAtMs: number | null;
   /** 체크인·위치 공개 종료 = 전액 몰수 시각 + 30분 꼬리(상한 마감 + 180분). 이 시각을 넘겨 도착하면 전액을 잃는다 */
   closeMs: number;
   placeName: string;
@@ -124,12 +134,18 @@ export interface LbCreateInput {
   consent: boolean;
   /** LB_TZ_SUSPECT 를 받은 뒤 시간대 시트에서 고르고 다시 보낼 때 true */
   tzConfirmed?: boolean;
+  /**
+   * 생성 멱등 키(uuid). 폼 한 번에 하나 만들고 재시도(타임아웃·오프라인 뒤 [만들기] 다시 누르기)에 같은 값을 쓴다 →
+   * 서버가 이미 만들었으면 새로 만들지 않고 그 약속을 돌려준다(약속·에스크로 중복 방지). 없으면 멱등하지 않다
+   */
+  requestId?: string;
 }
 
 /**
  * #10 lb_edit_appointment 입력 — 바꿀 필드만 넣는다(부분 갱신).
  * - 시작 전: 전부. 걸 포인트가 오르면 전원 차액 추가 에스크로(부족분 자동 채움), 내리면 차액 환불
- * - 시작 후: localAt/tz(뒤로 미루기만, 최대 +3시간)·placeName/lat/lng 만. policy 가 있으면 값이 같아야 한다(다르면 LB_EDIT_FROZEN)
+ * - 시작 후: localAt/tz(뒤로 미루기만 — 지금 약속 시각 전에만, 시작하던 순간의 약속 시각 + 3시간까지)·placeName·
+ *   lat/lng(시작하던 순간의 핀에서 500m 안) 만. policy 가 있으면 값이 같아야 한다(다르면 LB_EDIT_FROZEN)
  * - 정산이 시작된 뒤(마감 지남·닫힘)에는 LB_EDIT_CLOSED
  */
 export interface LbEditPatch {
@@ -247,6 +263,11 @@ export interface LbLiveParticipant {
   resultStatus: LbResultStatus | null;
   forfeited: number | null;
   received: number | null;
+  /**
+   * 주최자가 시작한 뒤에 들어왔는가(명단 claimedAt > startedAt). 시작 전·주최자는 false.
+   * R4: 시작 후에는 이 사람만 내보낼 수 있다(canKickAfterStart)
+   */
+  joinedAfterStart: boolean;
   /** 좌표가 서버에 남아 있으면 마지막 갱신 시각(3분이 지나 location 은 null 이어도). "4분 전까지 공유" */
   lastSeenMs: number | null;
   location: LbLiveLocation | null;

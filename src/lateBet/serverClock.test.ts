@@ -44,3 +44,46 @@ describe('serverClock', () => {
     assert.equal(calls, 1);
   });
 });
+
+describe('serverClock — 한 곳에서만 잰다(적대 리뷰 #5)', () => {
+  it('화면·훅은 api 호출을 withClockSample 로 또 감싸지 않는다(바깥 샘플이 세션 확인 시간을 섞어 안쪽 샘플을 덮는다)', async () => {
+    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const root = process.cwd(); // npm test 는 리포 루트에서 돈다
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (/\.tsx?$/.test(name) && !/\.test\.ts$/.test(name) && !p.endsWith(join('lateBet', 'serverClock.ts'))) {
+          if (/withClockSample\s*\(/.test(readFileSync(p, 'utf8'))) offenders.push(p.slice(root.length + 1));
+        }
+      }
+    };
+    walk(join(root, 'app'));
+    walk(join(root, 'src'));
+    assert.deepEqual(offenders, []);
+  });
+
+  it('fake api 도 live 처럼 api 안에서 한 번 잰다(ping·getLive 등). 시계를 안 주면 재지 않는다', async () => {
+    const { FakeServer, createFakeApi } = await import('./fakeApi');
+    const server = new FakeServer();
+    const clock = createServerClock(() => 0);
+    const api = createFakeApi(server, 'me', { clock });
+    let samples = 0;
+    const orig = clock.addSample.bind(clock);
+    clock.addSample = (s, t0, t1) => {
+      samples += 1;
+      return orig(s, t0, t1);
+    };
+    await api.ping();
+    assert.equal(samples, 1);
+    assert.equal(clock.hasSample(), true);
+    await api.restoreSession(); // serverNowMs 없는 호출은 재지 않는다
+    assert.equal(samples, 1);
+    const plain = createFakeApi(server, 'me');
+    const before = samples;
+    await plain.ping();
+    assert.equal(samples, before);
+  });
+});
