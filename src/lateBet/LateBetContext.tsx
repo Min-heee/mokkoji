@@ -13,6 +13,7 @@ import { AppState, Platform } from 'react-native';
 import { getLateBetApi, type LateBetApi } from './api';
 import { LateBetError, toLateBetError } from './errors';
 import { LATEBET_ENABLED, LATEBET_FAKE, LATEBET_MODE, type LateBetMode } from './mode';
+import { LateNotificationRouting, pruneReminders } from './notifications';
 import { serverClock, withClockSample } from './serverClock';
 import type { LbMyAppointment, LbPing, LbProfile } from './types';
 
@@ -213,6 +214,12 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
     void refresh();
   }, [refresh]);
 
+  // 로컬 알림: 내가 안 본 사이 취소·정산됐거나 목록에서 사라진 약속의 예약을 거둔다(웹은 무동작)
+  useEffect(() => {
+    if (status !== 'ready') return;
+    void pruneReminders(appointments.filter((a) => a.status === 'open').map((a) => a.id));
+  }, [status, appointments]);
+
   // 포그라운드 복귀마다 서버 시계를 다시 잰다
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
@@ -246,7 +253,13 @@ function ActiveProvider({ children }: { children: React.ReactNode }) {
     };
   }, [api, status, userId, profile, appointments, ping, error, failCount, loadedOnce, refresh, ensureReady, ensureProfile, applyBalance]);
 
-  return <LateBetContext.Provider value={value}>{children}</LateBetContext.Provider>;
+  return (
+    <LateBetContext.Provider value={value}>
+      {/* 알림 탭 → 약속 화면, 포그라운드 배너(아무것도 그리지 않는다) */}
+      <LateNotificationRouting />
+      {children}
+    </LateBetContext.Provider>
+  );
 }
 
 export function LateBetProvider({ children }: { children: React.ReactNode }) {

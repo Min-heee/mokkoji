@@ -56,8 +56,8 @@ import {
   toLateBetError,
 } from '@/lateBet/errors';
 import { useLateBet } from '@/lateBet/LateBetContext';
+import { readDeviceTz } from '@/lateBet/deviceTz';
 import { markSeenVersion } from '@/lateBet/useLive';
-import { ensureNotificationPermission, scheduleLateNotifications } from '@/lateBet/notifications';
 import { FakeDevPanel } from '@/lateBet/screens/FakeDevPanel';
 import { InviteeEditor, inviteeNameIssue } from '@/lateBet/screens/InviteeEditor';
 import { LateBetUnavailable, NicknameGate } from '@/lateBet/screens/NicknameGate';
@@ -89,15 +89,6 @@ const CONSENT_LOCATION =
 const CONSENT_AGE = '만 14세 이상이에요';
 
 const charLen = (s: string) => Array.from(s).length;
-
-function detectDeviceTz(): string | null {
-  try {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    return typeof tz === 'string' && tz.trim() !== '' ? tz : null;
-  } catch {
-    return null;
-  }
-}
 
 /** '19:30' → '오후 7:30' (시트의 "약속 시각 '오후 7:30'은 어느 시각인가요?"). 형식이 아니면 그대로 */
 function koreanClock(timeText: string): string {
@@ -226,7 +217,9 @@ function initialRadius(radiusM: number): { choice: RadiusChoice; text: string } 
 function Form({ mode, prefill, initialLive }: FormProps) {
   const router = useRouter();
   const { api, mode: lateBetMode, profile, balance, refresh } = useLateBet();
-  const deviceTz = useRef(detectDeviceTz()).current;
+  // 기기 시간대: 네이티브는 expo-localization, 웹은 Intl(@/lateBet/deviceTz). 모르면 'Asia/Seoul' — needsTzChoice·tzChoices 는
+  // null 을 서울로 보므로 결과가 같다
+  const [deviceTz] = useState(readDeviceTz);
   const now = useServerNow(30_000);
 
   const isEdit = mode === 'edit';
@@ -391,16 +384,8 @@ function Form({ mode, prefill, initialLive }: FormProps) {
   const closeTzSheet = () => setTzSheet((s) => ({ ...s, open: false }));
 
   // ── 저장 ──
-  const afterSaved = async (saved: LbAppointment) => {
-    void ensureNotificationPermission();
-    void scheduleLateNotifications({
-      id: saved.id,
-      version: saved.version,
-      title: saved.title,
-      tz: saved.tz,
-      meetAtMs: saved.meetAtMs,
-      closeMs: saved.closeMs,
-    });
+  // 알림 예약은 약속 화면(useLateReminders)이 서버 응답을 보고 맞춘다 — 여기서는 목록만 새로 읽는다
+  const afterSaved = async (_saved: LbAppointment) => {
     await refresh();
   };
 

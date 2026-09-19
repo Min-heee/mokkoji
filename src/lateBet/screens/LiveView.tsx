@@ -4,6 +4,9 @@
  *
  * - 1초 티커는 LossTicker·ParticipantRows 안에만 있다. LiveView 본체는 폴링(5초)·판정 결과가 바뀔 때만 다시 그린다.
  * - 위치 보고 루프는 컨테이너(app/late/[id])가 돌린다. 여기서는 reporter 의 상태를 그리고 [도착 확인]만 부른다.
+ *   P1: 네이티브 reporter(expo-location)의 권한(permission·canAskAgain)·샘플 품질·모의 위치·위치 못 읽음 상태를 §5.4 문구로 잇는다.
+ *   [위치 공유] 토글은 reporter.setSharing 이 루프를 멈추고 lb_stop_sharing 을 1회 부른다(여기서 따로 부르지 않는다).
+ *   지도의 '나' 점은 기기 위치(reporter.myPosition), 없으면 서버가 돌려준 내 좌표.
  * - 이 화면은 주최자가 [시작하기]를 누른 뒤(startedAtMs 있음)에만 온다. 그 순간부터 전원 위치가 서로 보이고 체크인이 열린다.
  * - 아직 안 들어온 이름(명단의 빈 칸)은 약속 시각까지 계속 들어올 수 있다 — 표시만 하고 [명단에서 빼기]는 없다
  *   (시작 후 명단은 동결, 약속 시각에 서버가 자동 삭제). 들어오면 다음 폴링부터 참가자 행·지도에 나타난다.
@@ -14,7 +17,7 @@
  */
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { fullForfeitAtMs, lateUnits, normalizeLatePolicy, projectedPenalty } from '@/domain/lateBet';
 import { onTimeUntilMs } from '@/domain/latePhase';
@@ -29,7 +32,6 @@ import { colors, fontSize, radius, spacing } from '@/ui/theme';
 import type { LateBetApi } from '../api';
 import { describeChanges } from '../changes';
 import { isConnectivityError, reportReasonMessage, toLateBetError } from '../errors';
-import { scheduleLateNotifications } from '../notifications';
 import { serverNow } from '../serverClock';
 import type { LbAppointment, LbAppointmentChange, LbLive, LbLiveParticipant } from '../types';
 import { useServerNow } from '../useServerNow';
@@ -89,16 +91,12 @@ function accuracyLabel(accuracyM: number | null): string {
   if (accuracyM === null || !(accuracyM >= 0)) return '';
   if (accuracyM <= 30) return '위치 정확도 좋음';
   if (accuracyM <= 100) return '위치 정확도 보통';
-  return '위치 정확도 낮음';
+  return `위치 정확도 낮음 (오차 약 ${formatDistance(accuracyM)})`;
 }
 
 /** 좌표 길찾기(카카오맵). 웹은 새 탭(같은 탭을 갈아치우면 앱이 지도로 대체된다) */
 function openRoute(appointment: LbAppointment): void {
   openExternal(mapRouteUrl(appointment.placeName, appointment.placeLat, appointment.placeLng));
-}
-
-function openSettings(): void {
-  Linking.openSettings().catch(() => alertDialog('설정을 열 수 없어요'));
 }
 
 /**
@@ -109,6 +107,9 @@ export function unclaimedNames(appointment: LbAppointment, nowMs?: number): stri
   if (typeof nowMs === 'number' && nowMs >= appointment.meetAtMs) return [];
   return appointment.invitees.filter((i) => i.claimedByUserId === null).map((i) => i.name);
 }
+
+/** 이보다 오래된 좌표는 지도에서 흐리게(서버는 3분이 지나면 좌표를 아예 내려주지 않는다) */
+const MARKER_STALE_MS = 60_000;
 
 /** 지도에 찍을 수 있는 마커 = 좌표가 보이는 미도착 참가자. 기준 데이터는 참가자 행(ParticipantRows)이다 */
 export function liveMarkers(live: LbLive): MapPaneMarker[] {
@@ -121,6 +122,9 @@ export function liveMarkers(live: LbLive): MapPaneMarker[] {
       lng: p.location ? p.location.lng : null,
       distanceM: p.location ? p.location.distanceM : null,
       isMe: p.userId === live.myUserId,
+      // 서버 시각 기준(폴링 응답의 serverNowMs) — 기기 시계와 섞지 않는다
+      lastSeenMs: p.location ? p.location.updatedAtMs : null,
+      stale: p.location ? live.serverNowMs - p.location.updatedAtMs > MARKER_STALE_MS : false,
     }));
 }
 
@@ -388,15 +392,8 @@ export function HostTools({ live, api, refresh, disabled = false }: HostToolsPro
           void (async () => {
             try {
               // 시간대는 그대로다 — 만들 때 이미 확인한 값이므로 다시 묻지 않는다
-              const next = await api.edit(a.id, { localAt, tzConfirmed: true }, a.version);
-              void scheduleLateNotifications({
-                id: next.id,
-                version: next.version,
-                title: next.title,
-                tz: next.tz,
-                meetAtMs: next.meetAtMs,
-                closeMs: next.closeMs,
-              });
+              // 알림은 refresh 뒤 useLateReminders 가 새 version 으로 다시 맞춘다
+              await api.edit(a.id, { localAt, tzConfirmed: true }, a.version);
               if (alive.current) setOpen(false);
             } catch (e) {
               alertDialog('미루지 못했어요', toLateBetError(e).message);
@@ -471,10 +468,11 @@ interface Notice {
 }
 
 const VOUCH_HINT = "먼저 도착한 친구에게 '같이 있어요'를 눌러달라고 하세요.";
+const MOCKED_MESSAGE = '모의 위치 앱이 켜져 있으면 도착을 확인할 수 없어요.';
 
 export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, unseenChanges, ackChanges }: LiveViewProps) {
   const appointment = live.appointment;
-  const { permission, sharing, running, myDistanceM, myAccuracyM, lastResult } = reporter;
+  const { permission, sharing, running, myDistanceM, myAccuracyM, lastResult, canAskAgain } = reporter;
   const reportError = reporter.error;
 
   /** 내가 누른 [도착 확인]이 진행 중(자동 재시도는 버튼을 흔들지 않는다) */
@@ -528,34 +526,40 @@ export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, u
 
   const onToggleSharing = useCallback(() => {
     const next = !reporterRef.current.sharing;
-    reporterRef.current.setSharing(next);
-    if (!next) {
-      // 루프가 멈추며 훅도 부르지만, 루프가 안 돌던 때에 남은 좌표까지 확실히 지운다(best-effort)
-      void api
-        .stopSharing(appointment.id)
-        .catch(() => undefined)
-        .then(() => refresh());
-    }
-  }, [api, appointment.id, refresh]);
+    // 끄면 reporter 가 루프를 멈추고 lb_stop_sharing 을 1회 부른다 → 끝나면 다시 읽어 내 행을 '위치 공유 끔'으로
+    void reporterRef.current.setSharing(next).then(() => {
+      if (!next) void refresh();
+    });
+  }, [refresh]);
+
+  const openSettings = useCallback(() => {
+    void reporterRef.current.openSettings().then((opened) => {
+      if (!opened) alertDialog('설정을 열 수 없어요');
+    });
+  }, []);
 
   // ── 실패 상태(§5.4) — 위에서부터 먼저 걸리는 것 하나만 보여 준다
   const notice: Notice | null = (() => {
     const settings = Platform.OS === 'web' ? undefined : { label: '설정 열기', onPress: openSettings };
+    const askAgain = { label: '위치 허용하기', onPress: () => void reporterRef.current.requestPermission() };
     if (permission === 'denied' || permission === 'unsupported') {
       return {
         lines: ['위치가 꺼져 있어 도착을 자동으로 확인할 수 없어요', VOUCH_HINT],
-        action: permission === 'denied' ? settings : undefined,
+        // 한 번 거부(다시 물을 수 있음)는 OS 프롬프트로, 영구 거부는 설정으로
+        action: permission === 'denied' ? (canAskAgain && Platform.OS !== 'web' ? askAgain : settings) : undefined,
       };
     }
     if (permission === 'undetermined') {
       return {
         lines: ['위치를 허용해야 도착을 자동으로 확인할 수 있어요', VOUCH_HINT],
-        action: { label: '위치 허용하기', onPress: () => void reporterRef.current.requestPermission() },
+        action: askAgain,
       };
     }
     if (permission === 'coarse' || (myAccuracyM !== null && myAccuracyM > COARSE_ACCURACY_M)) {
       return { lines: ["대략적인 위치만 허용돼 있어요. 설정에서 '정확한 위치'를 켜주세요."], action: settings };
     }
+    // 서버 판정을 기다리지 않고 기기가 먼저 안다(안드로이드 mocked 플래그)
+    if (reporter.mocked) return { lines: [MOCKED_MESSAGE, VOUCH_HINT] };
     if (offline) {
       return {
         lines: [
@@ -567,6 +571,12 @@ export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, u
       };
     }
     if (reportError) return { lines: [reportError.message] };
+    if (reporter.positionUnavailable && myDistanceM === null) {
+      return {
+        lines: ['위치를 읽지 못하고 있어요. 휴대폰의 위치 서비스가 켜져 있는지 확인해 주세요.', VOUCH_HINT],
+        action: settings,
+      };
+    }
     if (noPosition) return { lines: ['위치를 읽지 못했어요. 다시 눌러주세요.'] };
     if (lastResult && lastReason !== null && (lastReason !== 'outside' || pressed)) {
       const message = reportReasonMessage(lastReason, {
@@ -584,11 +594,19 @@ export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, u
   })();
 
   const locationOff = permission === 'denied' || permission === 'unsupported' || permission === 'undetermined';
-  const markers = useMemo(() => liveMarkers(live), [live]);
+  const hasDevicePoint = reporter.myPosition !== null;
+  // 기기 위치로 '나'를 그릴 때는 서버가 돌려준 내 마커를 빼서 두 번 찍히지 않게 한다
+  const markers = useMemo(
+    () => (hasDevicePoint ? liveMarkers(live).filter((m) => !m.isMe) : liveMarkers(live)),
+    [live, hasDevicePoint],
+  );
   const myRow = live.participants.find((p) => p.userId === live.myUserId) ?? null;
-  const myPoint = myRow?.location
-    ? { lat: myRow.location.lat, lng: myRow.location.lng, accuracyM: myRow.location.accuracyM }
-    : null;
+  // 지도 '나' 점: 기기 위치가 먼저(공유를 꺼도 내 화면에는 보인다), 없으면 서버가 돌려준 내 좌표
+  const myPoint =
+    reporter.myPosition ??
+    (myRow?.location ? { lat: myRow.location.lat, lng: myRow.location.lng, accuracyM: myRow.location.accuracyM } : null);
+  // 네이티브 지도가 OS 의 '내 위치' 점을 그려도 되는가(권한이 이미 있고 실제 GPS 를 쓰는 중)
+  const locationGranted = (permission === 'granted' || permission === 'coarse') && reporter.source !== 'fake';
 
   const statusLine = [
     myDistanceM !== null
@@ -631,6 +649,7 @@ export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, u
         radiusM={appointment.policy.radiusM}
         markers={markers}
         me={myPoint}
+        locationGranted={locationGranted}
       />
       <Text style={styles.placeLine} numberOfLines={2}>
         {appointment.placeName}

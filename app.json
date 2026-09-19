@@ -2,7 +2,7 @@
   "expo": {
     "name": "정산야호",
     "slug": "nbbang",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "runtimeVersion": {
       "policy": "appVersion"
     },
@@ -33,14 +33,44 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1A1A1A"
-      }
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
+      "blockedPermissions": [
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",
       "output": "single"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-localization",
+      "expo-web-browser",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "약속 장소에 도착했는지 확인하고, 주최자가 약속을 시작한 뒤 같은 약속의 친구들에게 내 위치를 보여주기 위해 위치를 사용해요. 앱을 켜 둔 동안에만 사용해요.",
+          "locationAlwaysAndWhenInUsePermission": "약속 장소에 도착했는지 확인하고, 주최자가 약속을 시작한 뒤 같은 약속의 친구들에게 내 위치를 보여주기 위해 위치를 사용해요. 앱을 켜 둔 동안에만 사용해요.",
+          "locationAlwaysPermission": "약속 장소에 도착했는지 확인하고, 주최자가 약속을 시작한 뒤 같은 약속의 친구들에게 내 위치를 보여주기 위해 위치를 사용해요. 앱을 켜 둔 동안에만 사용해요.",
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false,
+          "isAndroidForegroundServiceEnabled": false
+        }
+      ],
+      "./plugins/withoutPushEntitlement",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#1A1A1A"
+        }
+      ]
     ],
     "extra": {
       "router": {},

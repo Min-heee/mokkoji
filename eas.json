@@ -16,10 +16,23 @@
     "production": {
       "autoIncrement": true,
       "channel": "production"
+    },
+    "beta": {
+      "distribution": "store",
+      "channel": "beta",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_LATEBET_MODE": "fake"
+      }
     }
   },
   "submit": {
     "production": {
+      "ios": {
+        "ascAppId": "6788352501"
+      }
+    },
+    "beta": {
       "ios": {
         "ascAppId": "6788352501"
       }

@@ -30,7 +30,6 @@ import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 import { describeChanges } from '../changes';
 import { errorMessage, toLateBetError } from '../errors';
-import { scheduleLateNotifications } from '../notifications';
 import { serverNow } from '../serverClock';
 import type { LbAppointment, LbAppointmentChange, LbInvitee, LbLive, LbLiveParticipant } from '../types';
 import { ConditionCard } from './ConditionCard';
@@ -263,17 +262,7 @@ export function WaitingView({ live, isHost, api, refresh, stale, unseenChanges, 
   const [titleText, setTitleText] = useState(a.title);
   const [noteText, setNoteText] = useState(a.placeNote);
 
-  // 조건(version)·제목이 바뀌면 로컬 알림을 다시 예약한다. 키가 (id + version) 이라 여러 번 불러도 같다
-  useEffect(() => {
-    void scheduleLateNotifications({
-      id: a.id,
-      version: a.version,
-      title: a.title,
-      tz: a.tz,
-      meetAtMs: a.meetAtMs,
-      closeMs: a.closeMs,
-    });
-  }, [a.id, a.version, a.title, a.tz, a.meetAtMs, a.closeMs]);
+  // 로컬 알림 예약은 컨테이너(app/late/[id] 의 useLateReminders)가 서버 응답마다 맞춘다
 
   // 생성 직후(?invite=…) 공유 시트를 한 번 연다. 웹은 사용자 제스처 없이 공유를 열 수 없어 건너뛴다
   const autoShared = useRef(false);

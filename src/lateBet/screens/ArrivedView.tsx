@@ -2,7 +2,7 @@
  * 도착 뒤: 도착 연출 + 친구 기다리기 + [같이 있어요]
  * 설계서 §5.3-F(arrived·settling), §3.4 보증 도착, §0-1 오너 결정 변경(2026-09-18). 담당: [live]
  *
- * - 도착 연출: 300ms 옵시디언 반전 1회(약속당 한 번). 햅틱은 expo-haptics 가 들어오는 P1 에서 붙인다.
+ * - 도착 연출: 300ms 옵시디언 반전 + 햅틱 1회(약속당 한 번, haptics.native → expo-haptics Success. 웹은 무동작).
  * - 1초 티커는 ParticipantRows 안에만 있다. 이 화면 본체는 폴링(5초) 때만 다시 그린다.
  * - 나는 이미 도착했으므로 위치 공유는 서버에서 끝났다. 친구 위치는 공개 창(시작 ~ 마감, 전액 몰수 뒤 30분 꼬리 포함) 동안 계속 보인다.
  * - 이 화면은 시작 뒤에만 온다(도착 = 체크인 = 시작 뒤). 아직 안 들어온 이름은 약속 시각까지 들어올 수 있어 표시만 한다(버튼 없음).
@@ -22,6 +22,7 @@ import { MapPane } from '@/ui/MapPane';
 import { colors, fontSize, spacing } from '@/ui/theme';
 
 import { toLateBetError } from '../errors';
+import { arrivalHaptic } from '../haptics';
 import type { LbLiveParticipant } from '../types';
 import { ChangeBanner, HostTools, liveMarkers, ParticipantRows, SmallButton, unclaimedNames } from './LiveView';
 import type { ArrivedViewProps } from './props';
@@ -65,12 +66,13 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, stale, just
   const { tz, meetAtMs, closeMs } = appointment;
   const policy = useMemo(() => normalizeLatePolicy(appointment.policy), [appointment.policy]);
 
-  // ── 도착 연출(약속당 1회)
+  // ── 도착 연출(약속당 1회) — 반전 + 햅틱. celebrated 가 화면 재마운트·폴링 리렌더에서의 중복을 막는다
   const [flash, setFlash] = useState(() => justArrived && !celebrated.has(appointment.id));
   useEffect(() => {
     if (!justArrived || celebrated.has(appointment.id)) return;
     celebrated.add(appointment.id);
     setFlash(true);
+    arrivalHaptic();
   }, [justArrived, appointment.id]);
   const endFlash = useCallback(() => setFlash(false), []);
 

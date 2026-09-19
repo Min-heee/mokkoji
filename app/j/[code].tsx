@@ -3,7 +3,8 @@
  *
  * 흐름: 코드 형식 검사(invite.normalizeCode — 통과한 값만 RPC 에 넣는다) → 조용히 익명 로그인(ensureReady)
  *   → lb_peek_invite 미리보기(조건 카드 + 초대 명단) → 명단에서 내 이름 고르기 + 동의 2개
- *   → lb_claim_slot(미리보기에서 본 version 으로만) → 위치 권한 사전 안내(LocationPrimer) → 알림 예약 → /late/[id] 로 replace.
+ *   → lb_claim_slot(미리보기에서 본 version 으로만) → 위치 권한 사전 안내(LocationPrimer) → /late/[id] 로 replace
+ *   (알림 권한 안내·예약은 약속 화면의 useLateReminders·NotifyCard 가 위치 안내 뒤에 맡는다).
  * - 수락제·자동 잠금은 없다. 명단에 없는 사람은 참여할 수 없고, 남이 이미 고른 이름은 비활성 칩이다.
  * - 참여 마감 = 약속 시각(meetAtMs). 주최자가 이미 [시작하기]를 눌렀어도(startedAtMs) 약속 시각 전이면 들어올 수 있다 —
  *   그때는 "이미 시작됐어요 — 들어오면 바로 위치가 보여요" 를 알리고, 참여 직후 컨테이너가 바로 live 화면을 그린다(result.started).
@@ -18,7 +19,7 @@
  */
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { normalizeCode, sanitizeCodeInput } from '@/domain/invite';
 import { describePolicy, START_BALANCE } from '@/domain/latePresets';
@@ -32,7 +33,6 @@ import {
   toLateBetError,
 } from '@/lateBet/errors';
 import { useLateBet } from '@/lateBet/LateBetContext';
-import { ensureNotificationPermission, scheduleLateNotifications } from '@/lateBet/notifications';
 import { FromNowPill, openExternal } from '@/lateBet/screens/ConditionCard';
 import { FakeDevPanel } from '@/lateBet/screens/FakeDevPanel';
 import { LocationPrimer } from '@/lateBet/screens/LocationPrimer';
@@ -244,28 +244,15 @@ function Inner() {
     router.replace({ pathname: '/j', params: { c: sanitizeCodeInput(rawCode) } });
   }, [rawCode, router]);
 
-  /** 참여 뒤 마무리: 알림 권한·예약(§3.2-6) → 약속 화면(이미 시작한 약속이면 컨테이너가 바로 live 화면을 그린다) */
+  /**
+   * 참여 뒤 마무리 → 약속 화면(이미 시작한 약속이면 컨테이너가 바로 live 화면을 그린다).
+   * 알림 권한 안내·예약은 약속 화면이 맡는다(useLateReminders + NotifyCard — 위치 안내가 먼저, 알림 카드는 그 뒤).
+   */
   const finish = useCallback(
     async (j: Joined) => {
       if (finishingRef.current) return;
       finishingRef.current = true;
       setFinishing(true);
-      const p = previewRef.current;
-      try {
-        await ensureNotificationPermission();
-        if (p) {
-          await scheduleLateNotifications({
-            id: j.appointmentId,
-            version: p.version,
-            title: p.title,
-            tz: p.tz,
-            meetAtMs: p.meetAtMs,
-            closeMs: p.closeMs,
-          });
-        }
-      } catch {
-        // 알림은 부가 기능이다. 실패해도 참여는 끝났다
-      }
       router.replace('/late/' + j.appointmentId);
     },
     [router],
@@ -318,7 +305,7 @@ function Inner() {
       if (!alive.current) return;
 
       const j: Joined = { ...res, name, topUp };
-      // P0: 실제 권한 요청은 없고 흐름만 — 가짜 모드에서는 항상 안내를 보여 준다
+      // 권한이 아직 없거나 모자라면 사전 안내. 가짜 모드는 흐름 확인용으로 항상 보여 준다(네이티브 beta 에서는 안내가 실제 OS 프롬프트를 띄운다)
       const showPrimer =
         fake || reporter.permission === 'undetermined' || reporter.permission === 'denied' || reporter.permission === 'coarse';
       if (showPrimer) {
@@ -367,17 +354,11 @@ function Inner() {
     void load({ expectChange: true });
   };
 
+  // LocationPrimer 가 권한을 직접 요청·확인하고(네이티브) 허용됐을 때만 onAllow 를 부른다 — 여기서는 넘기기만 한다.
+  // (여기서 다시 요청하거나 설정을 열면, 설정에서 돌아와 허용한 뒤에도 옛 권한 값 때문에 설정이 또 열린다)
   const onAllow = async () => {
     if (!joined || finishingRef.current || allowingRef.current) return;
     allowingRef.current = true;
-    setFinishing(true);
-    try {
-      const needsSettings = reporter.permission === 'denied' || reporter.permission === 'coarse';
-      if (needsSettings && Platform.OS !== 'web') await Linking.openSettings();
-      else await reporter.requestPermission();
-    } catch {
-      // 거부해도 참여는 된다
-    }
     await finish(joined);
   };
 
