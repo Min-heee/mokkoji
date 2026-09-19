@@ -44,8 +44,14 @@ export type LbServerErrorCode =
   | 'LB_EDIT_FROZEN'
   /** 시작 후: 시간은 뒤로만 */
   | 'LB_POSTPONE_ONLY'
-  /** 시작 후: 최대 +3시간 */
+  /** 시작 후: 처음(시작하던 순간) 약속 시각에서 최대 +3시간(누적) */
   | 'LB_POSTPONE_TOO_FAR'
+  /** 시작 후: 약속 시각이 지나면 더 미룰 수 없다 */
+  | 'LB_POSTPONE_AFTER_MEET'
+  /** 시작 후: 처음(시작하던 순간) 핀에서 500m 안으로만 옮길 수 있다(누적) */
+  | 'LB_MOVE_TOO_FAR'
+  /** [시작하기]: 친구가 있을 때 조건을 바꾼 뒤 5분이 안 지났다 */
+  | 'LB_START_COOLDOWN'
   | 'LB_CANCEL_CLOSED'
   /** [시작하기]: 약속 시각이 지났거나 닫힌 약속 */
   | 'LB_START_CLOSED'
@@ -107,11 +113,14 @@ export const LATE_BET_ERROR_MESSAGES: Record<LateBetErrorCode, string> = {
   LB_NOT_MEMBER: '이 약속의 참가자가 아니에요.',
   LB_HOST_CANNOT_LEAVE: '주최자는 나갈 수 없어요. 약속을 취소해 주세요.',
   LB_LEAVE_CLOSED: '주최자가 시작해서 지금은 빠질 수 없어요. 못 오면 건 포인트를 잃어요.',
-  LB_KICK_CLOSED: '이미 시작한 약속에서는 내보낼 수 없어요.',
+  LB_KICK_CLOSED: '시작 전부터 함께한 친구는 시작한 뒤에 내보낼 수 없어요.',
   LB_EDIT_CLOSED: '끝나가는 약속은 바꿀 수 없어요.',
   LB_EDIT_FROZEN: '이미 시작한 약속은 시간을 미루거나 장소만 바꿀 수 있어요.',
   LB_POSTPONE_ONLY: '시작한 뒤에는 시간을 뒤로 미룰 수만 있어요.',
-  LB_POSTPONE_TOO_FAR: '시간은 최대 3시간까지만 미룰 수 있어요.',
+  LB_POSTPONE_TOO_FAR: '처음 약속 시각에서 3시간까지만 미룰 수 있어요.',
+  LB_POSTPONE_AFTER_MEET: '약속 시각이 지나서 더 미룰 수 없어요.',
+  LB_MOVE_TOO_FAR: '시작한 뒤에는 처음 장소에서 500m 안으로만 옮길 수 있어요.',
+  LB_START_COOLDOWN: '친구들이 바뀐 내용을 볼 수 있게, 바꾼 뒤 5분이 지나야 시작할 수 있어요.',
   LB_CANCEL_CLOSED: '이미 시작한 약속은 취소할 수 없어요.',
   LB_START_CLOSED: '약속 시각이 지나 이제 시작할 수 없어요.',
   LB_ALREADY_STARTED: '이미 시작한 약속이에요.',

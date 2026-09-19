@@ -15,6 +15,8 @@
  * - 약속 시각(meetAtMs)이 지나면 시작할 수 없다(LB_START_CLOSED). 눌렀을 때 이미 지났으면 서버에 묻기 전에 같은 문구로 안내하고
  *   다시 읽는다(useLive 가 무효(voided) 화면으로 넘긴다).
  * - 수락제(pending·승인·참여 요청·[참여 마감])와 '전원 참여 시 자동 잠금'은 없다.
+ * - R3(공정성 규칙): 친구가 들어와 있을 때 조건을 바꾸면 서버가 startableAtMs 를 내려 준다. 그때까지 [시작하기] 비활성 +
+ *   "N분 M초 뒤에 시작할 수 있어요"(StartFooter 가 서버 시계로 1초마다). 그 시각이 약속 시각 이후면 무효 경고.
  *
  * 다른 화면이 그대로 쓸 수 있게 내보내는 조각: shareInvite · copyInvite · inviteShareText
  */
@@ -24,6 +26,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, Share, StyleSheet, Text, View } from 'react-native';
 
 import { buildShareText } from '@/domain/invite';
+import { cooldownOutlastsMeet, formatWaitKo, startCooldownRemainingMs } from '@/domain/lateEditRules';
 import { Card, PrimaryButton, Screen, SectionTitle, TextField } from '@/ui/components';
 import { alertDialog, confirmDialog } from '@/ui/dialogs';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
@@ -34,6 +37,7 @@ import { serverNow } from '../serverClock';
 import type { LbAppointment, LbAppointmentChange, LbInvitee, LbLive, LbLiveParticipant } from '../types';
 import { ConditionCard } from './ConditionCard';
 import { InviteeEditor } from './InviteeEditor';
+import { useServerNow } from '../useServerNow';
 import type { WaitingViewProps } from './props';
 
 // ───────────────────────── 초대 문구 공유 ─────────────────────────
@@ -233,6 +237,36 @@ function RosterRow({
   );
 }
 
+// ───────────────────────── 주최자 footer: [시작하기] (1초) ─────────────────────────
+
+/** R3 쿨다운 안내 */
+export function startCooldownText(remainingMs: number): string {
+  return `친구들이 바뀐 내용을 볼 수 있게 ${formatWaitKo(remainingMs)} 뒤에 시작할 수 있어요`;
+}
+export const COOLDOWN_VOID_WARNING = '이대로면 약속 시각까지 시작할 수 없어 내기가 무효가 돼요';
+
+/**
+ * 설명 한 줄 + [시작하기]. 쿨다운(startableAtMs) 동안은 비활성 + 남은 시간. 서버 시계로 1초마다 이 컴포넌트만 다시 그린다
+ */
+function StartFooter({ appointment, disabled, onStart }: { appointment: LbAppointment; disabled: boolean; onStart: () => void }) {
+  const now = useServerNow(1000);
+  const remaining = startCooldownRemainingMs(appointment, now);
+  const voidWarning = remaining > 0 && cooldownOutlastsMeet(appointment);
+  return (
+    <>
+      {remaining > 0 ? (
+        <>
+          <Text style={styles.noticeStrong}>{startCooldownText(remaining)}</Text>
+          {voidWarning ? <Text style={styles.noticeStrong}>{COOLDOWN_VOID_WARNING}</Text> : null}
+        </>
+      ) : (
+        <Text style={styles.notice}>{START_HINT}</Text>
+      )}
+      <PrimaryButton label="시작하기" onPress={onStart} disabled={disabled || remaining > 0} />
+    </>
+  );
+}
+
 // ───────────────────────── 대기실 ─────────────────────────
 
 /** 주최자 [시작하기] 버튼 아래 설명(설계서 §0-1 규칙 7) */
@@ -285,6 +319,11 @@ export function WaitingView({ live, isHost, api, refresh, stale, unseenChanges, 
     if (serverNow() >= a.meetAtMs) {
       alertDialog('시작할 수 없어요', errorMessage('LB_START_CLOSED'));
       void refresh();
+      return;
+    }
+    // R3: 조건을 바꾼 지 5분이 안 됐다(버튼이 비활성이지만 경계에서 눌린 경우)
+    if (startCooldownRemainingMs(a, serverNow()) > 0) {
+      alertDialog('아직 시작할 수 없어요', errorMessage('LB_START_COOLDOWN'));
       return;
     }
     if (others.length === 0) {
@@ -386,10 +425,7 @@ export function WaitingView({ live, isHost, api, refresh, stale, unseenChanges, 
     });
 
   const footer = isHost ? (
-    <>
-      <Text style={styles.notice}>{START_HINT}</Text>
-      <PrimaryButton label="시작하기" onPress={askStart} disabled={disabled} />
-    </>
+    <StartFooter appointment={a} disabled={disabled} onStart={askStart} />
   ) : (
     <>
       <Text style={styles.notice}>{GUEST_WAIT_HINT}</Text>
@@ -491,6 +527,7 @@ export function WaitingView({ live, isHost, api, refresh, stale, unseenChanges, 
               <Text style={styles.muted}>
                 시작 전에는 시간·장소·걸 포인트·지각 규칙을 바꿀 수 있어요. 들어온 친구에게는 바뀐 내용이 보여요. 걸 포인트를
                 올리면 차액이 자동으로 더 걸리고, 내리면 돌려드려요.
+                {others.length > 0 ? ' 친구가 들어와 있을 때 바꾸면 5분 동안 시작할 수 없어요.' : ''}
               </Text>
               <PrimaryButton
                 label="약속 수정"
@@ -574,6 +611,7 @@ const styles = StyleSheet.create({
   code: { fontSize: fontSize.md, fontWeight: '800', color: colors.text, letterSpacing: 2 },
 
   notice: { fontSize: fontSize.sm, color: colors.subtext, textAlign: 'center', lineHeight: 20 },
+  noticeStrong: { fontSize: fontSize.sm, fontWeight: '700', color: colors.text, textAlign: 'center', lineHeight: 20 },
 
   toast: {
     pointerEvents: 'none',

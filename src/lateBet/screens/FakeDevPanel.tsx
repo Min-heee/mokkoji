@@ -2,10 +2,10 @@
  * 가짜 서버 조작 패널 — fake 모드(개발 번들, 또는 EAS 채널 'beta' 네이티브 빌드)에서만 보인다. 그 외에는 null.
  *
  * 접힌 띠 한 줄("가짜 서버 · 서버 시각")을 누르면 펼쳐진다.
- * - 시간 빨리 감기(+1분/+10분/+1시간, 약속 5분 전·약속 시각·마감 직전·마감 뒤로 점프)
+ * - 시간 빨리 감기(+1분/+5분/+10분/+1시간, 시작 가능 시각(R3 쿨다운 끝)·약속 5분 전·약속 시각·마감 직전·마감 뒤로 점프)
  * - 내 가짜 위치(목적지로/300m 앞/1.5km 밖/GPS 부정확/모의 위치/위치 모름) → useArrivalReporter 가 읽어 보고한다
  *   네이티브에서는 이 좌표가 실제 GPS 를 덮어쓴다. [실제 GPS 쓰기]로 오버라이드를 풀면 진짜 위치로 돌아간다(현재 출처 표시)
- * - 봇: 명단의 빈 이름을 차례로 고르며 수락한다('봇 한 명 수락', 성격별, '시작 후 봇 수락', '봇 한 명 도착')
+ * - 봇: 명단의 빈 이름을 차례로 고르며 수락한다('봇 한 명 수락', 성격별, '시작 후 봇 수락'(= 시작 뒤 낯선 사람, 주최자가 내보낼 수 있다 R4), '봇 한 명 도착')
  *   주최자의 [시작하기]는 패널이 대신 누르지 않는다 — 대기실의 실제 버튼으로 누른다.
  * - 주최자 조작: 시간 30분 미루기(시작 전후 규칙을 그대로 탄다)
  * - 연결 끊기, 초기화
@@ -142,10 +142,14 @@ function Panel({
           <Text style={styles.label}>시간 빨리 감기</Text>
           <View style={styles.chips}>
             <Chip label="+1분" selected={false} onPress={guard(() => (server.advance(MIN), '+1분'))} />
+            <Chip label="+5분" selected={false} onPress={guard(() => (server.advance(5 * MIN), '+5분'))} />
             <Chip label="+10분" selected={false} onPress={guard(() => (server.advance(10 * MIN), '+10분'))} />
             <Chip label="+1시간" selected={false} onPress={guard(() => (server.advance(60 * MIN), '+1시간'))} />
             {a ? (
               <>
+                {a.startableAtMs !== null ? (
+                  <Chip label="시작 가능 시각(쿨다운 끝)" selected={false} onPress={jump('시작 가능 시각', a.startableAtMs)} />
+                ) : null}
                 <Chip label="약속 30분 전" selected={false} onPress={jump('약속 30분 전', a.meetAtMs - 30 * MIN)} />
                 <Chip label="약속 5분 전" selected={false} onPress={jump('약속 5분 전', a.meetAtMs - 5 * MIN)} />
                 <Chip label="약속 시각" selected={false} onPress={jump('약속 시각', a.meetAtMs)} />
@@ -209,7 +213,7 @@ function Panel({
                     if (!started) return '아직 시작 전이에요. 대기실의 [시작하기]를 먼저 누르세요';
                     if (unclaimed.length === 0) return '빈 이름이 없어요 (시작 뒤에는 명단을 늘릴 수 없어요)';
                     const b = server.addBot(a.id, 'onTime');
-                    return `${b.nickname} 늦게 수락 — 이제부터 위치가 보이고 판정 대상이에요`;
+                    return `${b.nickname} 늦게 수락 — 이제부터 위치가 보이고 판정 대상이에요. 주최자는 이 사람을 내보낼 수 있어요`;
                   })}
                 />
                 <Chip

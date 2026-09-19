@@ -156,6 +156,7 @@ declare d interval := make_interval(secs => p_ms / 1000.0);
 begin
   update public.appointments set meet_at = meet_at - d, started_at = started_at - d, close_at = close_at - d,
          settled_at = settled_at - d, created_at = created_at - d,
+         start_meet_at = start_meet_at - d, material_changed_at = material_changed_at - d,
          local_at = to_char((meet_at - d) at time zone tz, 'YYYY-MM-DD"T"HH24:MI'),
          changes = conf.shift_changes(changes, p_ms)
    where id = any(p_appts);

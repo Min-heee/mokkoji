@@ -35,6 +35,10 @@ function appointment(over: Partial<LbAppointment> = {}): LbAppointment {
     meetAtMs: MEET,
     // 주최자가 약속 2시간 전에 [시작하기]를 눌렀다
     startedAtMs: MEET - 120 * MIN,
+    startMeetAtMs: MEET,
+    startPlaceLat: 37.49808,
+    startPlaceLng: 127.02761,
+    startableAtMs: null,
     closeMs: MEET + 75 * MIN,
     placeName: '강남역 2번 출구 곱창',
     placeNote: '',
@@ -64,6 +68,7 @@ function participant(userId: string, nickname: string, over: Partial<LbLiveParti
     resultStatus: null,
     forfeited: null,
     received: null,
+    joinedAfterStart: false,
     lastSeenMs: null,
     location: null,
     ...over,

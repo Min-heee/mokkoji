@@ -23,6 +23,15 @@
 import { haversineMeters } from '../domain/geo';
 import { generateCode, normalizeCode } from '../domain/invite';
 import { settleLateBet, type LatePolicy } from '../domain/lateBet';
+import {
+  canKickAfterStart,
+  canMovePlace,
+  canPostpone,
+  isJoinedAfterStart,
+  POSTPONE_MAX_MINUTES_AFTER_START,
+  startableAtFrom,
+  startCooldownRemainingMs,
+} from '../domain/lateEditRules';
 import { lateCloseMs } from '../domain/latePhase';
 import { START_BALANCE, presetPolicy, validatePolicy } from '../domain/latePresets';
 import { isKnownTz, isTzSuspect, msToLocalAt, wallClockToMs } from '../domain/tzGuard';
@@ -67,8 +76,8 @@ export const FAKE_SETTLE_SLACK_MS = 15_000;
 /** 최대 인원(주최자 포함) = 명단 19명 + 주최자 */
 export const FAKE_MAX_ACTIVE = 20;
 export const FAKE_MAX_OPEN_HOSTED = 10;
-/** 시작 후 시간 미루기 상한 */
-export const FAKE_MAX_POSTPONE_MS = 180 * MIN;
+/** 시작 후 시간 미루기 상한(시작하던 순간의 약속 시각 기준, 누적 — domain/lateEditRules 와 같다) */
+export const FAKE_MAX_POSTPONE_MS = POSTPONE_MAX_MINUTES_AFTER_START * MIN;
 /** 생성 때 정책에서 빠진 키의 기본값(SQL lb_create_appointment 의 coalesce 와 같다) */
 const CREATE_POLICY_BASE: LatePolicy = { stake: 0, radiusM: 100, unitMinutes: 5, penaltyPerUnit: 0, graceMinutes: 0 };
 /** 원장 조회 상한(SQL lb_list_ledger 와 같다) */
@@ -140,6 +149,12 @@ interface ApptRow {
   invitees: InviteeRow[];
   /** 주최자가 [시작하기]를 누른 시각. null = 시작 전 */
   startedAtMs: number | null;
+  /** 시작하던 순간의 약속 시각·핀(R1·R2 의 누적 기준). 시작 전 null */
+  startMeetAtMs: number | null;
+  startPlaceLat: number | null;
+  startPlaceLng: number | null;
+  /** 친구가 있을 때 마지막 중요 변경 시각(R3). 없으면 null */
+  materialChangedAtMs: number | null;
   changes: ChangeRow[];
   /** 생성 멱등 키(LbCreateInput.requestId). 없으면 null */
   requestId?: string | null;
@@ -620,6 +635,11 @@ export class FakeServer {
       policy: { ...a.policy },
       invitees: a.invitees.map((i): LbInvitee => ({ ...i })),
       startedAtMs: a.startedAtMs,
+      startMeetAtMs: a.startMeetAtMs ?? null,
+      startPlaceLat: a.startPlaceLat ?? null,
+      startPlaceLng: a.startPlaceLng ?? null,
+      // 계약: 변경 + 5분이 아직 미래면 그 ms(SQL lb_appointment_json 과 같다 — 화면은 시작 전에만 쓴다)
+      startableAtMs: startableAtFrom(a.materialChangedAtMs ?? null, this.nowMs()),
       changes: a.changes.map((c): LbAppointmentChange => ({ ...c, before: { ...c.before }, after: { ...c.after } })),
     };
   }
@@ -701,6 +721,10 @@ export class FakeServer {
         createdAtMs: this.nowMs(),
         invitees: names.map((name) => ({ name, claimedByUserId: null, claimedAtMs: null })),
         startedAtMs: null,
+        startMeetAtMs: null,
+        startPlaceLat: null,
+        startPlaceLng: null,
+        materialChangedAtMs: null,
         changes: [],
         requestId,
       };
@@ -803,7 +827,8 @@ export class FakeServer {
 
   /**
    * #17 — [시작하기](주최자). 그 순간부터 전원 위치가 서로 보이고 체크인이 열린다. 되돌릴 수 없다.
-   * 약속 시각 전이면 언제든(참여 인원 조건 없음). 약속 시각이 지났거나 닫혔으면 LB_START_CLOSED, 이미 시작했으면 LB_ALREADY_STARTED
+   * 약속 시각 전이면 언제든(참여 인원 조건 없음). 약속 시각이 지났거나 닫혔으면 LB_START_CLOSED, 이미 시작했으면 LB_ALREADY_STARTED,
+   * 친구가 있을 때 중요 변경 뒤 5분 안이면 LB_START_COOLDOWN(R3). 그때의 약속 시각·핀을 R1·R2 의 기준으로 남긴다
    */
   start(uidRaw: string, apptId: string): LbAppointment {
     const uid = this.uid(uidRaw);
@@ -815,7 +840,12 @@ export class FakeServer {
       if (row.startedAtMs !== null) fail('LB_ALREADY_STARTED');
       const now = this.nowMs();
       if (row.status !== 'open' || now >= row.meetAtMs) fail('LB_START_CLOSED');
+      // R3: 친구가 있을 때 조건을 바꾼 직후에는 시작할 수 없다(친구들이 바뀐 내용을 볼 시간)
+      if (startCooldownRemainingMs(this.toAppointment(row), now) > 0) fail('LB_START_COOLDOWN');
       row.startedAtMs = now;
+      row.startMeetAtMs = row.meetAtMs;
+      row.startPlaceLat = row.placeLat;
+      row.startPlaceLng = row.placeLng;
       return this.toAppointment(row);
     });
   }
@@ -868,7 +898,11 @@ export class FakeServer {
     });
   }
 
-  /** #7 — 시작 전까지(전액 환불). 명단에서도 그 이름을 지운다. ban 기본 true. 시작 후 LB_KICK_CLOSED */
+  /**
+   * #7 — 시작 전: 누구든(전액 환불). 명단에서도 그 이름을 지운다. ban 기본 true.
+   * 시작 후(마감 전까지, R4): 시작 뒤에 들어온 사람만 — 전액 환불·좌표 삭제·차단, 이름 칸은 빈 칸으로 되돌린다
+   * (약속 시각 전이면 다른 사람이 고를 수 있다). 시작 전부터 있던 사람은 LB_KICK_CLOSED
+   */
   kick(uidRaw: string, apptId: string, target: string, ban = true): void {
     const uid = this.uid(uidRaw);
     this.tick();
@@ -879,9 +913,21 @@ export class FakeServer {
       if (target === uid) fail('LB_HOST_CANNOT_LEAVE');
       const t = this.part(apptId, target);
       if (!t) return;
-      if (row.status !== 'open' || row.startedAtMs !== null) fail('LB_KICK_CLOSED');
-      this.removePart(apptId, target);
-      row.invitees = row.invitees.filter((i) => i.claimedByUserId !== target);
+      if (row.status !== 'open') fail('LB_KICK_CLOSED');
+      const slot = row.invitees.find((i) => i.claimedByUserId === target);
+      const afterStart = row.startedAtMs !== null;
+      // 마감(closeMs)이 지나 결과가 정해진 뒤에는 게으른 정산 전이라도 못 내보낸다(SQL lb_kick 과 같다)
+      if (afterStart && this.nowMs() > row.closeMs) fail('LB_KICK_CLOSED');
+      if (afterStart && !canKickAfterStart({ joinedAfterStart: isJoinedAfterStart(slot?.claimedAtMs ?? null, row.startedAtMs) })) {
+        fail('LB_KICK_CLOSED');
+      }
+      this.removePart(apptId, target); // 좌표도 같이 지운다
+      if (afterStart && slot) {
+        slot.claimedByUserId = null;
+        slot.claimedAtMs = null;
+      } else {
+        row.invitees = row.invitees.filter((i) => i.claimedByUserId !== target);
+      }
       if (row.policy.stake > 0) this.post(target, apptId, 'refund', row.policy.stake, { reason: 'kicked' });
       if (ban !== false && !this.isBanned(apptId, target)) this.state.bans.push(`${apptId}|${target}`);
     });
@@ -937,8 +983,12 @@ export class FakeServer {
       const policyChanged = !samePolicy(policy, row.policy);
       if (started) {
         if (policyChanged) fail('LB_EDIT_FROZEN');
-        if (meetAtMs < row.meetAtMs) fail('LB_POSTPONE_ONLY');
-        if (meetAtMs > row.meetAtMs + FAKE_MAX_POSTPONE_MS) fail('LB_POSTPONE_TOO_FAR');
+        // R1: 앞당기기 불가 · 약속 시각 전에만 · 시작하던 순간의 약속 시각 + 3시간까지(누적)
+        const postpone = canPostpone(this.toAppointment(row), meetAtMs, now);
+        if (!postpone.ok) fail(postpone.code);
+        // R2: 시작하던 순간의 핀에서 500m 안(누적). 핀이 그대로면 통과
+        const move = canMovePlace(this.toAppointment(row), lat, lng);
+        if (!move.ok) fail(move.code);
       }
       const placeName = patch.placeName !== undefined ? (typeof patch.placeName === 'string' ? patch.placeName.trim() : '') : row.placeName;
       const timeChanged = meetAtMs !== row.meetAtMs || tz !== row.tz;
@@ -947,6 +997,8 @@ export class FakeServer {
       if (!timeChanged && !placeChanged && !policyChanged) return this.toAppointment(row); // 바뀐 게 없다
 
       const before = this.snapshot(row);
+      // R3: 친구(주최자 말고 참가자)가 있을 때의 중요 변경(시각·시간대·핀·정책)은 기록 → 5분 동안 시작 불가. 장소 이름만은 아니다
+      if ((timeChanged || pinMoved || policyChanged) && !this.hostAlone(row)) row.materialChangedAtMs = now;
       // 걸 포인트 차액(시작 전만 올 수 있다): 전원, user_id 순
       const diff = policy.stake - row.policy.stake;
       if (diff !== 0) {
@@ -1139,6 +1191,10 @@ export class FakeServer {
         resultStatus: p.resultStatus,
         forfeited: p.forfeited,
         received: p.received,
+        joinedAfterStart: isJoinedAfterStart(
+          a.invitees.find((i) => i.claimedByUserId === p.userId)?.claimedAtMs ?? null,
+          a.startedAtMs,
+        ),
         lastSeenMs: canSee && l ? l.updatedAtMs : null,
         location:
           canSee && l && l.updatedAtMs > now - FAKE_VISIBLE_MS

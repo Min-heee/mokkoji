@@ -34,6 +34,10 @@ const appointmentJson = {
   policy,
   invitees: [{ name: '철수', claimedByUserId: null, claimedAtMs: null }],
   changes: [],
+  startMeetAtMs: null,
+  startPlaceLat: null,
+  startPlaceLng: null,
+  startableAtMs: null,
 };
 const liveJson = {
   serverNowMs: 5_000_000,
@@ -56,6 +60,7 @@ const liveJson = {
       resultStatus: null,
       forfeited: null,
       received: null,
+      joinedAfterStart: false,
       lastSeenMs: null,
       location: null,
     },
@@ -89,7 +94,13 @@ const RESPONSES: Record<string, unknown> = {
   lb_create_appointment: appointmentJson,
   lb_peek_invite: previewJson,
   lb_claim_slot: { appointmentId: APPT, state: 'active', started: false },
-  lb_start: { ...appointmentJson, startedAtMs: 1_789_999_000_000 },
+  lb_start: {
+    ...appointmentJson,
+    startedAtMs: 1_789_999_000_000,
+    startMeetAtMs: 1_790_000_000_000,
+    startPlaceLat: 37.49,
+    startPlaceLng: 127.02,
+  },
   lb_edit_invitees: appointmentJson,
   lb_leave: null,
   lb_kick: null,
@@ -284,7 +295,10 @@ describe('supabaseApi — RPC 18개(계약 16 + 목록·원장)의 이름·인�
   it('응답을 DTO 로 바꾼다(프로필은 snake → camel, 약속·live 는 그대로 검증)', async () => {
     const { api } = harness();
     assert.deepEqual(await api.ensureProfile('민희'), { userId: ME, nickname: '민희', balance: 1000 });
-    assert.equal((await api.start(APPT)).startedAtMs, 1_789_999_000_000);
+    const started = await api.start(APPT);
+    assert.equal(started.startedAtMs, 1_789_999_000_000);
+    assert.equal(started.startMeetAtMs, 1_790_000_000_000);
+    assert.deepEqual([started.startPlaceLat, started.startPlaceLng], [37.49, 127.02]);
     assert.equal((await api.edit(APPT, {}, 3)).version, 4);
     assert.equal((await api.getLive(APPT)).participants[0].nickname, '민희');
     assert.equal((await api.peekInvite('X')).myBalance, 1000);

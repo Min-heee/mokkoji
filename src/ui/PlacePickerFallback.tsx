@@ -14,7 +14,9 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Row, SectionTitle, TextField } from './components';
 import { MapPane } from './MapPane';
-import type { PlacePickerProps, PlacePickerValue } from './placePickerShared';
+import { formatDistance } from './mapGeometry';
+import { pinLimitStatus } from './placePickerModel';
+import { limitExceededText, type PlacePickerProps, type PlacePickerValue } from './placePickerShared';
 import { colors, fontSize, radius, spacing } from './theme';
 
 export interface PlacePickerFallbackProps extends PlacePickerProps {
@@ -56,7 +58,15 @@ function parseCoord(text: string, limit: number): number | null {
 const samePin = (a: { lat: number; lng: number } | null, b: { lat: number; lng: number } | null) =>
   !!a && !!b && a.lat === b.lat && a.lng === b.lng;
 
-export function PlacePickerFallback({ value, radiusM, placeName, onChange, header }: PlacePickerFallbackProps) {
+export function PlacePickerFallback({
+  value,
+  radiusM,
+  placeName,
+  onChange,
+  header,
+  limitCenter,
+  limitRadiusM,
+}: PlacePickerFallbackProps) {
   const [latText, setLatText] = useState(value ? fmt(value.lat) : '');
   const [lngText, setLngText] = useState(value ? fmt(value.lng) : '');
   // 내가 방금 올려 보낸 핀 — 같은 값이 props 로 되돌아와도 입력 중인 글자를 덮어쓰지 않는다
@@ -110,6 +120,8 @@ export function PlacePickerFallback({ value, radiusM, placeName, onChange, heade
   const typedInvalid = typed && (parseCoord(latText, 90) === null || parseCoord(lngText, 180) === null);
   const keyboardType = Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default';
   const previewName = value?.name || (placeName ?? '').trim() || '고른 위치';
+  // 옮길 수 있는 한도(시작한 약속의 장소 바꾸기, R2) — 지도가 없으니 거리 한 줄로 알린다
+  const limit = limitCenter && typeof limitRadiusM === 'number' ? pinLimitStatus(value, limitCenter, limitRadiusM) : null;
 
   return (
     <View style={styles.wrap}>
@@ -123,6 +135,16 @@ export function PlacePickerFallback({ value, radiusM, placeName, onChange, heade
           </Text>
         </View>
       )}
+
+      {limit && typeof limitRadiusM === 'number' ? (
+        <Text style={limit.over ? styles.warn : styles.help}>
+          {limit.over
+            ? `${limitExceededText(limitRadiusM)} (지금 ${formatDistance(limit.distanceM ?? 0)})`
+            : limit.distanceM !== null
+              ? `처음 장소에서 ${formatDistance(limit.distanceM)} · ${limitRadiusM}m 안으로만 옮길 수 있어요`
+              : `처음 장소에서 ${limitRadiusM}m 안으로만 옮길 수 있어요`}
+        </Text>
+      ) : null}
 
       {header}
 
@@ -196,4 +218,5 @@ const styles = StyleSheet.create({
   itemHintSelected: { color: colors.onPrimary },
   coordField: { flex: 1 },
   help: { fontSize: fontSize.sm, color: colors.subtext, lineHeight: 20 },
+  warn: { fontSize: fontSize.sm, fontWeight: '600', color: colors.text, lineHeight: 20 },
 });

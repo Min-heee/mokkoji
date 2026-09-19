@@ -145,6 +145,9 @@ export async function s1MainFlow(duo: Duo): Promise<void> {
   await duo.step('A: G1 시작(주최자 아님)', (s) => s.api('G1').start(s.appt('A')));
   await duo.step('A: 시작 전 G2 getLive', (s) => s.api('G2').getLive(s.appt('A')));
 
+  // R3: 친구가 있을 때 걸 포인트를 바꿨다(150→120) → 5분 동안 시작 불가
+  await duo.step('A: 조건 바꾼 직후 H 시작(쿨다운)', (s) => s.api('H').start(s.appt('A')));
+  await duo.travelTo(duo.vnow() + 6 * MIN);
   await duo.step('A: H 시작', (s) => s.api('H').start(s.appt('A')));
   await duo.step('A: H 다시 시작', (s) => s.api('H').start(s.appt('A')));
   await duo.step('A: 시작 후 G1 나가기', (s) => s.api('G1').leave(s.appt('A')));
@@ -400,6 +403,80 @@ export async function s6Locations(duo: Duo): Promise<void> {
   await finalState(duo, { L: ['H', 'G1', 'G2'] }, U);
 }
 
+// ───────────────────────── S7 공정성 규칙 R1~R4 (오너 결정 2026-09-19) ─────────────────────────
+export async function s7Fairness(duo: Duo): Promise<void> {
+  const U = ['H', 'G1', 'G2', 'G3', 'G4'];
+  await duo.addUsers(U);
+  for (const u of U) await duo.step(`${u} ensureProfile`, (s) => s.api(u).ensureProfile(`${u}닉`));
+  const m = duo.minuteAfter(duo.vnow() + 60 * MIN);
+  const P450 = offsetPoint(PLACE.lat, PLACE.lng, 450, 0);
+  const P550 = offsetPoint(PLACE.lat, PLACE.lng, 550, 0);
+  const P850 = offsetPoint(PLACE.lat, PLACE.lng, 850, 0);
+  const S400 = offsetPoint(PLACE.lat, PLACE.lng, 400, Math.PI);
+
+  // R3 — 혼자일 때 바꾼 건 기록하지 않는다
+  await duo.step('S: 혼자 생성', (s) => create(s, 'H', 'S', m, { policy: pol(100), invitees: ['갑'] }));
+  await duo.step('S: 혼자 걸 포인트 변경', (s) => edit(s, 'H', 'S', { policy: pol(50) }));
+  await duo.step('S: 혼자 바로 시작(쿨다운 없음)', (s) => s.api('H').start(s.appt('S')));
+
+  // R3 — 친구가 있을 때 중요 변경 → 5분 동안 시작 불가. 이름·메모·명단은 중요 변경이 아니다
+  await duo.step('R: 생성(100P, 하나·둘·셋)', (s) => create(s, 'H', 'R', m, { policy: pol(100), invitees: ['하나', '둘', '셋'] }));
+  await duo.step('R: G1 하나', (s) => claim(s, 'G1', 'R', '하나'));
+  await duo.step('R: 장소 이름만(친구 있음)', (s) => edit(s, 'H', 'R', { placeName: '강남역 새 이름' }));
+  await duo.step('R: 제목·메모', (s) => s.api('H').updateMemo(s.appt('R'), '새 제목', '메모'));
+  await duo.step('R: 명단 +넷', (s) => s.api('H').editInvitees(s.appt('R'), { add: ['넷'] }));
+  await duo.step('R: 이름·메모·명단 뒤 getLive(startableAt 없음)', (s) => s.api('G1').getLive(s.appt('R')));
+  await duo.step('R: 핀 30m 옮기기(중요 변경)', (s) => edit(s, 'H', 'R', { lat: NEAR30.lat, lng: NEAR30.lng }));
+  await duo.step('R: 바로 시작(쿨다운)', (s) => s.api('H').start(s.appt('R')));
+  await duo.step('R: G1 getLive(startableAt)', (s) => s.api('G1').getLive(s.appt('R')));
+  await duo.travelTo(duo.vnow() + 3 * MIN);
+  await duo.step('R: 걸 포인트 변경(쿨다운 다시 시작)', (s) => edit(s, 'H', 'R', { policy: pol(120) }));
+  await duo.travelTo(duo.vnow() + 3 * MIN);
+  await duo.step('R: 3분 뒤 시작(아직 쿨다운)', (s) => s.api('H').start(s.appt('R')));
+  await duo.travelTo(duo.vnow() + 3 * MIN);
+  await duo.step('R: 6분 뒤 시작', (s) => s.api('H').start(s.appt('R')));
+
+  // R4 — 시작 뒤 들어온 사람만 내보낼 수 있다
+  await duo.step('R: 시작 후 G2 둘', (s) => claim(s, 'G2', 'R', '둘'));
+  await duo.step('R: H getLive(joinedAfterStart)', (s) => s.api('H').getLive(s.appt('R')));
+  await duo.step('R: G2 위치 보고', (s) => s.api('G2').reportLocation(s.appt('R'), at(FAR, 20)));
+  await duo.step('R: 시작 전부터 있던 G1 내보내기', (s) => s.api('H').kick(s.appt('R'), s.uid('G1')));
+  await duo.step('R: 시작 뒤 들어온 G2 내보내기', (s) => s.api('H').kick(s.appt('R'), s.uid('G2')));
+  await duo.step('R: G2 미리보기(차단)', (s) => s.api('G2').peekInvite(s.code('R')));
+  await duo.step('R: G2 다시 둘 수락(차단)', (s) => s.api('G2').claimSlot(s.appt('R'), '둘', 1, true));
+  await duo.step('R: G2 getLive(멤버 아님)', (s) => s.api('G2').getLive(s.appt('R')));
+  await duo.step('R: G3 미리보기(둘 빈 칸)', (s) => s.api('G3').peekInvite(s.code('R')));
+  await duo.step('R: G3 둘 수락', (s) => claim(s, 'G3', 'R', '둘'));
+  await duo.step('R: G4 셋 수락', (s) => claim(s, 'G4', 'R', '셋'));
+  await duo.step('R: H getLive(내보낸 뒤)', (s) => s.api('H').getLive(s.appt('R')));
+
+  // R1 — 누적 +180분, 약속 시각 전에만
+  await duo.step('R: 120분 미루기', (s) => edit(s, 'H', 'R', { localAt: s.localAt(m + 120 * MIN), tz: TZ }));
+  await duo.step('R: 처음 기준 181분 미루기', (s) => edit(s, 'H', 'R', { localAt: s.localAt(m + 181 * MIN), tz: TZ }));
+  await duo.step('R: 앞당기기', (s) => edit(s, 'H', 'R', { localAt: s.localAt(m + 100 * MIN), tz: TZ }));
+
+  // R2 — 처음 핀에서 500m 안(누적). 이름만은 자유
+  await duo.step('R: 처음 핀에서 550m', (s) => edit(s, 'H', 'R', { lat: P550.lat, lng: P550.lng }));
+  await duo.step('R: 처음 핀에서 450m', (s) => edit(s, 'H', 'R', { lat: P450.lat, lng: P450.lng }));
+  await duo.step('R: 처음 핀에서 850m(옮긴 핀에서 400m)', (s) => edit(s, 'H', 'R', { lat: P850.lat, lng: P850.lng }));
+  await duo.step('R: 반대편 400m(옮긴 핀에서 850m)', (s) => edit(s, 'H', 'R', { lat: S400.lat, lng: S400.lng }));
+  await duo.step('R: 이름만', (s) => edit(s, 'H', 'R', { placeName: '완전히 다른 가게' }));
+  await duo.step('R: G3 getLive', (s) => s.api('G3').getLive(s.appt('R')));
+
+  const meet = m + 120 * MIN;
+  await duo.travelTo(meet + 2 * MIN);
+  await duo.step('R: 약속 뒤 30분 미루기', (s) => edit(s, 'H', 'R', { localAt: s.localAt(meet + 30 * MIN), tz: TZ }));
+  await duo.step('R: 약속 뒤 이름만(같은 localAt)', (s) => edit(s, 'H', 'R', { localAt: s.localAt(meet), tz: TZ, placeName: '가게 2층' }));
+  await duo.step('R: 약속 뒤 G4 내보내기(시작 뒤 들어옴, 정산 전)', (s) => s.api('H').kick(s.appt('R'), s.uid('G4')));
+  await duo.step('R: 약속 뒤 H getLive', (s) => s.api('H').getLive(s.appt('R')));
+  await duo.travelTo(meet + 120 * MIN);
+  // 마감이 지났고 게으른 정산은 아직(아무도 getLive 안 함) — 결과가 정해진 뒤라 시작 뒤 들어온 사람도 못 내보낸다
+  await duo.step('R: 마감 뒤·정산 전 G3 내보내기', (s) => s.api('H').kick(s.appt('R'), s.uid('G3')));
+  await duo.step('R: 마감 뒤 getLive → 정산', (s) => s.api('G1').getLive(s.appt('R')));
+  await duo.step('R: 정산 뒤 G3 내보내기', (s) => s.api('H').kick(s.appt('R'), s.uid('G3')));
+  await finalState(duo, { R: ['H', 'G1', 'G3'], S: ['H'] }, U);
+}
+
 export const SCENARIOS: [string, (duo: Duo) => Promise<void>][] = [
   ['S1 본 흐름', s1MainFlow],
   ['S2 notStarted 무효', s2NotStarted],
@@ -407,4 +484,5 @@ export const SCENARIOS: [string, (duo: Duo) => Promise<void>][] = [
   ['S4 입력 검증·비멤버', s4Validation],
   ['S5 정산 동률·즉시·noWinner', s5Settlement],
   ['S6 위치 수명·보증', s6Locations],
+  ['S7 공정성 R1~R4', s7Fairness],
 ];

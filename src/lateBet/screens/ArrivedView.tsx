@@ -7,7 +7,7 @@
  * - 나는 이미 도착했으므로 위치 공유는 서버에서 끝났다. 친구 위치는 공개 창(시작 ~ 마감, 전액 몰수 뒤 30분 꼬리 포함) 동안 계속 보인다.
  * - 이 화면은 시작 뒤에만 온다(도착 = 체크인 = 시작 뒤). 아직 안 들어온 이름은 약속 시각까지 들어올 수 있어 표시만 한다(버튼 없음).
  * - 주최자가 시간을 미루면 변경 배너가 뜨고(props), 내 도착 기록은 그대로 유지된다(조기/지각 표시는 새 시각 기준으로 다시 계산).
- * - 주최자에게는 [시간 미루기]·[장소 바꾸기](HostTools)를 그대로 준다.
+ * - 주최자에게는 [시간 미루기]·[장소 바꾸기](HostTools)와 시작 뒤에 들어온 사람의 [내보내기](R4)를 그대로 준다.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Platform, StyleSheet, Text, View } from 'react-native';
@@ -24,7 +24,7 @@ import { colors, fontSize, spacing } from '@/ui/theme';
 import { toLateBetError } from '../errors';
 import { arrivalHaptic } from '../haptics';
 import type { LbLiveParticipant } from '../types';
-import { ChangeBanner, HostTools, liveMarkers, ParticipantRows, SmallButton, unclaimedNames } from './LiveView';
+import { ChangeBanner, HostTools, liveMarkers, ParticipantRows, SmallButton, unclaimedNames, useKickAfterStart } from './LiveView';
 import type { ArrivedViewProps } from './props';
 
 const MINUTE_MS = 60_000;
@@ -65,6 +65,8 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, stale, just
   const appointment = live.appointment;
   const { tz, meetAtMs, closeMs } = appointment;
   const policy = useMemo(() => normalizeLatePolicy(appointment.policy), [appointment.policy]);
+  // 주최자: 시작 뒤에 들어온 사람만 내보낼 수 있다(R4)
+  const kick = useKickAfterStart(live, api, refresh, stale);
 
   // ── 도착 연출(약속당 1회) — 반전 + 햅틱. celebrated 가 화면 재마운트·폴링 리렌더에서의 중복을 막는다
   const [flash, setFlash] = useState(() => justArrived && !celebrated.has(appointment.id));
@@ -197,7 +199,7 @@ export function ArrivedView({ live, phase, me, isHost, api, refresh, stale, just
         </Card>
 
         <SectionTitle>참가자</SectionTitle>
-        <ParticipantRows live={live} renderAction={renderAction} />
+        <ParticipantRows live={live} renderAction={renderAction} kick={isHost ? kick : undefined} />
         {vouchHint ? <Text style={styles.hint}>{vouchHint}</Text> : null}
 
         {someoneMissing && !settling ? (

@@ -975,3 +975,207 @@ describe('fakeApi: SQL 과 맞춘 판정(Conformance 에서 찾은 차이)', () 
     assert.equal(server.listLedger('host', 10_000).length, 4);
   });
 });
+
+describe('fakeApi: 공정성 규칙 R1~R4 (오너 결정 2026-09-19)', () => {
+  /** 친구 한 명과 시작한 약속(약속 180분 뒤, 시작은 약속 60분 전) */
+  function startedWithFriend() {
+    const t = setup();
+    const a = t.server.createAppointment(t.user('host', '지수'), t.input(180, ['현우', '태호']));
+    t.claim(t.user('g', '현우'), a.id, '현우');
+    t.clock.t = a.meetAtMs - 60 * MIN;
+    const startedAt = t.clock.t;
+    const s = t.start(a.id);
+    return { ...t, a, s, startedAt, v: () => t.server.appointmentInfo(a.id)?.version ?? 0 };
+  }
+  const postponeTo = (server: FakeServer, id: string, meetMs: number, v: number) =>
+    server.edit('host', id, { localAt: msToLocalAt(meetMs, TZ) }, v);
+
+  it('시작하면 그 순간의 약속 시각·핀이 기준으로 남는다(시작 전에는 null)', () => {
+    const { a, s } = startedWithFriend();
+    assert.equal(a.startMeetAtMs, null);
+    assert.equal(a.startPlaceLat, null);
+    assert.equal(a.startableAtMs, null);
+    assert.equal(s.startMeetAtMs, a.meetAtMs);
+    assert.deepEqual([s.startPlaceLat, s.startPlaceLng], [PLACE.lat, PLACE.lng]);
+  });
+
+  it('R1: 약속 시각 전에만, 처음 약속 시각 + 180분까지(누적). 반복 미루기로 늘릴 수 없다', () => {
+    const { server, a, v, clock } = startedWithFriend();
+    postponeTo(server, a.id, a.meetAtMs + 120 * MIN, v());
+    // 지금 약속 시각 기준이면 +180 이 되겠지만, 처음 약속 시각 기준 누적 181분이라 막힌다
+    throwsCode(() => postponeTo(server, a.id, a.meetAtMs + 181 * MIN, v()), 'LB_POSTPONE_TOO_FAR');
+    const b = postponeTo(server, a.id, a.meetAtMs + 180 * MIN, v()); // 경계는 된다
+    assert.equal(b.meetAtMs, a.meetAtMs + 180 * MIN);
+    assert.equal(b.startMeetAtMs, a.meetAtMs); // 기준은 그대로
+    // 약속 시각이 지나면(같은 순간 포함) 미룰 수 없다
+    clock.t = b.meetAtMs;
+    throwsCode(() => postponeTo(server, a.id, b.meetAtMs + 10 * MIN, v()), 'LB_POSTPONE_AFTER_MEET');
+    assert.deepEqual(server.audit(), []);
+  });
+
+  it('R1: 약속 시각 1분 전에는 미룰 수 있고, 지난 뒤에는 LB_POSTPONE_AFTER_MEET · 장소 이름만은 계속 된다', () => {
+    const { server, a, v, clock } = startedWithFriend();
+    clock.t = a.meetAtMs - MIN;
+    const b = postponeTo(server, a.id, a.meetAtMs + 30 * MIN, v());
+    clock.t = b.meetAtMs + MIN;
+    throwsCode(() => postponeTo(server, a.id, b.meetAtMs + 40 * MIN, v()), 'LB_POSTPONE_AFTER_MEET');
+    // 같은 localAt 을 실어 보내며 장소 이름만 바꾸는 건 미루기가 아니다
+    const c = server.edit('host', a.id, { localAt: b.localAt, tz: TZ, placeName: '강남역 3번 출구' }, v());
+    assert.equal(c.placeName, '강남역 3번 출구');
+    // 지난 시각으로 앞당기기는 시각 검사(지금+5분)가 먼저 막는다
+    throwsCode(() => postponeTo(server, a.id, b.meetAtMs - 10 * MIN, v()), 'LB_TIME_IN_PAST');
+  });
+
+  it('R1: 시작 전에는 기존대로 자유(3시간 넘게 미루기·앞당기기)', () => {
+    const { server, user, input } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    const b = postponeTo(server, a.id, a.meetAtMs + 600 * MIN, 1);
+    const c = postponeTo(server, a.id, b.meetAtMs - 700 * MIN, b.version);
+    assert.equal(c.meetAtMs, a.meetAtMs - 100 * MIN);
+  });
+
+  it('R2: 시작 후 핀은 처음 핀에서 500m 안(누적) · 이름만 바꾸는 건 제한 없음', () => {
+    const { server, a, v } = startedWithFriend();
+    const p450 = offsetPoint(PLACE.lat, PLACE.lng, 450, 0);
+    const p550 = offsetPoint(PLACE.lat, PLACE.lng, 550, 0);
+    throwsCode(() => server.edit('host', a.id, { lat: p550.lat, lng: p550.lng }, v()), 'LB_MOVE_TOO_FAR');
+    const b = server.edit('host', a.id, { lat: p450.lat, lng: p450.lng }, v());
+    assert.equal(b.placeLat, p450.lat);
+    assert.equal(b.startPlaceLat, PLACE.lat);
+    // 옮긴 핀에서 다시 400m(처음에서 850m)는 안 된다
+    const p850 = offsetPoint(PLACE.lat, PLACE.lng, 850, 0);
+    throwsCode(() => server.edit('host', a.id, { lat: p850.lat, lng: p850.lng }, v()), 'LB_MOVE_TOO_FAR');
+    // 처음 핀 반대편 400m 는 된다(옮긴 핀에서는 850m 지만 처음 핀 기준)
+    const s400 = offsetPoint(PLACE.lat, PLACE.lng, 400, Math.PI);
+    assert.equal(server.edit('host', a.id, { lat: s400.lat, lng: s400.lng }, v()).placeLat, s400.lat);
+    assert.equal(server.edit('host', a.id, { placeName: '완전히 다른 이름' }, v()).placeName, '완전히 다른 이름');
+    // 실패한 수정은 아무것도 바꾸지 않는다
+    assert.deepEqual(server.audit(), []);
+  });
+
+  it('R2: 시작 전에는 어디로든 옮긴다', () => {
+    const { server, user, input } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    const far = offsetPoint(PLACE.lat, PLACE.lng, 3000, 0);
+    assert.equal(server.edit('host', a.id, { lat: far.lat, lng: far.lng }, 1).placeLat, far.lat);
+  });
+
+  it('R3: 친구가 있을 때 중요 변경 뒤 5분 동안 시작 불가(경계: 5분 되는 순간부터 가능)', () => {
+    const { server, user, input, clock, claim, start } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    claim(user('g', '현우'), a.id, '현우');
+    const changedAt = clock.t;
+    const b = server.edit('host', a.id, { policy: presetPolicy('spicy') }, 1);
+    assert.equal(b.startableAtMs, changedAt + 5 * MIN);
+    clock.t = changedAt + 5 * MIN - 1;
+    throwsCode(() => start(a.id), 'LB_START_COOLDOWN');
+    assert.equal(server.appointmentInfo(a.id)?.startedAtMs, null);
+    clock.t = changedAt + 5 * MIN;
+    assert.equal(server.appointmentInfo(a.id)?.startableAtMs, null);
+    assert.equal(start(a.id).startedAtMs, clock.t);
+  });
+
+  it('R3: 시각·핀 변경도 중요 변경, 장소 이름·메모·제목·명단 편집은 아니다', () => {
+    const { server, user, input, clock, claim, start } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    claim(user('g', '현우'), a.id, '현우');
+    server.edit('host', a.id, { placeName: '새 이름' }, 1);
+    server.updateMemo('host', a.id, '새 제목', '새 메모');
+    server.editInvitees('host', a.id, { add: ['민지'] });
+    assert.equal(server.appointmentInfo(a.id)?.startableAtMs, null);
+    const pin = offsetPoint(PLACE.lat, PLACE.lng, 30, 0);
+    server.edit('host', a.id, { lat: pin.lat, lng: pin.lng }, 2);
+    assert.equal(server.appointmentInfo(a.id)?.startableAtMs, clock.t + 5 * MIN);
+    clock.t += 5 * MIN;
+    const v = server.appointmentInfo(a.id)?.version ?? 0;
+    server.edit('host', a.id, { localAt: msToLocalAt(a.meetAtMs + 10 * MIN, TZ) }, v);
+    throwsCode(() => start(a.id), 'LB_START_COOLDOWN');
+    // 바뀐 게 없는 수정은 기록하지 않는다
+    clock.t += 5 * MIN;
+    server.edit('host', a.id, { policy: presetPolicy('normal') }, v + 1);
+    assert.equal(server.appointmentInfo(a.id)?.startableAtMs, null);
+    start(a.id);
+  });
+
+  it('R3: 혼자일 때 바꾼 건 기록하지 않는다(바로 시작 가능)', () => {
+    const { server, user, input, start } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    server.edit('host', a.id, { policy: presetPolicy('spicy') }, 1);
+    assert.equal(server.appointmentInfo(a.id)?.startableAtMs, null);
+    assert.notEqual(start(a.id).startedAtMs, null);
+  });
+
+  it('R3: 쿨다운보다 시작 마감(LB_START_CLOSED)·이미 시작(LB_ALREADY_STARTED)이 먼저다', () => {
+    const { server, user, input, clock, claim, start } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(10));
+    claim(user('g', '현우'), a.id, '현우');
+    clock.t = a.meetAtMs - 2 * MIN;
+    server.edit('host', a.id, { policy: presetPolicy('spicy') }, 1);
+    clock.t = a.meetAtMs;
+    throwsCode(() => start(a.id), 'LB_START_CLOSED');
+  });
+
+  it('R4: 시작 뒤에 들어온 사람만 내보낼 수 있다 — 환불·좌표 삭제·차단, 이름 칸은 빈 칸으로 돌아간다', () => {
+    const { server, a, user, claim, balance, clock } = startedWithFriend();
+    clock.t += MIN;
+    claim(user('late', '태호'), a.id, '태호');
+    const live = server.getLive('host', a.id);
+    const byId = new Map(live.participants.map((p) => [p.userId, p]));
+    assert.equal(byId.get('host')?.joinedAfterStart, false);
+    assert.equal(byId.get('g')?.joinedAfterStart, false);
+    assert.equal(byId.get('late')?.joinedAfterStart, true);
+    server.reportLocation('late', a.id, { lat: FAR.lat, lng: FAR.lng, accuracyM: 10 });
+    assert.equal(server.hasLocationRow(a.id, 'late'), true);
+
+    throwsCode(() => server.kick('host', a.id, 'g'), 'LB_KICK_CLOSED');
+    server.kick('host', a.id, 'late');
+    assert.equal(balance('late'), 1000);
+    assert.equal(server.listLedger('late')[0].reason, 'kicked');
+    assert.equal(server.hasLocationRow(a.id, 'late'), false);
+    throwsCode(() => server.peekInvite('late', a.inviteCode), 'LB_INVITE_NOT_FOUND');
+    throwsCode(() => server.claimSlot('late', a.id, '태호', a.version, true), 'LB_INVITE_NOT_FOUND');
+    const slot = server.appointmentInfo(a.id)?.invitees.find((i) => i.name === '태호');
+    assert.deepEqual(slot, { name: '태호', claimedByUserId: null, claimedAtMs: null });
+    // 약속 시각 전이면 다른 사람이 그 이름을 고를 수 있다
+    claim(user('real', '태호진짜'), a.id, '태호');
+    assert.equal(server.getLive('real', a.id).participants.find((p) => p.userId === 'real')?.joinedAfterStart, true);
+    assert.deepEqual(server.audit(), []);
+  });
+
+  it('R4: 정산이 끝나면 시작 뒤에 들어온 사람도 못 내보낸다', () => {
+    const { server, a, user, claim, clock } = startedWithFriend();
+    clock.t += MIN;
+    claim(user('late', '태호'), a.id, '태호');
+    clock.t = a.closeMs + 20_000;
+    server.getLive('host', a.id); // 정산
+    throwsCode(() => server.kick('host', a.id, 'late'), 'LB_KICK_CLOSED');
+  });
+
+  it('R4: 마감이 지나면 게으른 정산 전이라도 못 내보낸다(마감 순간까지는 된다)', () => {
+    const { server, a, user, claim, clock, balance } = startedWithFriend();
+    clock.t += MIN;
+    claim(user('late', '태호'), a.id, '태호');
+    const held = balance('late');
+    clock.t = a.closeMs + 1;
+    throwsCode(() => server.kick('host', a.id, 'late'), 'LB_KICK_CLOSED');
+    assert.equal(server.appointmentInfo(a.id)?.status, 'open');
+    assert.equal(balance('late'), held);
+    clock.t = a.closeMs;
+    server.kick('host', a.id, 'late');
+    assert.equal(balance('late'), 1000);
+  });
+});
+
+describe('fakeApi: R3 기록은 시작 뒤에도 남는다(계약 그대로, SQL 과 같다)', () => {
+  it('시작 뒤 친구가 있을 때 미루면 startableAtMs 가 5분 동안 보인다(화면은 시작 전에만 쓴다)', () => {
+    const { server, user, input, clock, claim, start } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    claim(user('g', '현우'), a.id, '현우');
+    clock.t = a.meetAtMs - 60 * MIN;
+    start(a.id);
+    const b = server.edit('host', a.id, { localAt: msToLocalAt(a.meetAtMs + 30 * MIN, TZ) }, 1);
+    assert.equal(b.startableAtMs, clock.t + 5 * MIN);
+    clock.t += 5 * MIN;
+    assert.equal(server.appointmentInfo(a.id)?.startableAtMs, null);
+  });
+});

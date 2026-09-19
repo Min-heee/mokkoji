@@ -215,6 +215,11 @@ export function mapAppointment(v: unknown, path = 'appointment'): LbAppointment 
     tz: str(o, 'tz', path),
     meetAtMs: num(o, 'meetAtMs', path),
     startedAtMs: numOrNull(o, 'startedAtMs', path),
+    // 공정성 규칙 R1~R3(시작하던 순간의 시각·핀, 시작 가능 시각). 시작 전·대기 없음이면 null
+    startMeetAtMs: numOrNull(o, 'startMeetAtMs', path),
+    startPlaceLat: numOrNull(o, 'startPlaceLat', path),
+    startPlaceLng: numOrNull(o, 'startPlaceLng', path),
+    startableAtMs: numOrNull(o, 'startableAtMs', path),
     closeMs: num(o, 'closeMs', path),
     placeName: str(o, 'placeName', path),
     placeNote: str(o, 'placeNote', path),
@@ -342,6 +347,7 @@ function mapLiveParticipant(v: unknown, path: string): LbLiveParticipant {
     resultStatus: oneOfOrNull(o, 'resultStatus', path, RESULT_STATUSES),
     forfeited: numOrNull(o, 'forfeited', path),
     received: numOrNull(o, 'received', path),
+    joinedAfterStart: bool(o, 'joinedAfterStart', path),
     lastSeenMs: numOrNull(o, 'lastSeenMs', path),
     location: mapLiveLocation(o.location, `${path}.location`),
   };

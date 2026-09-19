@@ -13,6 +13,7 @@ import {
   KEEP_NAME_WITHIN_M,
   nameForCenter,
   pickerPermissionFromStatus,
+  pinLimitStatus,
   placeSearchMode,
   regionAround,
   regionCenter,
@@ -214,5 +215,20 @@ describe('formatNearestAddress', () => {
     const long = formatNearestAddress({ formattedAddress: '가'.repeat(200) });
     assert.equal(Array.from(long).length, 80);
     assert.ok(long.endsWith('…'));
+  });
+});
+
+describe('pinLimitStatus', () => {
+  const c = { lat: 37.49808, lng: 127.02761 };
+  const north = (m: number) => ({ lat: c.lat + m / 111_195, lng: c.lng });
+  it('한도가 없으면 항상 안', () => {
+    assert.deepEqual(pinLimitStatus(north(900), null, 500), { distanceM: null, over: false });
+    assert.deepEqual(pinLimitStatus(null, c, 500), { distanceM: null, over: false });
+  });
+  it('499m 안, 501m 밖', () => {
+    assert.equal(pinLimitStatus(north(499), c, 500).over, false);
+    assert.equal(pinLimitStatus(north(501), c, 500).over, true);
+    const d = pinLimitStatus(north(300), c, 500).distanceM ?? 0;
+    assert.ok(Math.abs(d - haversineMeters(c, north(300))) < 1e-9);
   });
 });

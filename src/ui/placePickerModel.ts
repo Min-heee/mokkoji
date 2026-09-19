@@ -193,3 +193,17 @@ export function formatNearestAddress(a: AddressLike | null | undefined): string 
   if (tail !== '' && !parts.includes(tail)) parts.push(tail);
   return clip(parts.join(' '));
 }
+
+/**
+ * 핀이 옮길 수 있는 한도(시작한 약속의 '처음 핀에서 N m', 공정성 규칙 R2) 안인가.
+ * 한도가 없으면(center 없음) 항상 안이다. 거리는 서버와 같은 haversine
+ */
+export function pinLimitStatus(
+  value: GeoPoint | null | undefined,
+  center: GeoPoint | null | undefined,
+  radiusM: number | null | undefined,
+): { distanceM: number | null; over: boolean } {
+  if (!value || !center || typeof radiusM !== 'number' || !Number.isFinite(radiusM)) return { distanceM: null, over: false };
+  const distanceM = haversineMeters(center, value);
+  return { distanceM, over: distanceM > radiusM };
+}

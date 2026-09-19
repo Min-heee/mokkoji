@@ -1,6 +1,7 @@
 # 약속 내기 P0 — 진행 메모 (2026-09-18 2차 갱신)
 설계서: `docs/appointment-bet-design.md`. 이 파일은 P0 구현 워크플로의 인수인계 메모다. **설계서 §0-1(오너 확정 흐름 2026-09-18 — 주최자 [시작하기] 모델)이 본문보다 우선한다** — 아래 계약서는 그 흐름을 반영한 판이다.
 ## 상태
+- **2026-09-19 [공정성 규칙 R1~R4] 완료 — 아래 '공정성 규칙 R1~R4' 절.** 적대 리뷰가 찾은 '주최자가 친구 포인트를 부당하게 가져가는 경로' 4개를 오너 결정대로 막았다(SQL·fakeApi·화면). 게이트: typecheck 0 · npm test 708 · test:sql ok 523 · parity 0 · conformance 0(408걸음) · check:native 5개 그대로 · 웹 export(--clear)·ait build supabase 0건.
 - **2026-09-19 [P2 적대 리뷰 클라이언트 5건 수정]** ① 생성 멱등 키: `LbCreateInput.requestId`(uuid, `src/lateBet/requestId.ts`) → `lb_create_appointment(…, p_request_id uuid default null)` + `appointments.request_id`·unique(host_id, request_id). 같은 주최자·같은 키 재시도는 검사·에스크로 없이 그때 만든 약속을 돌려준다(fakeApi 도 같다). 새 약속 폼은 화면당 키 하나, 타임아웃·오프라인이면 목록을 다시 읽는다. ② 세션 로직을 순수 모듈 `authSession.ts`로 분리: 진행 중인 익명 가입은 8초 타임아웃이 나도 버리지 않는다(재시도는 그 요청을 기다린다 — 계정 2개·세션 덮어쓰기 없음). ③ 서버가 JWT 를 거부(PGRST301/303·401)하면 supabaseApi 가 `refreshSession` 1회 → 같은 호출 1회 재시도. refresh 토큰 무효면 로컬 signOut + `LB_NOT_SIGNED_IN`. ④ 일반 RPC 는 `requireSession`(없으면 `LB_NOT_SIGNED_IN`) — 익명 가입은 `ensureSignedIn` 에서만. GoTrue refresh 오류 코드도 `LB_NOT_SIGNED_IN` 로 매핑. 다시 로그인해 계정이 바뀌면 컨텍스트가 상태를 비우고 `accountReset`(홈 `ACCOUNT_RESET_NOTICE`). ⑤ 서버 시계는 api 안에서만 잰다: 화면·훅의 `withClockSample` 제거, fakeApi 도 `clock` 옵션으로 같은 자리에서(`serverClock.test` 가 재발을 막는다). `LbLiveBackend` 에 `requireSession`·`refreshSession?` 추가.
 - **2026-09-19 [P2 통합] 서버 없이 할 수 있는 P2 전부 완료 — 아래 'P2 상태' 절.** live 백엔드(supabaseApi·supabase.native), 로컬 PG 대조 0 불일치, OTA 가드 보강 + beta 채널 OTA(`npm run ota:beta`), 번들 검사, 로컬 PG 끔. 다음은 오너가 Supabase 프로젝트를 만든 날의 체크리스트.
 - **2026-09-19 [P2 Conformance] fakeApi ↔ (로컬 PG + supabaseApi) 대조 0 불일치.** `npm run test:conformance`(로컬 PG 필요, npm test 밖) — `scripts/conformance/`(pgBackend = PostgREST 흉내 rpc 어댑터·conf.shift 시간 여행, duo = lockstep 러너, normalize, scenarios 6개 335걸음). 처음 돌렸을 때 찾은 차이 8건을 고쳤다: fakeApi 5(13자 이름 수락 → LB_BAD_NICKNAME, 같은 localAt 을 실은 장소만 수정은 시각 검사 안 함, 핀 이동 시 first_near 삭제, 핀만 다른 경도로 옮기면 LB_TZ_SUSPECT, 정책은 있는 키만 병합), SQL 2(생성 범위 밖 핀 → LB_BAD_POSITION, place_note btrim), 양쪽 1(홈 목록 같은 약속 시각은 created_at 순). 곁들여 fakeApi 원장 500줄 상한·무효 정산 실패 시 not_open. 게이트: typecheck 0 · npm test 647 · test:sql ok 451 · parity 0 · conformance 0.
@@ -22,6 +23,49 @@
   - 소유 밖 최소 수정 2건(보고): `src/domain/latePresets.ts`(+test) 의 `describePolicy.close` 문장 — 마감이 전액 시각과 분리돼 "오후 8:45에 체크인이 닫혀요. 그 뒤에 와도 도착으로 남지 않아요." 로; `src/lateBet/homeModel.ts` 의 `pending` 배지·`pendingCount` → `gathering`(모이는 중)·`unclaimedCount`, `homePendingLine` → `homeUnclaimedLine`.
 - 완료(9/17): P0-a 도메인 모듈 6개, Supabase SQL·테스트·스크립트 이식, Foundation(mode·api·fakeApi·Context·useLive·화면 골격)
 - ~~미완: 화면 5묶음~~ → 9/18 [create]·[join]·[waiting]·[live]·[result]·[rules-sql] 완료, 위 [통합] 항목 참고. 각 담당이 fake 모드 웹 프리뷰 실클릭까지 확인했다(create·join·result). 안 한 것: 적대적 리뷰, 실기기.
+
+---
+
+## 공정성 규칙 R1~R4 (오너 결정 2026-09-19)
+
+설계서 §0-1 표의 R1~R4 행이 명세다(규칙 5 의 '+3h 상한'·'시작 후 내보내기 불가'를 대체·좁힘). SQL 마이그레이션 `supabase/migrations/20260918000000_late_bet.sql` 은 아직 어디에도 적용된 적이 없어 **새 마이그레이션 없이 그 파일을 직접 고쳤다.**
+
+### 규칙 (서버 시계, 약속 행 FOR UPDATE 아래에서 판정)
+| # | 규칙 | 오류 코드 |
+|---|---|---|
+| R1 | 시작 후 미루기는 지금 약속 시각 전에만. 한도 = 시작하던 순간의 약속 시각(`start_meet_at`) + 180분 누적. 앞당기기 불가 | `LB_POSTPONE_AFTER_MEET` → `LB_POSTPONE_TOO_FAR` (순서: `LB_POSTPONE_ONLY` → AFTER_MEET → TOO_FAR, 전부 `LB_TIME_IN_PAST` 보다 먼저) |
+| R2 | 시작 후 새 핀은 시작하던 순간의 핀(`start_place_lat/lng`)에서 500m 이내(누적, 서버 haversine). 이름만은 자유 | `LB_MOVE_TOO_FAR` |
+| R3 | 주최자 말고 참가자가 있을 때 시각·시간대·핀·정책 5개가 실제로 바뀌면 `material_changed_at` 기록 → 5분 동안 `lb_start` 거부. 혼자일 때·이름·메모·제목·명단은 기록 안 함 | `LB_START_COOLDOWN` (`LB_ALREADY_STARTED`·`LB_START_CLOSED` 다음) |
+| R4 | 시작 후에도 '시작 뒤에 들어온 사람'(`claimed_at > started_at`, ms 비교 — 같은 ms 는 시작 전으로 본다)은 **마감(`close_at`) 전까지** 내보낼 수 있다: 환불·좌표 삭제·ban·이름 칸 비움. 시작 전부터 있던 사람은 불가 | `LB_KICK_CLOSED` |
+
+모든 오류는 P0001 + message = 코드. 상수(`src/domain/lateEditRules.ts`, SQL 과 같은 값): `POSTPONE_MAX_MINUTES_AFTER_START=180`, `MOVE_AFTER_START_MAX_M=500`, `START_COOLDOWN_MS=5분`.
+
+### 계약 추가
+- 테이블 `appointments`: `start_meet_at`·`start_place_lat`·`start_place_lng`(lb_start 가 그 순간 값으로 채움), `material_changed_at`. `lb_audit` 에 `start snapshot mismatch`(시작했으면 셋 다 있어야 한다).
+- `LbAppointment`: `startMeetAtMs`·`startPlaceLat`·`startPlaceLng`·`startableAtMs`(= 변경 + 5분이 아직 미래면 그 ms, 아니면 null — 서버 시계로 계산). rpcMap 은 null·키 없음 둘 다 허용.
+- `LbLiveParticipant.joinedAfterStart: boolean`(필수 — 없으면 `LB_BAD_RESPONSE`). 주최자·시작 전은 false.
+- 순수 함수(`src/domain/lateEditRules.ts`): `canPostpone`·`canMovePlace`·`startCooldownRemainingMs`·`canKickAfterStart`·`postponeLimitMs`·`startableAtFrom`·`isJoinedAfterStart`·`postponeChoices`·`postponeRemainingMinutes`·`cooldownOutlastsMeet`·`formatWaitKo`. fakeApi 도 같은 함수로 판정한다. `src/ui/placePickerModel.ts` 의 `pinLimitStatus`.
+
+### 화면 (코드 경로로 확인 — 웹 프리뷰·실기기 미확인)
+- 대기실 `WaitingView.StartFooter`: `useServerNow(1000)` 으로 `startCooldownRemainingMs` > 0 이면 [시작하기] disabled + "친구들이 바뀐 내용을 볼 수 있게 N분 M초 뒤에…", 쿨다운 끝이 약속 시각 이후면 무효 경고(`cooldownOutlastsMeet`).
+- 수정 화면 `app/late/new.tsx`: 시작 전·친구 있음·중요 변경이면 저장 전 "바꾸면 5분 동안 시작할 수 없어요…" 확인(걸 포인트 인상 확인과 합침). 시작 후 시각은 `canPostpone`(서버와 같은 순서), 핀은 `canMovePlace` 로 저장 버튼을 막는다. 서버가 세 한도 오류를 주면 약속을 다시 읽는다.
+- 위치 정하기(`app/late/place.tsx` + PlacePicker 3종): 시작 후엔 시작 시점 핀 중심 500m 한도(지도 = 점선 원, 웹·폴백 = 거리 한 줄). 한도 밖이면 [이 위치로 정하기] disabled.
+- LiveView `HostTools`: [시간 미루기]는 약속 시각 이후이거나 `postponeChoices` 가 비면 disabled, 남은 한도 한 줄. 선택지는 누적 한도 안만. `settlePending` 이면 HostTools 자체를 안 그린다.
+- 내보내기(LiveView·ArrivedView `useKickAfterStart` + `ParticipantRows`): 주최자에게만, `canKickAfterStart(p)`(= `joinedAfterStart`) 인 남의 행에만 '시작 후 참여' 꼬리표 + [내보내기]. `status !== 'open'` 이거나 `settlePending`(마감 지남)이면 버튼 없음 — 서버의 마감 검사와 같은 기준.
+- FakeDevPanel: '+5분', '시작 가능 시각(쿨다운 끝)' 점프, '시작 후 봇 수락'(내보낼 수 있다고 안내).
+
+### 검증 때 고친 것 (2026-09-19 [Verify])
+- **R4 마감 뒤 내보내기 구멍**: SQL `lb_kick`·fakeApi `kick` 은 `status = 'open'` 만 봤다 → 마감(`close_at`)이 지나 결과가 정해졌는데 게으른 정산이 아직 안 돈 틈(최대 15초 + 아무도 getLive 안 한 동안)에 주최자가 API 로 시작 뒤 들어온 당첨자를 빼서 몫을 키울 수 있었다. 시작 후 `now > close_at` 이면 `LB_KICK_CLOSED`(화면의 `settlePending` 과 같은 기준). scenario.sql +3 ok, fakeApi.test +1, conformance S7 +1걸음('마감 뒤·정산 전 G3 내보내기').
+
+### 결정해 둔 것 (바꾸려면 SQL·fakeApi 를 같이)
+- R3 기록은 시작 뒤 변경에도 남고 `startableAtMs` 도 그대로 내려간다(계약 문구 그대로). 다시 시작할 일이 없어 무해하고, 화면은 시작 전에만 읽는다.
+- 시작 **전** 내보내기는 예전처럼 명단에서 이름을 지운다(주최자가 명단 편집으로 다시 넣을 수 있으므로). 시작 **후**(R4)만 이름 칸을 비운다(명단 편집이 막힌 뒤라 진짜 그 사람이 다시 고를 수 있게).
+
+### 남은 것
+- 시간대 시트(`LB_TZ_SUSPECT` 뒤 다시 저장)는 5분 쿨다운 확인을 다시 띄우지 않는다. 핀 이동(중요 변경)과 함께 오는 경우라 첫 저장 때 이미 확인을 띄웠고, 서버가 쿨다운을 적용한다.
+- 안드로이드 `react-native-maps` Circle 의 `lineDashPattern` 지원 여부 미확인(안 되면 실선 원).
+- 게스트에게 '시작 뒤 들어오면 주최자가 내보낼 수 있다'는 안내가 없다.
+- 웹 프리뷰·실기기 눈 확인 안 함.
 
 ---
 

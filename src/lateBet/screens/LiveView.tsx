@@ -13,13 +13,16 @@
  * - 변경 배너(주최자가 시간을 미루거나 장소를 바꿈)는 props 로 온다. 티커·행은 appointment 를 그대로 읽으므로
  *   새 마감 기준으로 저절로 다시 계산된다.
  * - 전액 몰수 뒤 30분 꼬리(closeMs 까지)에도 참가자 행·좌표는 그대로 보인다. 티커만 '전액' 문구로 바뀐다.
- * - ArrivedView 가 같이 쓰는 조각(ChangeBanner · ParticipantRows · HostTools · SmallButton · liveMarkers · unclaimedNames)도 이 파일에서 내보낸다.
+ * - 공정성 규칙(오너 결정 2026-09-19, src/domain/lateEditRules): [시간 미루기]는 약속 시각 전에만, 시작하던 순간의 약속 시각 + 3시간까지(누적, R1).
+ *   [장소 바꾸기]는 시작하던 순간의 핀에서 500m 안(R2, 위치 정하기 화면이 막는다). 주최자는 시작 뒤에 들어온 사람만 [내보내기](R4).
+ * - ArrivedView 가 같이 쓰는 조각(ChangeBanner · ParticipantRows · HostTools · SmallButton · useKickAfterStart · liveMarkers · unclaimedNames)도 이 파일에서 내보낸다.
  */
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { fullForfeitAtMs, lateUnits, normalizeLatePolicy, projectedPenalty } from '@/domain/lateBet';
+import { canKickAfterStart, postponeChoices, postponeLimitMs, postponeRemainingMinutes } from '@/domain/lateEditRules';
 import { onTimeUntilMs } from '@/domain/latePhase';
 import { describePolicy, formatLoss } from '@/domain/latePresets';
 import { mapRouteUrl } from '@/domain/mapRoute';
@@ -31,7 +34,7 @@ import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 import type { LateBetApi } from '../api';
 import { describeChanges } from '../changes';
-import { isConnectivityError, reportReasonMessage, toLateBetError } from '../errors';
+import { errorMessage, isConnectivityError, reportReasonMessage, toLateBetError } from '../errors';
 import { serverNow } from '../serverClock';
 import type { LbAppointment, LbAppointmentChange, LbLive, LbLiveParticipant } from '../types';
 import { useServerNow } from '../useServerNow';
@@ -45,7 +48,7 @@ const OFFLINE_RETRY_MS = 3_000;
 const ACCURACY_RETRY_MS = 5_000;
 /** 이보다 나쁜 정확도는 '대략적인 위치'로 본다(서버도 저장하지 않는다) */
 const COARSE_ACCURACY_M = 1000;
-/** [시간 미루기] 선택지(분). 서버 상한 +180분(LB_POSTPONE_TOO_FAR)과 같다 */
+/** [시간 미루기] 선택지(분). 누적 한도(시작하던 순간의 약속 시각 + 180분, LB_POSTPONE_TOO_FAR) 안의 것만 보여 준다 */
 const POSTPONE_CHOICES_MINUTES = [15, 30, 60, 120, 180] as const;
 /** 서버 규칙: 새 약속 시각은 지금부터 5분 뒤 이후(LB_TIME_IN_PAST) */
 const MIN_LEAD_MS = 5 * MINUTE_MS;
@@ -285,6 +288,11 @@ export interface ParticipantRowsProps {
   sharing?: boolean;
   /** 미도착 친구 행 오른쪽에 붙일 것 — ArrivedView 의 [같이 있어요] */
   renderAction?: (p: LbLiveParticipant) => React.ReactNode;
+  /**
+   * 주최자의 시작 후 내보내기(R4). 주면 시작 뒤에 들어온 사람(joinedAfterStart) 행에 '시작 후 참여' 꼬리표와 [내보내기]를 붙인다.
+   * 시작 전부터 있던 사람에게는 버튼이 없다
+   */
+  kick?: { onKick: (p: LbLiveParticipant) => void; disabled: boolean };
 }
 
 /**
@@ -292,7 +300,7 @@ export interface ParticipantRowsProps {
  * 전액 몰수 뒤 30분 꼬리에도 미도착 행과 좌표는 그대로 보인다(서버가 closeMs 까지 내려 준다).
  * 안 들어온 이름에는 버튼이 없다 — 시작 후 명단은 동결이고, 약속 시각에 서버가 지운다.
  */
-export function ParticipantRows({ live, sharing, renderAction }: ParticipantRowsProps) {
+export function ParticipantRows({ live, sharing, renderAction, kick }: ParticipantRowsProps) {
   const now = useServerNow(1000);
   const a = live.appointment;
   const tz = a.tz;
@@ -308,6 +316,7 @@ export function ParticipantRows({ live, sharing, renderAction }: ParticipantRows
             ? `도착 · ${formatKoreanTime(p.arrivedAtMs, tz)}${p.arrivalMethod === 'vouch' ? ' · 친구 확인' : ''}`
             : whereabouts(p, now, isMe, sharing);
         const action = !arrived && !isMe && renderAction ? renderAction(p) : null;
+        const kickable = kick !== undefined && !isMe && p.userId !== a.hostId && canKickAfterStart(p);
         return (
           <View key={p.userId} style={styles.personRow}>
             <View style={[styles.initial, arrived && styles.initialArrived]}>
@@ -320,12 +329,14 @@ export function ParticipantRows({ live, sharing, renderAction }: ParticipantRows
                 {p.nickname}
                 {isMe ? ' (나)' : ''}
                 {p.userId === a.hostId ? ' · 주최자' : ''}
+                {kickable ? ' · 시작 후 참여' : ''}
               </Text>
               <Text style={styles.personLine} numberOfLines={2}>
                 {line}
               </Text>
             </View>
             {action}
+            {kickable && kick ? <SmallButton label="내보내기" onPress={() => kick.onKick(p)} disabled={kick.disabled} /> : null}
           </View>
         );
       })}
@@ -356,11 +367,63 @@ export interface HostToolsProps {
   disabled?: boolean;
 }
 
+// ───────────────────────── 주최자: 시작 후 내보내기 (R4) ─────────────────────────
+
 /**
- * 시작 후 주최자가 할 수 있는 두 가지(§0-1 규칙 5): 시간 '뒤로 미루기'(최대 +3시간)와 장소 변경.
- * - 미루기: 약속 시각 + 15분/30분/1시간/2시간/3시간 중 지금부터 5분 뒤 이후인 것만(서버 LB_TIME_IN_PAST 규칙).
+ * 시작 뒤에 들어온 사람을 내보낸다(전액 환불·좌표 삭제·재참여 금지, 이름 칸은 빈 칸으로). confirmDialog 뒤 api.kick → refresh.
+ * 시작 전부터 있던 사람은 서버가 LB_KICK_CLOSED 로 막는다(버튼도 없다)
+ */
+export function useKickAfterStart(
+  live: LbLive,
+  api: LateBetApi,
+  refresh: () => Promise<LbLive | null>,
+  disabled: boolean,
+): ParticipantRowsProps['kick'] {
+  const [busy, setBusy] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const a = live.appointment;
+  const stake = a.policy.stake;
+  const onKick = useCallback(
+    (p: LbLiveParticipant) => {
+      confirmDialog(
+        `${p.nickname}님을 내보낼까요?`,
+        stake > 0 ? '건 포인트는 돌려주고 이 약속에 다시 들어올 수 없어요.' : '이 약속에 다시 들어올 수 없어요.',
+        () => {
+          setBusy(true);
+          void (async () => {
+            try {
+              await api.kick(a.id, p.userId, true);
+            } catch (e) {
+              alertDialog('내보내지 못했어요', toLateBetError(e).message);
+            } finally {
+              await refresh();
+              if (alive.current) setBusy(false);
+            }
+          })();
+        },
+        { confirmText: '내보내기', destructive: true },
+      );
+    },
+    [a.id, api, refresh, stake],
+  );
+  // 정산이 시작됐거나 닫힌 약속은 못 내보낸다(서버 LB_KICK_CLOSED)
+  if (a.status !== 'open' || live.settlePending) return undefined;
+  return { onKick, disabled: busy || disabled };
+}
+
+/**
+ * 시작 후 주최자가 할 수 있는 두 가지(§0-1 규칙 5): 시간 '뒤로 미루기'와 장소 변경.
+ * - 미루기(R1): 약속 시각 전에만. 약속 시각 + 15분/30분/1시간/2시간/3시간 중 지금부터 5분 뒤 이후이고
+ *   '시작하던 순간의 약속 시각 + 3시간'(누적 한도) 안인 것만. 남은 한도를 보여 준다. 약속 시각이 지나면 버튼 비활성 + 이유.
+ * - 장소(R2): 시작하던 순간의 핀에서 500m 안 — 위치 정하기 화면에 한도가 넘어간다.
  *   api.edit(id, { localAt }, version) → 서버가 마감·정산 시각을 새 시각 기준으로 다시 계산한다(startedAtMs 는 그대로).
- *   앞당기면 LB_POSTPONE_ONLY, 3시간 넘게 미루면 LB_POSTPONE_TOO_FAR — 선택지 자체가 그 범위 안이라 평소엔 안 나온다.
+ *   앞당기면 LB_POSTPONE_ONLY, 누적 3시간을 넘기면 LB_POSTPONE_TOO_FAR, 약속 시각이 지났으면 LB_POSTPONE_AFTER_MEET — 선택지 자체가 그 범위 안이라 평소엔 안 나온다.
  * - 장소: 약속 잡기 화면의 수정 모드(/late/new?edit=<id>)로 들어간다. 시작 후 다른 조건을 건드리면 서버가 LB_EDIT_FROZEN 으로 막는다.
  * 정산이 시작된 뒤(마감 지남·settlePending)에는 그리지 않는다(서버 LB_EDIT_CLOSED).
  */
@@ -412,22 +475,31 @@ export function HostTools({ live, api, refresh, disabled = false }: HostToolsPro
   // 정산이 시작됐거나 닫힌 약속은 못 바꾼다(서버 LB_EDIT_CLOSED)
   if (a.status !== 'open' || live.settlePending) return null;
 
+  // 본체는 폴링(5초) 때 다시 그린다 — 그때의 서버 시각으로 판정한다(최종 판정은 서버)
   const now = serverNow();
-  const choices = POSTPONE_CHOICES_MINUTES.map((minutes) => ({ minutes, targetMs: a.meetAtMs + minutes * MINUTE_MS })).filter(
-    (c) => c.targetMs > now + MIN_LEAD_MS,
-  );
+  const afterMeet = now >= a.meetAtMs;
+  const choices = postponeChoices(a, now, POSTPONE_CHOICES_MINUTES, MIN_LEAD_MS);
+  const limitMs = postponeLimitMs(a);
+  const leftMinutes = postponeRemainingMinutes(a) ?? 0;
+  const leftLine = afterMeet
+    ? errorMessage('LB_POSTPONE_AFTER_MEET')
+    : leftMinutes <= 0 || limitMs === null
+      ? '처음 약속 시각에서 3시간을 다 미뤘어요. 더 미룰 수 없어요.'
+      : `남은 한도 ${formatDelta(leftMinutes)} (${formatKoreanTime(limitMs, a.tz)}까지)`;
   return (
     <>
       <SectionTitle>주최자</SectionTitle>
       <Card>
         <Text style={styles.muted}>
-          이미 시작한 약속이라 시간은 뒤로 미루기(최대 3시간)만, 장소는 바꿀 수 있어요. 바꾸면 친구들 화면에 알림 배너가 떠요.
+          이미 시작한 약속이라 시간은 약속 시각 전에만 뒤로 미룰 수 있고(처음 약속 시각에서 최대 3시간), 장소는 처음 장소에서 500m 안으로만
+          옮길 수 있어요. 바꾸면 친구들 화면에 알림 배너가 떠요.
         </Text>
         {open ? (
           <View style={styles.stack}>
             <Text style={styles.label}>언제로 미룰까요?</Text>
+            <Text style={styles.muted}>{leftLine}</Text>
             {choices.length === 0 ? (
-              <Text style={styles.muted}>더 미룰 수 있는 시각이 없어요. 약속 시각에서 최대 3시간까지만 미룰 수 있어요.</Text>
+              <Text style={styles.muted}>더 미룰 수 있는 시각이 없어요.</Text>
             ) : (
               <View style={styles.chips}>
                 {choices.map((c) => (
@@ -445,7 +517,13 @@ export function HostTools({ live, api, refresh, disabled = false }: HostToolsPro
           </View>
         ) : (
           <View style={styles.stack}>
-            <PrimaryButton label="시간 미루기" variant="ghost" onPress={() => setOpen(true)} disabled={busy || disabled} />
+            <PrimaryButton
+              label="시간 미루기"
+              variant="ghost"
+              onPress={() => setOpen(true)}
+              disabled={busy || disabled || afterMeet || choices.length === 0}
+            />
+            <Text style={styles.hint}>{leftLine}</Text>
             <PrimaryButton
               label="장소 바꾸기"
               variant="ghost"
@@ -628,6 +706,7 @@ export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, u
       ? `전액을 잃은 뒤에도 ${formatKoreanTime(appointment.closeMs, appointment.tz)}까지는 위치가 보이고, 그때까지 오면 '지각'으로 남아요.`
       : '';
   const placeNote = appointment.placeNote.trim();
+  const kick = useKickAfterStart(live, api, refresh, stale);
 
   return (
     <Screen
@@ -699,7 +778,7 @@ export function LiveView({ live, phase, isHost, api, refresh, stale, reporter, u
       ) : null}
 
       <SectionTitle>참가자</SectionTitle>
-      <ParticipantRows live={live} sharing={sharing} />
+      <ParticipantRows live={live} sharing={sharing} kick={isHost ? kick : undefined} />
       {tailLine !== '' ? <Text style={styles.hint}>{tailLine}</Text> : null}
 
       {isHost ? <HostTools live={live} api={api} refresh={refresh} disabled={stale} /> : null}

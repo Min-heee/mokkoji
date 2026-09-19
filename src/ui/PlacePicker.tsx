@@ -11,7 +11,7 @@ import React from 'react';
 import { PlacePickerFallback } from './PlacePickerFallback';
 import type { PlacePickerProps, PlacePickerUsesMap } from './placePickerShared';
 
-export { openPlaceDraft, readPlaceDraft, setPlaceResult, takePlaceResult } from './placePickerShared';
+export { limitExceededText, openPlaceDraft, readPlaceDraft, setPlaceResult, takePlaceResult } from './placePickerShared';
 export type { PlaceDraft, PlacePickerProps, PlacePickerValue } from './placePickerShared';
 
 /** 웹은 지도를 쓰지 않는다(프리셋 + 좌표 입력) — 부모는 스크롤 화면에 넣는다 */

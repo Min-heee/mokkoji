@@ -59,6 +59,10 @@ function appointmentJson(over: Record<string, unknown> = {}): Record<string, unk
       { name: '영희', claimedByUserId: null, claimedAtMs: null },
     ],
     changes: [],
+    startMeetAtMs: null,
+    startPlaceLat: null,
+    startPlaceLng: null,
+    startableAtMs: null,
     ...over,
   };
 }
@@ -71,7 +75,12 @@ function liveJson(over: Record<string, unknown> = {}): Record<string, unknown> {
     myState: 'active',
     myBalance: 900,
     settlePending: false,
-    appointment: appointmentJson({ startedAtMs: 1_789_999_400_000 }),
+    appointment: appointmentJson({
+      startedAtMs: 1_789_999_400_000,
+      startMeetAtMs: 1_790_000_000_000,
+      startPlaceLat: 37.49,
+      startPlaceLng: 127.02,
+    }),
     participants: [
       {
         userId: HOST,
@@ -86,6 +95,7 @@ function liveJson(over: Record<string, unknown> = {}): Record<string, unknown> {
         resultStatus: null,
         forfeited: null,
         received: null,
+        joinedAfterStart: false,
         lastSeenMs: null,
         location: null,
       },
@@ -102,6 +112,7 @@ function liveJson(over: Record<string, unknown> = {}): Record<string, unknown> {
         resultStatus: null,
         forfeited: null,
         received: null,
+        joinedAfterStart: false,
         lastSeenMs: 1_789_999_490_000,
         location: { lat: 37.5, lng: 127.03, accuracyM: 12.5, updatedAtMs: 1_789_999_490_000, distanceM: 1400 },
       },
@@ -163,9 +174,34 @@ describe('rpcMap — RPC jsonb', () => {
     const raw = appointmentJson();
     delete raw.startedAtMs;
     delete raw.voidReason;
+    delete raw.startMeetAtMs;
+    delete raw.startPlaceLat;
+    delete raw.startPlaceLng;
+    delete raw.startableAtMs;
     const a = mapAppointment(raw);
     assert.equal(a.startedAtMs, null);
     assert.equal(a.voidReason, null);
+    assert.deepEqual([a.startMeetAtMs, a.startPlaceLat, a.startPlaceLng, a.startableAtMs], [null, null, null, null]);
+  });
+
+  it('공정성 규칙 필드(startMeetAtMs·startPlaceLat/Lng·startableAtMs)를 옮기고 타입이 틀리면 거부한다', () => {
+    const a = mapAppointment(
+      appointmentJson({ startMeetAtMs: 1_790_000_000_000, startPlaceLat: 37.49, startPlaceLng: 127.02, startableAtMs: 1_789_999_300_000 }),
+    );
+    assert.equal(a.startMeetAtMs, 1_790_000_000_000);
+    assert.deepEqual([a.startPlaceLat, a.startPlaceLng], [37.49, 127.02]);
+    assert.equal(a.startableAtMs, 1_789_999_300_000);
+    throwsCode(() => mapAppointment(appointmentJson({ startableAtMs: '1' })), 'LB_BAD_RESPONSE', 'startableAtMs');
+    throwsCode(() => mapAppointment(appointmentJson({ startPlaceLat: 'x' })), 'LB_BAD_RESPONSE', 'startPlaceLat');
+  });
+
+  it('lb_get_live 참가자의 joinedAfterStart 는 불리언 필수', () => {
+    const raw = liveJson();
+    (raw.participants as Record<string, unknown>[])[1].joinedAfterStart = true;
+    assert.equal(mapLive(raw).participants[1].joinedAfterStart, true);
+    assert.equal(mapLive(raw).participants[0].joinedAfterStart, false);
+    delete (raw.participants as Record<string, unknown>[])[1].joinedAfterStart;
+    throwsCode(() => mapLive(raw), 'LB_BAD_RESPONSE', 'participants[1].joinedAfterStart');
   });
 
   it('필수 필드 누락·타입 불일치·모르는 enum 은 LB_BAD_RESPONSE (NaN 을 만들지 않는다)', () => {
