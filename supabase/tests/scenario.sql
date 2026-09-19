@@ -1,11 +1,37 @@
 -- supabase/tests/scenario.sql — 로컬 PG16(stub.sql + 마이그레이션 적용 후)에서 실행. 출력에 FAIL 이 한 줄도 없어야 한다.
 -- 오너 확정 흐름(2026-09-18, '주최자 [시작하기]' 모델): 초대 명단·slot claim(약속 시각까지, 시작 후에도)·시작 전 전부 변경·
 -- 시작 후 미루기/장소만·위치 공개는 시작부터·시작 안 된 약속은 약속 시각에 자동 무효·공개 창 30분 꼬리.
+--
+-- 시간 여행: 운영 SQL 은 서버 now() 만 쓰므로 바꾸지 않는다. 대신 테스트가 슈퍼유저로(`reset role` 상태) 약속의 시각들을 옮긴다.
+--   t.at(appt, rel)   = '지금이 약속 시각 + rel 인 세상'으로 그 약속을 통째로 옮긴다. meet_at·started_at·close_at·joined_at·claimed_at·
+--                       arrived_at·first_near_at·consented_at·locations.updated_at 를 같은 만큼 평행 이동하고 local_at 을 다시 쓴다
+--                       (상대 간격 = 지각 분·공개 창이 보존된다. 예: t.at(x, '-9 min') = 약속 9분 전, t.at(x, '7 min') = 약속 7분 지남)
+--   t.travel(appt, meet, started) = meet_at = now()+meet, started_at = now()+started(null 이면 그대로)로 직접 놓는다(local_at·close_at 재계산).
+--                       도착 시각 등은 움직이지 않는다 — 도착 시각을 따로 정할 때 쓴다.
+-- close_at 만 따로 당겨 정산 여유(15초) 경계를 보는 곳은 update 를 직접 쓴다.
 \set ON_ERROR_STOP 1
 \pset format unaligned
 \pset tuples_only on
 create schema if not exists t;
 grant usage on schema t to authenticated, anon;
+create or replace function t.at(p_appt uuid, p_rel interval) returns void language plpgsql as $$
+declare d interval;
+begin
+  select meet_at - (now() - p_rel) into d from public.appointments where id = p_appt;   -- 모두를 d 만큼 과거로
+  update public.appointments set meet_at = meet_at - d, started_at = started_at - d, close_at = close_at - d,
+         local_at = to_char((meet_at - d) at time zone tz, 'YYYY-MM-DD"T"HH24:MI') where id = p_appt;
+  update public.participants set joined_at = joined_at - d, consented_at = consented_at - d,
+         arrived_at = arrived_at - d, first_near_at = first_near_at - d where appointment_id = p_appt;
+  update public.invitees set claimed_at = claimed_at - d where appointment_id = p_appt;
+  update public.locations set updated_at = updated_at - d where appointment_id = p_appt;
+end $$;
+create or replace function t.travel(p_appt uuid, p_meet interval, p_started interval default null) returns void language sql as $$
+  update public.appointments set meet_at = now() + p_meet,
+         started_at = case when p_started is null then started_at else now() + p_started end,
+         local_at = to_char((now() + p_meet) at time zone tz, 'YYYY-MM-DD"T"HH24:MI'),
+         close_at = private.lb_close_at(now() + p_meet, stake, unit_minutes, penalty_per_unit, grace_minutes)
+   where id = p_appt; $$;
+revoke all on function t.at(uuid, interval), t.travel(uuid, interval, interval) from public;
 create or replace function t.me(p text) returns void language sql as $$
   select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-0000000000' || p, false); $$;
 create or replace function t.ok(label text, cond boolean) returns text language sql as $$
@@ -17,11 +43,79 @@ begin
 exception when others then
   return case when sqlerrm like want || '%' or sqlstate = want then 'ok   ' else 'FAIL ' end || label || ' -> ' || sqlerrm;
 end $$;
-grant execute on all functions in schema t to authenticated, anon;
+-- 오류의 DETAIL 만 꺼낸다(LB_INSUFFICIENT_POINTS 의 detail = 닉네임 등)
+create or replace function t.detail(q text) returns text language plpgsql as $$
+declare d text;
+begin
+  execute q;
+  return null;
+exception when others then
+  get stacked diagnostics d = pg_exception_detail;
+  return d;
+end $$;
+-- jsonb 키 집합(정렬, C 콜레이션) — 반환 모양 단언용
+create or replace function t.keys(j jsonb) returns text[] language sql immutable as $$
+  select array(select k from jsonb_object_keys(j) k order by k collate "C"); $$;
+create or replace function t.set(a text[]) returns text[] language sql immutable as $$
+  select array(select x from unnest(a) x order by x collate "C"); $$;
+-- 권한 매트릭스: 현재 롤(anon/authenticated)로 public·private 의 모든 테이블에 select/insert/update/delete/truncate 를 시도한다.
+-- select 는 authenticated 에게 5개 테이블만 허용(RLS 로 남의 행 0) — 이 함수는 프로필도 약속도 없는 사용자로 부른다.
+-- 허용돼 버린 쓰기는 예외로 되감는다(서브트랜잭션) — 테스트가 데이터를 망치지 않게.
+create or replace function t.table_matrix() returns setof text language plpgsql as $$
+declare r record; q text; col text; n bigint; readable boolean;
+begin
+  for r in select ns.nspname as s, c.relname as t, c.oid
+             from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
+            where ns.nspname in ('public', 'private') and c.relkind in ('r', 'p') order by 1, 2 loop
+    readable := current_user = 'authenticated' and r.s = 'public' and r.t in ('profiles', 'appointments', 'participants', 'invitees', 'ledger');
+    select quote_ident(attname) into col from pg_attribute
+     where attrelid = r.oid and attnum > 0 and not attisdropped and attidentity = '' and attgenerated = '' order by attnum limit 1;
+    begin
+      execute format('select count(*) from %I.%I', r.s, r.t) into n;
+      return next case when readable and n = 0 then 'ok   ' else 'FAIL ' end || format('%s select %s.%s -> %s rows (RLS)', current_user, r.s, r.t, n);
+    exception when insufficient_privilege then
+      return next case when readable then 'FAIL ' else 'ok   ' end || format('%s select %s.%s denied', current_user, r.s, r.t);
+    end;
+    foreach q in array array[format('insert into %I.%I default values', r.s, r.t),
+                             format('update %I.%I set %s = %s where false', r.s, r.t, col, col),
+                             format('delete from %I.%I where false', r.s, r.t),
+                             format('truncate %I.%I', r.s, r.t)] loop
+      begin
+        execute q;
+        raise exception 'T_ALLOWED';
+      exception
+        when insufficient_privilege then return next format('ok   %s %s %s.%s denied', current_user, split_part(q, ' ', 1), r.s, r.t);
+        when others then return next format('FAIL %s %s -> %s', current_user, q, sqlerrm);
+      end;
+    end loop;
+  end loop;
+end $$;
+-- 함수 호출 매트릭스: 스키마의 함수를 전부 null 인자로 불러 본다(권한 검사가 실행보다 먼저라 42501 이어야 한다)
+create or replace function t.call_all(p_schema text, p_except text[]) returns setof text language plpgsql as $$
+declare r record; q text;
+begin
+  for r in select p.proname,
+                  (select string_agg('null::' || format_type(a.t, null), ', ' order by a.o) from unnest(p.proargtypes) with ordinality a(t, o)) as args
+             from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+            where ns.nspname = p_schema and p.prokind = 'f' and p.prorettype <> 'trigger'::regtype
+              and p.proname <> all (p_except) and (p_schema <> 'public' or p.proname like 'lb\_%')
+            order by 1 loop
+    q := format('select %I.%I(%s)', p_schema, r.proname, coalesce(r.args, ''));
+    begin
+      execute q;
+      raise exception 'T_ALLOWED';
+    exception
+      when insufficient_privilege then return next format('ok   %s cannot call %s.%s', current_user, p_schema, r.proname);
+      when others then return next format('FAIL %s %s -> %s', current_user, q, sqlerrm);
+    end;
+  end loop;
+end $$;
+grant execute on function t.me(text), t.ok(text, boolean), t.err(text, text, text), t.detail(text), t.keys(jsonb), t.set(text[]),
+  t.table_matrix(), t.call_all(text, text[]) to authenticated, anon;
 create or replace function t.soon(p interval) returns text language sql as $$
   select to_char((now() + p) at time zone 'Asia/Seoul', 'YYYY-MM-DD"T"HH24:MI'); $$;
 grant execute on function t.soon(interval) to authenticated;
-insert into auth.users (id) select ('00000000-0000-0000-0000-0000000000' || x)::uuid from unnest(array['0a','0b','0c','0d','0e','0f']) x;
+insert into auth.users (id) select ('00000000-0000-0000-0000-0000000000' || x)::uuid from unnest(array['0a','0b','0c','0d','0e','0f','11','12','13','14','15','16','1f','21','22']) x;
 
 \set POL '{"stake":100,"radiusM":100,"unitMinutes":5,"penaltyPerUnit":10,"graceMinutes":0}'
 set role authenticated;
@@ -140,8 +234,7 @@ select t.err('ledger immutable even for owner', 'delete from public.ledger', 'LB
 
 -- 6. 시간 여행: 약속 10분 전. 시작 전에는 체크인도 위치도 없다. 주최자가 [시작하기] → 그 순간부터 위치가 보이고 체크인이 열린다.
 --    아직 안 들어온 디는 시작 후에도 약속 시각까지 들어올 수 있다(들어오면 그때부터 위치 공개·판정 대상).
-update public.appointments set meet_at = now() + interval '10 min',
-  close_at = private.lb_close_at(now() + interval '10 min', stake, unit_minutes, penalty_per_unit, grace_minutes) where id = :'appt';
+select t.travel(:'appt', '10 min');
 set role authenticated;
 select t.me('0b');
 select t.ok('before start: check-in not_open', public.lb_report_location(:'appt', 37.5100, 127.0400, 15, false, true)->>'reason' = 'not_open');
@@ -172,21 +265,28 @@ select t.err('no cancel after start with others', format('select public.lb_cance
 select t.err('roster frozen after start', format($q$select public.lb_edit_invitees(%L, array['영희'], null)$q$, :'appt'), 'LB_EDIT_FROZEN');
 select t.err('policy frozen after start', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', '{"policy":{"stake":200}}', :v2), 'LB_EDIT_FROZEN');
 select t.err('radius frozen after start', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', '{"policy":{"radiusM":200}}', :v2), 'LB_EDIT_FROZEN');
+select t.err('unit frozen after start', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', '{"policy":{"unitMinutes":10}}', :v2), 'LB_EDIT_FROZEN');
+select t.err('penalty frozen after start', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', '{"policy":{"penaltyPerUnit":5}}', :v2), 'LB_EDIT_FROZEN');
+select t.err('grace frozen after start', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', '{"policy":{"graceMinutes":3}}', :v2), 'LB_EDIT_FROZEN');
+select t.err('frozen check runs even with a place change', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', '{"placeName":"x","policy":{"stake":100,"penaltyPerUnit":5}}', :v2), 'LB_EDIT_FROZEN');
+select t.err('stale version after start', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', '{"placeName":"x"}', :v2 - 1), 'LB_APPT_CHANGED');
+select t.ok('same policy values after start = allowed no-op', (public.lb_edit_appointment(:'appt', '{"policy":{"stake":100,"radiusM":100,"unitMinutes":5,"penaltyPerUnit":20,"graceMinutes":0}}', :v2)->>'version')::int = :v2);
 select t.err('postpone only', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', jsonb_build_object('localAt', t.soon('7 minutes'))::text, :v2), 'LB_POSTPONE_ONLY');
 select t.err('postpone too far', format('select public.lb_edit_appointment(%L, %L, %s)', :'appt', jsonb_build_object('localAt', t.soon('4 hours'))::text, :v2), 'LB_POSTPONE_TOO_FAR');
 select t.ok('postpone +2h and move pin: ok', (select (j->>'version')::int = :v2 + 1 and j->>'placeName' = '강남역 2번 출구'
   from (select public.lb_edit_appointment(:'appt', jsonb_build_object('localAt', t.soon('2 hours'), 'placeName', '강남역 2번 출구', 'lat', 37.4981, 'lng', 127.0278), :v2) j) x));
 select :v2 + 1 as v3 \gset
-select t.ok('postpone recomputes close_at from new time', (select close_at - meet_at = interval '75 minutes'
-  and meet_at > now() + interval '110 minutes' from public.appointments where id = :'appt'));
+select t.ok('postpone recomputes close_at from new time (stake100/ppu20/unit5: 4 units + 30m tail = 50m)', (select close_at - meet_at = interval '50 minutes'
+  and meet_at > now() + interval '110 minutes' and local_at = to_char(meet_at at time zone tz, 'YYYY-MM-DD"T"HH24:MI') from public.appointments where id = :'appt'));
+select t.ok('postpone recorded in change history (before/after meetAtMs)', (select (changes->-1->'after'->>'meetAtMs')::bigint > (changes->-1->'before'->>'meetAtMs')::bigint
+  and changes->-1->'after'->>'placeName' = '강남역 2번 출구' from public.appointments where id = :'appt'));
 select t.ok('still started after postpone', (select started_at is not null and started_at < meet_at from public.appointments where id = :'appt'));
 select t.me('0d'); select t.err('no leave after start', format('select public.lb_leave(%L)', :'appt'), 'LB_LEAVE_CLOSED');
 reset role;
 select t.ok('share log has (viewer a -> subject b)', exists (select 1 from private.lb_share_log where viewer_id::text like '%0a' and subject_id::text like '%0b'));
 select t.err('started_at must precede meet_at (CHECK)', format($q$update public.appointments set meet_at = started_at where id = %L$q$, :'appt'), '23514');
 -- 미룬 시각을 다시 약속 10분 전으로 되감는다(시작 시각도 함께)
-update public.appointments set meet_at = now() + interval '10 min', started_at = now() - interval '20 min',
-  close_at = private.lb_close_at(now() + interval '10 min', stake, unit_minutes, penalty_per_unit, grace_minutes) where id = :'appt';
+select t.travel(:'appt', '10 min', '-20 min');
 
 -- 7. 오래된 좌표: 3분 넘으면 좌표 null(lastSeen 만), 10분 넘으면 삭제. p_share=false 는 저장 안 함
 update public.locations set updated_at = now() - interval '4 minutes';
@@ -204,20 +304,35 @@ reset role; select t.ok('stop_sharing deletes row', (select count(*) from public
 
 -- 8. 도착: A gps / B 정확도 미달(근처) → first_near / D mocked
 set role authenticated; select t.me('0a');
+select t.ok('A outside first (stored)', public.lb_report_location(:'appt', 37.5100, 127.0400, 20)->>'reason' = 'outside');
+reset role; select t.ok('A location row exists', (select count(*) from public.locations where user_id::text like '%0a') = 1);
+set role authenticated; select t.me('0a');
+select t.err('vouch self denied', format($q$select public.lb_vouch(%L, '00000000-0000-0000-0000-00000000000a')$q$, :'appt'), 'LB_CANNOT_VOUCH_SELF');
 select t.ok('A arrives', (public.lb_report_location(:'appt', 37.4980, 127.0277, 20)->>'arrived')::boolean);
+reset role; select t.ok('arrival deletes A location at once', (select count(*) from public.locations where user_id::text like '%0a') = 0);
+select t.ok('arrival stores distance/accuracy only', (select arrival_method = 'gps' and arrival_distance_m between 0 and 100 and arrival_accuracy_m = 20
+  from public.participants where appointment_id = :'appt' and user_id::text like '%0a'));
+set role authenticated; select t.me('0a');
 select t.ok('A second check-in = already', public.lb_report_location(:'appt', 37.4980, 127.0277, 20)->>'reason' = 'already_arrived');
 select t.me('0b');
 select t.ok('B low accuracy', public.lb_report_location(:'appt', 37.4979, 127.0276, 180)->>'reason' = 'low_accuracy');
 reset role; select first_near_at as near from public.participants where user_id::text like '%0b' \gset
 select t.ok('B first_near_at recorded', :'near' <> '');
 set role authenticated; select t.me('0d');
+select t.ok('D outside (stored)', public.lb_report_location(:'appt', 37.5200, 127.0500, 15)->>'reason' = 'outside');
 select t.ok('D mocked', public.lb_report_location(:'appt', 37.4979, 127.0276, 10, true)->>'reason' = 'mocked');
+reset role; select t.ok('mocked: not arrived and old row deleted', (select count(*) from public.locations where user_id::text like '%0d') = 0
+  and (select arrived_at is null from public.participants where appointment_id = :'appt' and user_id::text like '%0d'));
+set role authenticated; select t.me('0d');
+select t.ok('accuracy > 1000m: judged but not stored', public.lb_report_location(:'appt', 37.5200, 127.0500, 1500)->>'reason' = 'low_accuracy');
+reset role; select t.ok('coarse location not stored', (select count(*) from public.locations where user_id::text like '%0d') = 0);
+set role authenticated; select t.me('0d');
+select t.ok('bad position', public.lb_report_location(:'appt', 95, 127.0, 10)->>'reason' = 'bad_position');
 select t.err('non-arrived cannot vouch', format($q$select public.lb_vouch(%L, '00000000-0000-0000-0000-00000000000b')$q$, :'appt'), 'LB_VOUCHER_NOT_ARRIVED');
 reset role; select t.ok('still open (all not arrived)', (select status from public.appointments where id = :'appt') = 'open');
 
 -- 9. 약속 12분 후. A 는 15분 전 도착으로, B 의 first_near 는 2분 전(=제시간)으로 되감는다(시작 시각은 그보다 앞으로)
-update public.appointments set meet_at = now() - interval '12 min', started_at = now() - interval '42 min',
-  close_at = private.lb_close_at(now() - interval '12 min', stake, unit_minutes, penalty_per_unit, grace_minutes) where id = :'appt';
+select t.travel(:'appt', '-12 min', '-42 min');
 update public.participants set arrived_at = now() - interval '15 min' where arrived_at is not null;
 update public.participants set first_near_at = now() - interval '14 min' where first_near_at is not null;
 set role authenticated; select t.me('0a');
@@ -238,6 +353,7 @@ select t.me('0a'); select t.err('no edit after settle', format('select public.lb
 select t.err('no start after settle (was started)', format('select public.lb_start(%L)', :'appt'), 'LB_ALREADY_STARTED');
 reset role;
 select private.lb_settle(:'appt');  -- 재실행: no-op
+select private.lb_try_settle(:'appt');
 select t.ok('payouts: A 150, B 150, D 0 (stake 100, D no-show)', (select array_agg(amount order by user_id) from public.ledger where kind = 'payout' and appointment_id = :'appt') = array[150,150,0]);
 select t.ok('balances A1050 B1050 D900', (select array_agg(balance order by user_id) from public.profiles where user_id::text ~ '0[abd]$') = array[1050,1050,900]);
 select t.ok('locations wiped', (select count(*) from public.locations) = 0);
@@ -249,7 +365,7 @@ select (public.lb_create_appointment('노쇼호스트', t.soon('40 minutes'), 'A
 select t.me('0b'); select t.ok('B joins (not started)', (public.lb_claim_slot(:'ap1', '비', 1, true)->>'started')::boolean = false);
 select t.ok('B hold 100 (950)', (select balance from public.profiles) = 950);
 reset role;
-update public.appointments set meet_at = now() - interval '1 second', close_at = now() + interval '74 minutes' where id = :'ap1';
+select t.travel(:'ap1', '-1 second');
 set role authenticated; select t.me('0e');
 select t.err('start after meet time', format('select public.lb_start(%L)', :'ap1'), 'LB_START_CLOSED');
 select t.err('edit after meet time without start', format('select public.lb_edit_appointment(%L, %L, 1)', :'ap1', '{"placeName":"x"}'), 'LB_EDIT_CLOSED');
@@ -330,6 +446,269 @@ select t.me('0f'); select t.ok('F joins with 50', public.lb_claim_slot(:'ap5', '
 select t.me('0a');
 select t.err('raise blocked by poor friend', format('select public.lb_edit_appointment(%L, %L, 1)', :'ap5', '{"policy":{"stake":300}}'), 'LB_INSUFFICIENT_POINTS');
 select t.ok('failed raise rolled back (host still 50 held)', (select balance from public.profiles) = 1000);
+select t.ok('raise failure detail = the short friend''s nickname', t.detail(format('select public.lb_edit_appointment(%L, %L, 1)', :'ap5', '{"policy":{"stake":300}}')) = '에프');
+select t.ok('failed raise kept version 1', (public.lb_get_live(:'ap5')->'appointment'->>'version')::int = 1);
+-- 14. 제시간·지각·노쇼 섞인 정산(나머지 분배 결정성·멱등). 주최자 11(하나) + 명단 둘·셋·넷·다섯·여섯(12~16)
+--     정책 100P / 5분당 10P / 봐주기 0 → 마감 = 약속 + (10−1)×5 + 30 = 75분.
+--     16 −9분·11 −8분·12 −3분(제시간), 13 +7분(지각 2단위 = 20P), 14 +60분(지각 전액 100P), 15 안 옴(100P)
+--     → 판돈 220 을 제시간 3명이 73씩, 나머지 1P 는 가장 먼저 온 16 에게(가입 순서가 아니라 도착 순서)
+set role authenticated;
+select t.me('11'); select public.lb_ensure_profile('하나') is not null;
+select t.me('12'); select public.lb_ensure_profile('둘') is not null;
+select t.me('13'); select public.lb_ensure_profile('셋') is not null;
+select t.me('14'); select public.lb_ensure_profile('넷') is not null;
+select t.me('15'); select public.lb_ensure_profile('다섯') is not null;
+select t.me('16'); select public.lb_ensure_profile('여섯') is not null;
+select t.me('11');
+select public.lb_create_appointment('정산', t.soon('3 hours'), 'Asia/Seoul', '시청역', '', 37.5657, 126.9769, :'POL', array['둘', '셋', '넷', '다섯', '여섯'], true)::text as createj \gset
+select (:'createj')::jsonb->>'id' as m, (:'createj')::jsonb->>'inviteCode' as mcode \gset
+select t.err('lat without lng', format('select public.lb_edit_appointment(%L, %L, 1)', :'m', '{"lat":37.5}'), 'LB_BAD_POSITION');
+-- Conformance 로 맞춘 것: 범위 밖 핀은 생성도 LB_BAD_POSITION(CHECK 23514 아님), 메모는 양끝 공백을 지운다
+select t.err('create lat out of range -> LB_BAD_POSITION', format('select public.lb_create_appointment(%L, %L, %L, %L, %L, 95, 126.97, %L, null, true)',
+  'x', t.soon('3 hours'), 'Asia/Seoul', 'x', '', :'POL'), 'LB_BAD_POSITION');
+select public.lb_update_memo(:'m', '  정산 ', '  2층  ');
+select t.ok('update_memo trims title and place_note', (select title = '정산' and place_note = '2층' from public.appointments where id = :'m'));
+select public.lb_edit_appointment(:'m', '{"placeName":"시청역 3번 출구","lat":37.5660,"lng":126.9775,"policy":{"stake":100,"radiusM":150,"unitMinutes":3,"penaltyPerUnit":10,"graceMinutes":2}}', 1)::text as editj \gset
+select t.ok('pre-start place + radius + unit + grace edit: version 2, close = 2 + 9×3 + 30 = 59m', (select (j->>'version')::int = 2 and j->>'placeName' = '시청역 3번 출구'
+  and (j->'policy'->>'radiusM')::int = 150 and (j->>'closeMs')::bigint - (j->>'meetAtMs')::bigint = 59 * 60000 from (select (:'editj')::jsonb j) x));
+select t.ok('back to 5-minute units: version 3, close 75m', (select (j->>'version')::int = 3 and (j->>'closeMs')::bigint - (j->>'meetAtMs')::bigint = 75 * 60000
+  from (select public.lb_edit_appointment(:'m', '{"policy":{"stake":100,"radiusM":100,"unitMinutes":5,"penaltyPerUnit":10,"graceMinutes":0}}', 2) j) x));
+select t.ok('stake unchanged: no policy_change rows', (select count(*) from public.ledger where appointment_id = :'m' and meta->>'reason' = 'policy_change') = 0);
+select t.me('12');
+select public.lb_peek_invite(:'mcode')::text as peekj \gset
+select t.ok('peek before claim: 5 open names, not mine', (select jsonb_array_length(j->'invitees') = 5 and not bool_or((e->>'claimed')::boolean or (e->>'mine')::boolean)
+  from (select (:'peekj')::jsonb j) x, jsonb_array_elements(j->'invitees') e group by j));
+select public.lb_claim_slot(:'m', '둘', 3, true)::text as claimj \gset
+select t.ok('12 claims 둘', (:'claimj')::jsonb->>'state' = 'active');
+select t.ok('claimed name = participant nickname', (select e->>'nickname' = '둘' from jsonb_array_elements(public.lb_get_live(:'m')->'participants') e where e->>'userId' like '%12'));
+select t.me('13'); select t.ok('13 claims 셋', public.lb_claim_slot(:'m', '셋', 3, true)->>'state' = 'active');
+select t.me('14'); select t.ok('14 claims 넷', public.lb_claim_slot(:'m', '넷', 3, true)->>'state' = 'active');
+select t.ok('claiming a second name is a no-op (one slot per account)', public.lb_claim_slot(:'m', '다섯', 3, true)->>'state' = 'active');  -- 멱등: 이미 멤버면 그대로
+select t.ok('14 still holds only 넷', (select count(*) from public.invitees where appointment_id = :'m' and claimed_by::text like '%14') = 1
+  and (select claimed_by is null from public.invitees where appointment_id = :'m' and name = '다섯'));
+select t.me('15'); select t.ok('15 claims 다섯', public.lb_claim_slot(:'m', '다섯', 3, true)->>'state' = 'active');
+select t.me('16'); select t.ok('16 claims 여섯', public.lb_claim_slot(:'m', '여섯', 3, true)->>'state' = 'active');
+select t.ok('everyone held 100 (900)', (select balance from public.profiles) = 900);
+select t.me('11');
+select public.lb_start(:'m')::text as startj \gset
+select t.ok('host starts: startedAtMs set, version unchanged', (select j->>'startedAtMs' is not null and (j->>'version')::int = 3 from (select (:'startj')::jsonb j) x));
+reset role; select t.at(:'m', '-20 min');
+-- 정확도 미달 '근처' 기록은 핀을 옮기면 지워진다(옛 장소 근처였다는 건 새 장소의 근거가 못 된다)
+set role authenticated; select t.me('12');
+select t.ok('12 low accuracy but near', public.lb_report_location(:'m', 37.5660, 126.9775, 150)->>'reason' = 'low_accuracy');
+reset role; select t.ok('12 first_near recorded', (select first_near_at is not null from public.participants where appointment_id = :'m' and user_id::text like '%12'));
+set role authenticated; select t.me('11');
+select t.ok('pin moved after start (version 4)', (public.lb_edit_appointment(:'m', '{"lat":37.5661,"lng":126.9776}', 3)->>'version')::int = 4);
+reset role; select t.ok('pin move clears first_near', (select first_near_at is null from public.participants where appointment_id = :'m' and user_id::text like '%12'));
+select t.at(:'m', '-9 min');
+set role authenticated; select t.me('16');
+select public.lb_report_location(:'m', 37.5700, 126.9800, 10)::text as rep1 \gset
+select t.ok('16 outside (stored)', (:'rep1')::jsonb->>'reason' = 'outside' and ((:'rep1')::jsonb->>'distanceM')::int > 100);
+select t.me('12'); select public.lb_get_live(:'m')::text as live1 \gset
+select t.ok('12 sees 16 location with distance', (select e->'location'->>'distanceM' is not null and (e->'location'->>'lat')::float8 = 37.57
+  from jsonb_array_elements((:'live1')::jsonb->'participants') e where e->>'userId' like '%16'));
+select t.me('16');
+select public.lb_report_location(:'m', 37.5661, 126.9776, 10)::text as rep2 \gset
+select t.ok('16 arrives first', ((:'rep2')::jsonb->>'arrived')::boolean and (:'rep2')::jsonb->>'reason' is null);
+reset role;
+select t.ok('16 location deleted on arrival', (select count(*) from public.locations where appointment_id = :'m' and user_id::text like '%16') = 0);
+insert into public.locations (appointment_id, user_id, lat, lng, accuracy_m) values (:'m', '00000000-0000-0000-0000-000000000016', 37.5661, 126.9776, 5);
+set role authenticated; select t.me('12');
+select t.ok('arrived person: no coords, no lastSeen even if a row exists', (select e->'location' = 'null'::jsonb and e->'lastSeenMs' = 'null'::jsonb
+  from jsonb_array_elements(public.lb_get_live(:'m')->'participants') e where e->>'userId' like '%16'));
+reset role; delete from public.locations where appointment_id = :'m';
+select t.at(:'m', '-8 min');
+set role authenticated; select t.me('11'); select t.ok('11 arrives', (public.lb_report_location(:'m', 37.5661, 126.9776, 10)->>'arrived')::boolean);
+reset role; select t.at(:'m', '-3 min');
+set role authenticated; select t.me('12'); select t.ok('12 arrives', (public.lb_report_location(:'m', 37.5661, 126.9776, 10)->>'arrived')::boolean);
+reset role; select t.at(:'m', '7 min');
+set role authenticated; select t.me('13'); select t.ok('13 arrives 7m late', (public.lb_report_location(:'m', 37.5661, 126.9776, 10)->>'arrived')::boolean);
+reset role; select t.at(:'m', '60 min');
+set role authenticated; select t.me('14'); select t.ok('14 arrives 60m late (inside 30m tail)', (public.lb_report_location(:'m', 37.5661, 126.9776, 10)->>'arrived')::boolean);
+select t.ok('not settled while 15 missing and window open', (public.lb_get_live(:'m')->>'settlePending')::boolean = false
+  and public.lb_get_live(:'m')->'appointment'->>'status' = 'open');
+reset role; select t.at(:'m', '75 min 20 seconds');
+set role authenticated; select t.me('15');
+select t.ok('15 late report after close = closed', public.lb_report_location(:'m', 37.5661, 126.9776, 10)->>'reason' = 'closed');
+select t.ok('settled lazily', public.lb_get_live(:'m')->'appointment'->>'status' = 'settled');
+reset role;
+select t.ok('results by user: 11 on 73 / 12 on 73 / 13 late 20 / 14 late 100 / 15 noShow 100 / 16 on 74',
+  (select array_agg(result_status || ':' || forfeited || ':' || received order by user_id) from public.participants where appointment_id = :'m')
+  = array['onTime:0:73', 'onTime:0:73', 'late:20:0', 'late:100:0', 'noShow:100:0', 'onTime:0:74']);
+select t.ok('payouts 173,173,80,0,0,174', (select array_agg(amount order by user_id) from public.ledger where appointment_id = :'m' and kind = 'payout') = array[173, 173, 80, 0, 0, 174]);
+select t.ok('mixed settle: escrow sum 0, received = forfeited', (select sum(amount) from public.ledger where appointment_id = :'m') = 0
+  and (select sum(received) = sum(forfeited) from public.participants where appointment_id = :'m'));
+select t.ok('balances 1073,1073,980,900,900,1074', (select array_agg(balance order by user_id) from public.profiles where user_id::text ~ '00000000001[1-6]$') = array[1073, 1073, 980, 900, 900, 1074]);
+select t.ok('settlement equals lb_settle_preview on the same arrivals', (
+  select bool_and(p.result_status = e->>'status' and p.forfeited = (e->>'forfeited')::int and p.received = (e->>'received')::int)
+    from jsonb_array_elements(public.lb_settle_preview('{"stake":100,"unitMinutes":5,"penaltyPerUnit":10,"graceMinutes":0}',
+           (select floor(extract(epoch from meet_at) * 1000)::bigint from public.appointments where id = :'m'),
+           (select jsonb_agg(jsonb_build_object('id', user_id, 'arrivedAtMs', floor(extract(epoch from arrived_at) * 1000)::bigint) order by joined_at, user_id)
+              from public.participants where appointment_id = :'m'))->'persons') e
+    join public.participants p on p.appointment_id = :'m' and p.user_id::text = e->>'id'));
+-- 나머지 분배는 입력 순서가 아니라 도착 순서(동시 도착이면 입력 순서 = 가입 순서)로 결정된다
+select t.ok('remainder to earliest arrival regardless of input order (pot 105 -> 53/52)', (select e->>'id' = 'late-joiner' and (e->>'received')::int = 53
+  from jsonb_array_elements(public.lb_settle_preview('{"stake":100,"unitMinutes":5,"penaltyPerUnit":5,"graceMinutes":0}', 1000000,
+    '[{"id":"first","arrivedAtMs":999000},{"id":"late-joiner","arrivedAtMs":900000},{"id":"x","arrivedAtMs":null},{"id":"y","arrivedAtMs":1000001}]')->'persons') e
+  where (e->>'received')::int > 52));
+select t.ok('tie: remainder to first in order', (select array_agg((e->>'received')::int order by o) = array[51, 50, 0, 0] from jsonb_array_elements(
+  public.lb_settle_preview('{"stake":100,"unitMinutes":5,"penaltyPerUnit":1,"graceMinutes":0}', 1000000,
+    '[{"id":"a","arrivedAtMs":900000},{"id":"b","arrivedAtMs":900000},{"id":"c","arrivedAtMs":null},{"id":"d","arrivedAtMs":1060001}]')->'persons') with ordinality as x(e, o)));
+-- 멱등: 몇 번을 더 불러도 payout 은 사람당 1줄
+select private.lb_settle(:'m'); select private.lb_try_settle(:'m');
+set role authenticated; select t.me('11'); select public.lb_get_live(:'m') is not null; select public.lb_list_my_appointments() is not null; reset role;
+select t.ok('idempotent: 6 payouts for 6 people', (select count(*) from public.ledger where appointment_id = :'m' and kind = 'payout') = 6);
+select t.err('second payout blocked by unique index', format($q$insert into public.ledger (user_id, appointment_id, kind, amount, balance_after) values ('00000000-0000-0000-0000-000000000011', %L, 'payout', 1, 1)$q$, :'m'), '23505');
+select t.err('ledger update denied even for owner', 'update public.ledger set amount = amount', 'LB_LEDGER_IMMUTABLE');
+select t.err('ledger truncate denied even for owner', 'truncate public.ledger', 'LB_LEDGER_IMMUTABLE');
+select t.ok('audit clean #3', (select count(*) from private.lb_audit()) = 0);
+
+-- 14.5 참여 때 부족분 자동 채움 + 취소 환불. 15 는 900 → 300짜리 3개를 주최(잔액 0, 걸린 900, 가진 것 900 < 1000)
+set role authenticated; select t.me('15');
+select public.lb_create_appointment('g1', t.soon('6 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":300,"penaltyPerUnit":10}', '{}'::text[], true) is not null;
+select public.lb_create_appointment('g2', t.soon('6 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":300,"penaltyPerUnit":10}', '{}'::text[], true) is not null;
+select public.lb_create_appointment('g3', t.soon('6 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":300,"penaltyPerUnit":10}', '{}'::text[], true) is not null;
+select t.ok('15 at 0', (select balance from public.profiles) = 0);
+select t.me('11');
+select (public.lb_create_appointment('보충', t.soon('6 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, :'POL', array['다섯'], true)->>'id') as g4 \gset
+select t.me('15');
+select t.ok('claim with 0 balance: topped up then held', public.lb_claim_slot(:'g4', '다섯', 1, true)->>'state' = 'active' and (select balance from public.profiles) = 0);
+select public.lb_list_ledger(5)::text as ledj \gset
+select t.ok('ledger RPC: hold then relief(topup, reliefFor = appointment)', (select j->0->>'kind' = 'hold' and (j->0->>'amount')::int = -100 and j->0->>'appointmentTitle' = '보충'
+  and j->1->>'kind' = 'relief' and j->1->>'reason' = 'topup' and j->1->>'reliefFor' = :'g4' and (j->1->>'amount')::int = 100 and j->1->>'appointmentId' is null
+  from (select (:'ledj')::jsonb j) x));
+select t.me('11'); select public.lb_cancel(:'g4');
+select t.ok('cancel refunds host', (select balance from public.profiles) = 1073);
+select t.me('15'); select t.ok('cancel refunds guest (relief kept)', (select balance from public.profiles) = 100);
+select t.ok('ledger RPC: canceled refund on top', (select j->0->>'kind' = 'refund' and j->0->>'reason' = 'canceled' and j->0->>'appointmentTitle' = '보충' from (select public.lb_list_ledger(1) j) x));
+select t.ok('ledger RPC limit', jsonb_array_length(public.lb_list_ledger(2)) = 2);
+select t.me('11'); select t.err('cancel twice', format('select public.lb_cancel(%L)', :'g4'), 'LB_CANCEL_CLOSED');
+select t.me('0c');
+select t.ok('kicked user still sees the appointment title in ledger', (select bool_or(e->>'reason' = 'kicked' and e->>'appointmentTitle' = '금요일 곱창') from jsonb_array_elements(public.lb_list_ledger()) e));
+select t.ok('...though RLS hides that appointment', (select count(*) from public.appointments where title = '금요일 곱창') = 0);
+
+-- 15. 게으른 마감: 홈 목록(lb_list_my_appointments)·초대 미리보기(lb_peek_invite)만 불러도 시작 안 된 약속이 무효되고 빈 이름이 지워진다
+set role authenticated; select t.me('12');
+select (public.lb_create_appointment('게으른목록', t.soon('2 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":50,"penaltyPerUnit":10}', array['유령'], true)->>'id') as l1 \gset
+select (public.lb_create_appointment('열린1', t.soon('5 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":0}', '{}'::text[], true)->>'id') as o1 \gset
+select (public.lb_create_appointment('열린2', t.soon('4 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":0}', array['새'], true)->>'id') as o2 \gset
+select t.ok('list before: l1 open, 1 unclaimed, not started', (select e->>'status' = 'open' and (e->>'unclaimedCount')::int = 1 and e->>'startedAtMs' is null
+  and (e->>'isHost')::boolean and (e->>'memberCount')::int = 1 from jsonb_array_elements(public.lb_list_my_appointments()) e where e->>'id' = :'l1'));
+select t.me('13');
+select (public.lb_create_appointment('게으른초대', t.soon('2 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":0}', array['유령'], true)->>'inviteCode') as l2code \gset
+reset role;
+select t.travel(:'l1', '-1 second');
+select t.travel((select id from public.appointments where invite_code = :'l2code'), '-1 second');
+set role authenticated; select t.me('12');
+select public.lb_list_my_appointments()::text as listj \gset
+select t.ok('list lazily voids unstarted past-due (notStarted, names dropped)', (select e->>'status' = 'voided' and (e->>'unclaimedCount')::int = 0
+  from jsonb_array_elements((:'listj')::jsonb) e where e->>'id' = :'l1'));
+select t.ok('list order: open by meet asc, then closed by meet desc', (select array_agg(e->>'id' order by o) from jsonb_array_elements((:'listj')::jsonb) with ordinality x(e, o))
+  = array[:'o2', :'o1', :'l1', :'m']);
+select t.ok('list: non-host row', (select not (e->>'isHost')::boolean and e->>'hostId' like '%11' and e->>'status' = 'settled' and e->>'startedAtMs' is not null
+  from jsonb_array_elements((:'listj')::jsonb) e where e->>'id' = :'m'));
+select t.ok('peek lazily closes: no names left, stake 0 -> settled', (select jsonb_array_length(j->'invitees') = 0 and j->>'status' = 'settled' and j->>'myState' is null
+  from (select public.lb_peek_invite(:'l2code') j) x));
+select t.err('claim on it', format('select public.lb_claim_slot((select id from public.appointments limit 0), %L, 1, true)', '유령'), 'LB_INVITE_NOT_FOUND');
+select t.ok('edit_invitees returns the appointment', (select jsonb_array_length(j->'invitees') = 2 from (select public.lb_edit_invitees(:'o2', array['둘째'], null) j) x));
+reset role;
+select t.ok('lazy void refunded l1 host', (select count(*) from public.ledger where appointment_id = :'l1' and kind = 'refund' and meta->>'reason' = 'notStarted') = 1);
+select t.ok('audit clean #4', (select count(*) from private.lb_audit()) = 0);
+select t.ok('no settle errors so far', (select count(*) from private.lb_settle_errors) = 0);
+
+-- 16. 권한(원칙 1·5·7). 프로필도 약속도 없는 사용자 1f 로: 모든 테이블 직접 읽기/쓰기, private 함수, anon 이 부를 수 있는 RPC
+set role authenticated; select t.me('1f');
+select * from t.table_matrix();
+select * from t.call_all('private', array['lb_is_member']);
+select t.ok('authenticated may call lb_is_member (RLS helper) = only own membership', private.lb_is_member(:'m') = false);
+reset role; set role anon; select t.me('1f');
+select * from t.table_matrix();
+select * from t.call_all('private', array[]::text[]);
+select * from t.call_all('public', array['lb_ping']);
+select t.ok('anon ping works', public.lb_ping() ? 'serverNowMs');
+reset role;
+select t.ok('anon can execute only public.lb_ping', (select array_agg(p.proname::text order by p.proname) from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  where ns.nspname in ('public', 'private') and has_function_privilege('anon', p.oid, 'EXECUTE')) = array['lb_ping']);
+select t.ok('authenticated executes no private fn but lb_is_member', (select array_agg(p.proname::text) from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  where ns.nspname = 'private' and has_function_privilege('authenticated', p.oid, 'EXECUTE')) = array['lb_is_member']);
+select t.ok('authenticated executes every public.lb_*', not exists (select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  where ns.nspname = 'public' and p.proname like 'lb\_%' and not has_function_privilege('authenticated', p.oid, 'EXECUTE')));
+select t.ok('public RPC count = 19 (16 + ping + settle_preview + list_my_appointments + list_ledger - 1 start is #17)', (select count(*) from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  where ns.nspname = 'public' and p.proname like 'lb\_%') = 19);
+select t.ok('every SECURITY DEFINER fn pins search_path to empty', (select count(*) > 20 and bool_and('search_path=""' = any (coalesce(p.proconfig, '{}')))
+  from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace where ns.nspname in ('public', 'private') and p.prosecdef));
+select p.oid::regprocedure::text as definer_without_search_path from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+ where ns.nspname in ('public', 'private') and p.prosecdef and not ('search_path=""' = any (coalesce(p.proconfig, '{}')));
+select t.ok('every public.lb_* is SECURITY DEFINER except pure helpers', (select array_agg(p.proname::text order by p.proname) from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+  where ns.nspname = 'public' and p.proname like 'lb\_%' and not p.prosecdef) is null);
+select t.ok('RLS on for every table in public/private', not exists (select 1 from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
+  where ns.nspname in ('public', 'private') and c.relkind = 'r' and not c.relrowsecurity));
+select t.ok('only SELECT policies exist', not exists (select 1 from pg_policies where schemaname in ('public', 'private') and cmd <> 'SELECT'));
+select t.ok('no policy on locations / private tables', not exists (select 1 from pg_policies where tablename = 'locations' or schemaname = 'private'));
+select t.ok('no sequence usable by clients', not exists (select 1 from pg_class c join pg_namespace ns on ns.oid = c.relnamespace
+  where ns.nspname in ('public', 'private') and c.relkind = 'S' and (has_sequence_privilege('anon', c.oid, 'USAGE,SELECT,UPDATE') or has_sequence_privilege('authenticated', c.oid, 'USAGE,SELECT,UPDATE'))));
+select t.ok('anon has no usage on private schema', not has_schema_privilege('anon', 'private', 'USAGE'));
+-- 원칙 1: 이후 마이그레이션이 만드는 새 객체도 기본 권한이 없다(0절의 default privileges 회수)
+set role postgres;
+create table public.t_new_table (x int);
+create function public.lb_t_new_fn() returns int language sql as 'select 1';
+reset role;
+select t.ok('new table gets no default grants', not has_table_privilege('authenticated', 'public.t_new_table', 'SELECT,INSERT,UPDATE,DELETE')
+  and not has_table_privilege('anon', 'public.t_new_table', 'SELECT,INSERT,UPDATE,DELETE'));
+select t.ok('new function gets no default execute (anon/authenticated/PUBLIC)', not has_function_privilege('anon', 'public.lb_t_new_fn()', 'EXECUTE')
+  and not has_function_privilege('authenticated', 'public.lb_t_new_fn()', 'EXECUTE'));
+drop function public.lb_t_new_fn(); drop table public.t_new_table;
+
+-- 17. 반환 모양(클라이언트 DTO 계약 — src/lateBet/types.ts). 키 집합이 정확히 같아야 한다
+set role authenticated; select t.me('12');
+select t.ok('shape lb_ping = LbPing', t.keys(public.lb_ping()) = t.set(array['serverNowMs', 'minBuild', 'iosUrl', 'androidUrl']));
+select t.ok('shape lb_ensure_profile = profiles row (snake_case)', t.keys(to_jsonb(public.lb_ensure_profile('둘'))) = t.set(array['user_id', 'nickname', 'balance', 'created_at']));
+select t.ok('shape LbAppointment (create/edit/start/edit_invitees/live)', (select bool_and(t.keys(j) = t.set(array['id', 'inviteCode', 'hostId', 'hostNickname', 'title', 'localAt', 'tz',
+  'meetAtMs', 'startedAtMs', 'closeMs', 'placeName', 'placeNote', 'placeLat', 'placeLng', 'status', 'voidReason', 'version', 'policy', 'invitees', 'changes']))
+  from unnest(array[(:'createj')::jsonb, (:'editj')::jsonb, (:'startj')::jsonb, public.lb_edit_invitees(:'o2', null, array['둘째']), (:'live1')::jsonb->'appointment']) j));
+select t.ok('shape LatePolicy', t.keys((:'createj')::jsonb->'policy') = t.set(array['stake', 'radiusM', 'unitMinutes', 'penaltyPerUnit', 'graceMinutes']));
+select t.ok('shape LbInvitee', (select bool_and(t.keys(e) = t.set(array['name', 'claimedByUserId', 'claimedAtMs'])) from jsonb_array_elements((:'live1')::jsonb->'appointment'->'invitees') e));
+select t.ok('shape LbAppointmentChange + snapshot', (select bool_and(t.keys(e) = t.set(array['version', 'atMs', 'before', 'after'])
+  and t.keys(e->'before') = t.set(array['localAt', 'tz', 'meetAtMs', 'placeName', 'placeLat', 'placeLng', 'policy']) and t.keys(e->'after') = t.keys(e->'before'))
+  from jsonb_array_elements((:'editj')::jsonb->'changes') e));
+select t.ok('shape LbInvitePreview', t.keys((:'peekj')::jsonb) = t.set(array['id', 'title', 'hostNickname', 'localAt', 'tz', 'meetAtMs', 'startedAtMs', 'closeMs', 'placeName',
+  'placeNote', 'placeLat', 'placeLng', 'status', 'version', 'serverNowMs', 'policy', 'memberCount', 'invitees', 'myState', 'myBalance'])
+  and t.keys((:'peekj')::jsonb->'invitees'->0) = t.set(array['name', 'claimed', 'mine']));
+select t.ok('shape LbJoinResult', t.keys((:'claimj')::jsonb) = t.set(array['appointmentId', 'state', 'started']));
+select t.ok('shape LbReportResult', t.keys((:'rep1')::jsonb) = t.set(array['arrived', 'reason', 'arrivedAtMs', 'distanceM', 'serverNowMs']) and t.keys((:'rep2')::jsonb) = t.keys((:'rep1')::jsonb));
+select t.ok('shape LbLive', t.keys((:'live1')::jsonb) = t.set(array['serverNowMs', 'myUserId', 'myState', 'myBalance', 'settlePending', 'appointment', 'participants']));
+select t.ok('shape LbLiveParticipant + LbLiveLocation', (select bool_and(t.keys(e) = t.set(array['userId', 'nickname', 'state', 'joinedAtMs', 'arrivedAtMs', 'arrivalMethod',
+  'arrivalDistanceM', 'arrivalAccuracyM', 'vouchedBy', 'resultStatus', 'forfeited', 'received', 'lastSeenMs', 'location']))
+  and bool_and(e->'location' = 'null'::jsonb or t.keys(e->'location') = t.set(array['lat', 'lng', 'accuracyM', 'updatedAtMs', 'distanceM']))
+  and count(*) filter (where e->'location' <> 'null'::jsonb) = 1 from jsonb_array_elements((:'live1')::jsonb->'participants') e));
+select t.ok('shape LbMyAppointment', (select bool_and(t.keys(e) = t.set(array['id', 'title', 'localAt', 'tz', 'meetAtMs', 'startedAtMs', 'closeMs', 'placeName', 'status',
+  'policy', 'hostId', 'isHost', 'myState', 'memberCount', 'unclaimedCount'])) from jsonb_array_elements((:'listj')::jsonb) e));
+select t.ok('shape LbLedgerEntry', (select bool_and(t.keys(e) = t.set(array['id', 'kind', 'amount', 'balanceAfter', 'appointmentId', 'appointmentTitle', 'reason',
+  'reliefFor', 'createdAtMs'])) from jsonb_array_elements(public.lb_list_ledger()) e));
+select t.ok('void RPCs return null (leave/kick/cancel/update_memo/stop_sharing/vouch)', (select bool_and(format_type(p.prorettype, null) = 'void') from pg_proc p
+  join pg_namespace ns on ns.oid = p.pronamespace where ns.nspname = 'public' and p.proname in ('lb_leave', 'lb_kick', 'lb_cancel', 'lb_update_memo', 'lb_stop_sharing', 'lb_vouch')));
+
+-- 18. 생성 멱등 키(p_request_id): 타임아웃 뒤 [만들기] 재시도가 약속·에스크로를 두 번 만들지 않는다
+set role authenticated; select t.me('21'); select public.lb_ensure_profile('멱등') is not null;
+\set RID '7d4b1c2e-0000-4000-8000-00000000abcd'
+select (public.lb_create_appointment('중복', t.soon('3 hours'), 'Asia/Seoul', '강남역', '', 37.4979, 127.0276, '{"stake":300,"penaltyPerUnit":10}', array['친구'], true, false, :'RID'::uuid))::text as idem1 \gset
+select (public.lb_create_appointment('중복', t.soon('3 hours'), 'Asia/Seoul', '강남역', '', 37.4979, 127.0276, '{"stake":300,"penaltyPerUnit":10}', array['친구'], true, false, :'RID'::uuid))::text as idem2 \gset
+select t.ok('idempotent create: same appointment returned', (:'idem1')::jsonb->>'id' = (:'idem2')::jsonb->>'id' and (:'idem1')::jsonb->>'inviteCode' = (:'idem2')::jsonb->>'inviteCode');
+select t.ok('idempotent create: one appointment, one hold (1000 - 300)', (select count(*) from public.appointments where host_id = '00000000-0000-0000-0000-000000000021'::uuid) = 1
+  and (select balance from public.profiles) = 700
+  and (select count(*) from public.ledger where user_id = '00000000-0000-0000-0000-000000000021'::uuid and kind = 'hold') = 1);
+select t.ok('idempotent create: roster not duplicated', (select count(*) from public.invitees where appointment_id = ((:'idem1')::jsonb->>'id')::uuid) = 1);
+-- 재시도는 첫 요청이 통과한 검사를 다시 하지 않는다(동의 false 로 와도 같은 약속). 다른 키는 새 약속
+select t.ok('idempotent replay skips checks', public.lb_create_appointment('딴거', t.soon('4 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":0}', '{}'::text[], false, false, :'RID'::uuid)->>'id' = (:'idem1')::jsonb->>'id');
+select t.ok('different request id -> new appointment', public.lb_create_appointment('중복', t.soon('3 hours'), 'Asia/Seoul', '강남역', '', 37.4979, 127.0276, '{"stake":0}', '{}'::text[], true, false, gen_random_uuid())->>'id' <> (:'idem1')::jsonb->>'id');
+select t.ok('null request id -> no dedup', public.lb_create_appointment('중복', t.soon('3 hours'), 'Asia/Seoul', '강남역', '', 37.4979, 127.0276, '{"stake":0}', '{}'::text[], true)->>'id'
+  <> public.lb_create_appointment('중복', t.soon('3 hours'), 'Asia/Seoul', '강남역', '', 37.4979, 127.0276, '{"stake":0}', '{}'::text[], true)->>'id');
+-- 키는 주최자별: 다른 사람이 같은 키를 써도 남의 약속이 새지 않는다
+select t.me('22'); select public.lb_ensure_profile('남') is not null;
+select t.ok('request id scoped per host', public.lb_create_appointment('남의것', t.soon('3 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":0}', '{}'::text[], true, false, :'RID'::uuid)->>'id' <> (:'idem1')::jsonb->>'id');
+select t.err('rejected create (consent false, fresh key)', format($q$select public.lb_create_appointment('x', %L, 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":0}', '{}'::text[], false, false, 'aaaaaaaa-0000-4000-8000-000000000001'::uuid)$q$, t.soon('3 hours')), 'LB_CONSENT_REQUIRED');
+select t.ok('key free after a rejected create', public.lb_create_appointment('재도전', t.soon('3 hours'), 'Asia/Seoul', 'p', '', 37.5, 127.0, '{"stake":0}', '{}'::text[], true, false, 'aaaaaaaa-0000-4000-8000-000000000001'::uuid)->>'title' = '재도전');
+
 reset role;
 select t.ok('ledger meta.anon recorded', (select bool_and(meta ? 'anon') from public.ledger));
 select t.ok('audit clean #2', (select count(*) from private.lb_audit()) = 0);

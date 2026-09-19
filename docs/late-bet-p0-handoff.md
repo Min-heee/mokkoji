@@ -1,6 +1,9 @@
 # 약속 내기 P0 — 진행 메모 (2026-09-18 2차 갱신)
 설계서: `docs/appointment-bet-design.md`. 이 파일은 P0 구현 워크플로의 인수인계 메모다. **설계서 §0-1(오너 확정 흐름 2026-09-18 — 주최자 [시작하기] 모델)이 본문보다 우선한다** — 아래 계약서는 그 흐름을 반영한 판이다.
 ## 상태
+- **2026-09-19 [P2 적대 리뷰 클라이언트 5건 수정]** ① 생성 멱등 키: `LbCreateInput.requestId`(uuid, `src/lateBet/requestId.ts`) → `lb_create_appointment(…, p_request_id uuid default null)` + `appointments.request_id`·unique(host_id, request_id). 같은 주최자·같은 키 재시도는 검사·에스크로 없이 그때 만든 약속을 돌려준다(fakeApi 도 같다). 새 약속 폼은 화면당 키 하나, 타임아웃·오프라인이면 목록을 다시 읽는다. ② 세션 로직을 순수 모듈 `authSession.ts`로 분리: 진행 중인 익명 가입은 8초 타임아웃이 나도 버리지 않는다(재시도는 그 요청을 기다린다 — 계정 2개·세션 덮어쓰기 없음). ③ 서버가 JWT 를 거부(PGRST301/303·401)하면 supabaseApi 가 `refreshSession` 1회 → 같은 호출 1회 재시도. refresh 토큰 무효면 로컬 signOut + `LB_NOT_SIGNED_IN`. ④ 일반 RPC 는 `requireSession`(없으면 `LB_NOT_SIGNED_IN`) — 익명 가입은 `ensureSignedIn` 에서만. GoTrue refresh 오류 코드도 `LB_NOT_SIGNED_IN` 로 매핑. 다시 로그인해 계정이 바뀌면 컨텍스트가 상태를 비우고 `accountReset`(홈 `ACCOUNT_RESET_NOTICE`). ⑤ 서버 시계는 api 안에서만 잰다: 화면·훅의 `withClockSample` 제거, fakeApi 도 `clock` 옵션으로 같은 자리에서(`serverClock.test` 가 재발을 막는다). `LbLiveBackend` 에 `requireSession`·`refreshSession?` 추가.
+- **2026-09-19 [P2 통합] 서버 없이 할 수 있는 P2 전부 완료 — 아래 'P2 상태' 절.** live 백엔드(supabaseApi·supabase.native), 로컬 PG 대조 0 불일치, OTA 가드 보강 + beta 채널 OTA(`npm run ota:beta`), 번들 검사, 로컬 PG 끔. 다음은 오너가 Supabase 프로젝트를 만든 날의 체크리스트.
+- **2026-09-19 [P2 Conformance] fakeApi ↔ (로컬 PG + supabaseApi) 대조 0 불일치.** `npm run test:conformance`(로컬 PG 필요, npm test 밖) — `scripts/conformance/`(pgBackend = PostgREST 흉내 rpc 어댑터·conf.shift 시간 여행, duo = lockstep 러너, normalize, scenarios 6개 335걸음). 처음 돌렸을 때 찾은 차이 8건을 고쳤다: fakeApi 5(13자 이름 수락 → LB_BAD_NICKNAME, 같은 localAt 을 실은 장소만 수정은 시각 검사 안 함, 핀 이동 시 first_near 삭제, 핀만 다른 경도로 옮기면 LB_TZ_SUSPECT, 정책은 있는 키만 병합), SQL 2(생성 범위 밖 핀 → LB_BAD_POSITION, place_note btrim), 양쪽 1(홈 목록 같은 약속 시각은 created_at 순). 곁들여 fakeApi 원장 500줄 상한·무효 정산 실패 시 not_open. 게이트: typecheck 0 · npm test 647 · test:sql ok 451 · parity 0 · conformance 0.
 - **2026-09-18 [P1 통합] 네이티브 토대(지도·장소 검색·GPS 보고·권한·햅틱·로컬 알림·기기 시간대) 완료 — 아래 'P1 상태' 절.** 브랜치 `feat/late-bet-p1`, 커밋 없음. 게이트 `npm run typecheck` 0 · `npm test` 587/587(적대 리뷰 수정 반영). 실기기 미확인(이 머신엔 Xcode 없음).
 - **2026-09-18 [통합] P0 화면 5묶음 + SQL + 통합 완료.** 게이트 `npm run typecheck` 오류 0 · `npm test` 393개 통과. `npx expo export --platform web`·`--platform ios` 둘 다 성공. 커밋 없음(브랜치 `feat/late-bet-p0`).
   - 흐름 연결(코드 리딩): 홈 [약속 잡기] → `/late/new`(InviteeEditor·`/late/place` 핀 왕복) → 생성 → `/late/<id>?invite=1`(대기실, 네이티브는 공유 시트 1회) → FakeDevPanel '봇 한 명 수락' → 주최자 [시작하기](`api.start`) → LiveView(위치 공개) → '시작 후 봇 수락' → 시간 이동 → 도착 → ArrivedView → 정산 → ResultView → [정산 시작] → `/session/<id>`. 초대: 홈 '코드 입력' → `/j` → `/j/<code>`(이름 고르기·동의) → `/late/<id>`. 주최자 수정: 대기실·LiveView [약속 수정]/[장소 바꾸기] → `/late/new?edit=<id>`(시작 전 전부 / 시작 후 미루기·장소만) → 변경 배너(version). 시작 없이 약속 시각 → notStarted 무효(홈 `refresh()`·`getLive`·위치 보고 모두에서 게으르게).
@@ -19,6 +22,55 @@
   - 소유 밖 최소 수정 2건(보고): `src/domain/latePresets.ts`(+test) 의 `describePolicy.close` 문장 — 마감이 전액 시각과 분리돼 "오후 8:45에 체크인이 닫혀요. 그 뒤에 와도 도착으로 남지 않아요." 로; `src/lateBet/homeModel.ts` 의 `pending` 배지·`pendingCount` → `gathering`(모이는 중)·`unclaimedCount`, `homePendingLine` → `homeUnclaimedLine`.
 - 완료(9/17): P0-a 도메인 모듈 6개, Supabase SQL·테스트·스크립트 이식, Foundation(mode·api·fakeApi·Context·useLive·화면 골격)
 - ~~미완: 화면 5묶음~~ → 9/18 [create]·[join]·[waiting]·[live]·[result]·[rules-sql] 완료, 위 [통합] 항목 참고. 각 담당이 fake 모드 웹 프리뷰 실클릭까지 확인했다(create·join·result). 안 한 것: 적대적 리뷰, 실기기.
+
+---
+
+## P2 상태 (2026-09-19, 서버 없이 할 수 있는 전부 — 브랜치 `feat/late-bet-p2`, 커밋 없음)
+
+### 한 것
+- **live 백엔드**: `src/lateBet/supabaseApi.ts`(LateBetApi 16개 → RPC, 8초 상한·서버 시계 보정) + `rpcMap.ts`(SQL 오류 → `LB_*`) + `supabase.native.ts`(supabase-js 클라이언트, 익명 로그인, AsyncStorage 세션, 포그라운드일 때만 토큰 갱신) + `supabase.ts`(웹·앱인토스 자리표시자 — supabase-js 를 import 하지 않는다). `api.ts` 는 `LATEBET_MODE === 'live'` 일 때만 `./supabase` 를 require 한다(off·fake 는 클라이언트도, 세션 읽기도, AppState 구독도 안 생긴다).
+- **로컬 PG16 검증 도구**: `scripts/local-pg.sh`(start/stop/status/env), `npm run test:sql`·`test:parity`·`test:conformance`(셋 다 PG 필요 — `npm test` 밖). Conformance = 같은 시나리오 6개(335걸음)를 fakeApi 와 (로컬 PG + 실제 supabaseApi) 에 lockstep 으로 돌려 대조. 처음 찾은 차이 8건 수정(위 '상태' 첫 줄).
+- **OTA 가드 보강(`scripts/ota.sh`)**:
+  - production(`npm run ota -- "메시지"`): EAS production 환경의 `EXPO_PUBLIC_LATEBET_MODE` 로 가른다 — `live` 면 `EXPO_PUBLIC_SUPABASE_URL`·`EXPO_PUBLIC_SUPABASE_KEY` 가 **둘 다** 있어야 발행, `off`/없음이면 약속 내기가 숨겨진 번들로 발행(경고 출력 — 이미 켜진 뒤라면 기능을 꺼 버리니 조심), `fake`/그 밖은 거부. ⇒ Supabase 전에도 약속 내기와 무관한 수정은 production OTA 로 나갈 수 있다(9/19 수정 — 처음엔 통째로 막혀 있었다). `eas` 가 전역에 없으면 `npx eas-cli@latest` 로 돈다(`EAS_BIN` 으로 교체 가능).
+  - **beta 채널 OTA 신설**: `npm run ota:beta -- "메시지"` = `eas update --environment preview --channel beta`. preview 환경에 `EXPO_PUBLIC_LATEBET_MODE`(fake|live)가 없으면 거부, live 면 URL·KEY 도 요구. (eas.json 의 beta 프로필 `env` 는 **빌드에만** 적용된다. OTA 번들의 env 는 `--environment` 로 고른 EAS 환경에서 온다 — 그래서 preview 환경에 값이 있어야 beta 사용자에게서 기능이 안 사라진다.)
+  - 두 채널 모두 `EXPO_NO_DOTENV=1`(로컬 `.env.local` 의 `fake` 가 OTA 번들에 섞이지 않게) + `--clear-cache`.
+  - **왜 `--clear-cache`**: P2 검증 중 확인 — env 를 바꿔 `expo export` 를 다시 해도 Metro 캐시를 안 비우면 **이전 export 의 `EXPO_PUBLIC_*` 값이 그대로 박힌 번들**이 나왔다(env 없이 만든 iOS 번들이 직전 live 번들과 해시가 같고 `example.supabase.co` 를 품고 있었다). `--clear` 로 다시 만들면 정상. 번들을 검사할 때도 항상 `--clear`.
+  - 가짜 `eas` 로 가드를 돌려 확인(production: 키 없음·URL 만·fake → 거부, 전부 → 발행 / beta: 모드 없음·live 인데 키 없음 → 거부, fake·live → 발행 / 메시지 없음 → 거부). 실제 `eas env:list` 출력 형식(`NAME=value`)은 이 머신에 eas-cli 가 없어 확인 못 함 — 처음 쓸 때 거부 메시지가 이상하면 출력 형식부터 볼 것.
+
+### 검증 결과 (이 머신, 로컬 PG16 127.0.0.1:54329)
+- `npm run typecheck` 오류 0 · `npm test` pass 647 / fail 0
+- `npm run test:sql` ok 451 · FAIL 0 (마지막 줄 `ok   no settle errors`) · `npm run test:parity` `parity mismatches: 0` · `npm run test:conformance` `conformance mismatches: 0 (steps 335)`
+- `npm run check:native` exit 0 — iOS·Android 링크 목록 P1 과 같은 5개(async-storage, expo, react-native-maps, safe-area-context, screens). `@supabase/supabase-js` 는 순수 JS(네이티브 링크 없음) → 0.4.0 바이너리에 OTA 로 나간다.
+- 번들(전부 `--clear`, Hermes 바이트코드는 `grep -a`):
+
+| 번들 | supabase / gotrue / signInAnonymously | 가짜 서버(`getFakeApi`) | 비고 |
+|---|---|---|---|
+| web(`expo export --platform web`, `.env.local`=fake) | 0 / 0 / 0 (`postgrest` 0) | — | 웹은 `./supabase` 가 자리표시자로 resolve + `EXPO_OS` 치환으로 가지째 빠짐 |
+| `npm run ait:build` → `dist/` | 0 / 0 / 0 (`postgrest` 0) | 0 | 성공(`jeongsan-yaho.ait`) |
+| iOS live(URL·키 더미) | 76 / 19 / 1, URL·키 문자열 있음 | 0 | 성공 |
+| Android live | 76 / 19 / 1, URL·키 문자열 있음 | 0 | 성공 |
+| iOS env 없음(`EXPO_NO_DOTENV=1`) | 75 / 19 / 1, URL·키 없음 | 0 | 모드는 런타임 결정이라 **네이티브 번들에는 supabase-js 가 항상 실린다**(평가는 live 일 때만). 가짜 서버는 번들 시점 치환으로 빠짐 |
+| iOS `.env.local`(fake) | 75 / 19 / 1 | 1 | 개발용 env 가 릴리스 export 에 섞인 경우. 런타임에 채널이 beta 가 아니면 off. OTA 는 `EXPO_NO_DOTENV=1` 로 이 경우를 막는다 |
+
+- mode 규칙 재확인(`modeRule.ts` + `modeRule.test.ts`): live = 웹 아님 ∧ URL·키 둘 다(채널 무관). fake = `__DEV__` ∨ (네이티브 ∧ 채널 정확히 `beta`) — production 채널 fake 불가(불변식 테스트). 그 밖엔 off. ⇒ 키가 들어오기 전: production 빌드(프로필 env 비어 있음)는 off, production OTA 는 off 번들로만 나간다 → **production 사용자에게 기능이 보이지 않는다.**
+- 로컬 PG 클러스터는 끔(데이터 디렉터리는 남김). 다시 켜기: `bash scripts/local-pg.sh start && eval "$(bash scripts/local-pg.sh env)"`(기본 경로 `$TMPDIR/lb-pg`, `LB_PG_DIR` 로 바꿈).
+
+### 오너가 Supabase 를 만든 날 할 일 (체크리스트)
+1. [오너] supabase.com → New project. 리전 **Northeast Asia (Seoul)**, 무료 플랜. DB 비밀번호는 비밀번호 관리자에만(채팅에 붙이지 않는다).
+2. [오너] Authentication → Sign In / Providers → **Allow anonymous sign-ins 켜기**(꺼져 있으면 앱이 `LB_NOT_CONFIGURED`).
+3. [오너 → AI] Project Settings → API Keys 에서 **Project URL** 과 **Publishable key(`sb_publishable_…`)** 두 개만 전달. `sb_secret_…`/`service_role` 은 절대 주지 않는다.
+4. [AI] `eas env:create` 로 3환경(development·preview·production)에 `EXPO_PUBLIC_SUPABASE_URL`·`EXPO_PUBLIC_SUPABASE_KEY`(가시성 plaintext — 번들에 평문으로 들어가는 공개 값) 등록. `EXPO_PUBLIC_LATEBET_MODE=live` 는 **preview 먼저**(beta 리허설용), production 은 8번 직전에. `.env.local` 에 URL·KEY·`live` 기록(gitignore 확인).
+   - 참고: beta 빌드(store 배포, `environment` 미지정)는 EAS **production** 환경 + 프로필 env(`MODE=fake`)로 빌드되고, beta OTA 는 **preview** 환경으로 만든다.
+5. [오너 터미널] `cd nbbang && npx supabase login` → `npx supabase link --project-ref <ref>`(DB 비밀번호 입력) → `npx supabase db push`(마이그레이션 `20260918000000_late_bet.sql` 1개). 끝나면 대시보드 SQL Editor 에서 `select public.lb_ping();`.
+6. [AI] `npm run ota:beta -- "약속 내기 live 리허설"` → beta(TestFlight/APK) 폰 두 대가 live 로 뜨는지(홈에 약속 잡기, FakeDevPanel 사라짐).
+7. [오너+AI] **두 폰 리허설**(설계서 P3 표): "12분 뒤 약속" 생성 → 초대 코드 → 다른 폰 이름 고르고 포인트 걸고 수락 → [시작하기] → 서로 지도에 보이는지 → 한 대는 도착, 한 대는 일부러 지각·앱 닫기(3분 뒤 좌표 사라짐) → 정산·원장. 끝나면 SQL Editor 에서 `select * from private.lb_audit();`·`select * from private.lb_settle_errors;` 0행.
+8. [AI] production 환경에 `EXPO_PUBLIC_LATEBET_MODE=live` 등록 → `npm run ota -- "약속 내기 출시"`(가드 통과 확인) → production 0.4.0 사용자에게 노출.
+
+### 남은 것 (P3/P4)
+- P3: 실제 Supabase 에서 동시성 — 같은 유저 체크인 10건 + `lb_get_live` 5건 병렬, advisory lock 으로 체크인을 세워 두고 정산이 먼저 지나가는지(15초 여유). Supabase API 로그에 좌표(RPC 본문)가 남는지 확인. 익명 가입 속도 제한(IP 당 시간 30회)과 두 폰 리허설.
+- P4: TestFlight 외부 그룹, APK Releases, `lb_config`(min_build·링크) 채우기, `lb_ping` keepalive 워크플로(무료 플랜 일시정지 방지), 실제 약속 1회(지하·권한 거부·안드로이드 포함) 뒤 감사 0행.
+- 열린 결정(Conformance 에서 넘어옴): ① 정산 시점 — fake 는 아무 호출에서나 기한 지난 약속을 정산, SQL 은 그 약속을 건드릴 때만(게으른 정산) → 프로필 잔액이 잠깐 다를 수 있다(설계상 수용). ② `LbEditPatch.policy` 를 `Partial` 로 바꿀지(지금 양쪽 동작은 '보낸 키만 바뀜'). ③ 잘못된 형식의 약속 id — 서버 `22P02` 를 `LB_NOT_FOUND` 로 매핑할지(지금은 live 클라이언트만 앞단에서 거른다). ④ 쓰레기 입력에서 어느 오류가 먼저인지 미정렬. ⑤ 설계서 §1 원칙 6·7(승인제·'참여 후 조건 동결')은 §0-1 에 의해 폐기됐지만 본문은 그대로.
+- 네이티브 번들에 supabase-js 가 mode 와 무관하게 실린다(평가는 live 일 때만). 줄이려면 require 가지에 번들 시점 env 비교(`process.env.EXPO_PUBLIC_LATEBET_MODE === 'live'`)를 더하면 되지만, 그러면 env 없이 만든 바이너리는 OTA 없이 live 가 될 수 없다 — OTA 로 켜는 계획이라 그대로 둠.
 
 ---
 
@@ -457,7 +509,7 @@ listLedger(limit?): Promise<LbLedgerEntry[]>       // 최신순
 - 변경 배너: 처음 본 version 이 기준(만든·참여한 직후의 조건). **참여 화면은 `claimSlot` 성공 직후 `markSeenVersion(appointmentId, preview.version, mode)`(`@/lateBet/useLive` export, 장부는 `@/lateBet/seenVersions`)로 동의한 version 을 먼저 심습니다** — 안 심으면 첫 `getLive` 응답의 version 이 기준이 되어 그 사이 주최자가 바꾼 조건(차액 hold 포함)이 배너 없이 묻힙니다(생성 화면도 같은 규칙으로 심습니다). 그 뒤 `appointment.changes` 중 큰 version 이 `unseenChanges` 로 옵니다. 문구는 `describeChanges(unseenChanges, live.appointment.tz)`(`@/lateBet/changes`) → "주최자가 약속을 바꿨어요: 오후 7:30 → 오후 8:00 · 건 포인트 100P → 200P". [확인] → `ackChanges()`. live 모드는 `seenVersion` 이 캐시(`yaho.late.cache.v1`)에 같이 남습니다.
 - 캐시: fake는 메모리, live는 AsyncStorage `yaho.late.cache.v1`(좌표는 저장하지 않음).
 - `useLive`와 `useArrivalReporter`는 `app/late/[id]/index.tsx`가 돌립니다. 뷰는 다시 부르지 말고 props로 받으세요.
-- 시계: `useServerNow(1000 | 30000)`. 1초 티커는 그 숫자를 그리는 작은 컴포넌트 안에서만 쓰세요. 이벤트 핸들러에서는 `serverNow()`, 직접 호출을 감쌀 때는 `withClockSample(() => api.peekInvite(code))`.
+- 시계: `useServerNow(1000 | 30000)`. 1초 티커는 그 숫자를 그리는 작은 컴포넌트 안에서만 쓰세요. 이벤트 핸들러에서는 `serverNow()`, api 호출(ping·peekInvite·reportLocation·getLive)은 api 가 이미 시계를 잰다 — `withClockSample` 로 또 감싸지 마세요(바깥 샘플이 안쪽을 덮어 오프셋이 어긋난다).
 - 남은 시간 계산에 `Date.now()`를 쓰지 마세요. 가짜 서버의 빨리 감기와 어긋납니다.
 
 ## 7. 뷰 props (`@/lateBet/screens/props`)

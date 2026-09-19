@@ -19,6 +19,10 @@ alter default privileges for role postgres in schema public revoke select, inser
 alter default privileges for role postgres in schema public revoke execute on functions from anon, authenticated, service_role;
 alter default privileges for role postgres in schema public revoke usage, select on sequences from anon, authenticated, service_role;
 alter default privileges for role postgres in schema public revoke execute on functions from public;
+-- 위 한 줄은 효과가 없다: PUBLIC 의 함수 EXECUTE 는 '전역' 기본 권한이고, 스키마별 기본 권한은 전역 위에 더하기만 한다(PG 문서 ALTER DEFAULT PRIVILEGES).
+-- 그래서 전역으로 한 번 더 회수한다 — 이후 postgres 가 만드는 새 함수(어느 스키마든)는 anon·authenticated 가 PUBLIC 경유로 부를 수 없다.
+-- (로컬 PG16 에서 확인: 이 줄이 없으면 새 public 함수의 proacl 이 null = PUBLIC 실행 가능.) 새 RPC 는 맨 끝 do-block 을 다시 돌려 authenticated 에만 준다.
+alter default privileges for role postgres revoke execute on functions from public;
 
 create schema if not exists private;
 grant usage on schema private to authenticated;   -- RLS 정책이 private.lb_is_member 를 부르기 때문. 함수 EXECUTE 는 맨 끝에서 개별 통제.
@@ -66,12 +70,14 @@ create table public.appointments (
   settled_at       timestamptz,
   version          integer not null default 1,       -- 제목·메모·명단 외의 어떤 값이든 바뀌면 +1 (peek→claim 사이 변경 감지, 수정 RPC 의 낙관적 잠금)
   created_at       timestamptz not null default now(),
+  request_id       uuid,                             -- 생성 멱등 키(클라이언트가 폼 제출마다 만든 uuid). 타임아웃 뒤 [만들기] 재시도가 약속·에스크로를 두 번 만들지 않게
   constraint policy_reaches_full_within_cap check (  -- "179분 지각 −179P, 181분 지각 전액" 같은 절벽 금지
     penalty_per_unit = 0 or stake = 0 or
     (ceil(stake::numeric / penalty_per_unit) - 1) * unit_minutes + grace_minutes <= 180)
 );
 create index appointments_open_close_idx on public.appointments (close_at) where status = 'open';
 create index appointments_host_open_idx  on public.appointments (host_id) where status = 'open';
+create unique index appointments_host_request_uq on public.appointments (host_id, request_id) where request_id is not null;
 
 create table public.participants (                   -- 참가자 = 주최자 + 명단에서 자기 이름을 고른 사람. 상태는 active 하나(수락제 없음)
   appointment_id uuid not null references public.appointments(id) on delete restrict,
@@ -533,10 +539,14 @@ begin
 end $$;
 
 -- 2) 약속 생성(초대 명단 + 주최자 자동 참여 + 스테이크 에스크로). 시작 전(started_at null) 상태로 만들어진다.
+--    p_request_id(선택) = 멱등 키: 같은 주최자가 같은 키로 다시 부르면 새로 만들지 않고 그때 만든 약속을 그대로 돌려준다
+--    (8초 타임아웃 뒤 서버는 커밋했는데 클라이언트가 [만들기]를 다시 누른 경우 — 약속·에스크로·초대 코드가 두 번 생기지 않게).
+--    검사(동의·열린 약속 10개 등)보다 먼저 본다 — 첫 요청이 이미 통과했으므로. 같은 키 동시 요청은 advisory lock 으로 줄 세운다.
 create function public.lb_create_appointment(
   p_title text, p_local_at text, p_tz text,
   p_place_name text, p_place_note text, p_lat float8, p_lng float8,
-  p_policy jsonb, p_invitees text[], p_consent boolean, p_tz_confirmed boolean default false
+  p_policy jsonb, p_invitees text[], p_consent boolean, p_tz_confirmed boolean default false,
+  p_request_id uuid default null
 ) returns jsonb
 language plpgsql volatile security definer set search_path = '' as $$
 declare
@@ -549,21 +559,28 @@ declare
 begin
   select * into v_me from public.profiles where user_id = v_uid;
   if not found then raise exception 'LB_NO_PROFILE'; end if;
+  if p_request_id is not null then
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('lb_create:' || v_uid::text || ':' || p_request_id::text, 0));
+    select * into a from public.appointments where host_id = v_uid and request_id = p_request_id;
+    if found then return private.lb_appointment_json(a); end if;   -- 재시도: 같은 약속(에스크로 추가 없음)
+  end if;
   if not coalesce(p_consent, false) then raise exception 'LB_CONSENT_REQUIRED'; end if;
   if (select count(*) from public.appointments where host_id = v_uid and status = 'open') >= 10 then
     raise exception 'LB_TOO_MANY_OPEN';
   end if;
-  if p_lat is null or p_lng is null then raise exception 'LB_BAD_POSITION'; end if;
+  if p_lat is null or p_lng is null or p_lat not between -90 and 90 or p_lng not between -180 and 180 then
+    raise exception 'LB_BAD_POSITION';                                  -- 범위 밖 핀도 CHECK(23514) 가 아니라 위치 오류(수정·fakeApi 와 같다)
+  end if;
   v_meet := private.lb_resolve_meet(p_local_at, p_tz, p_lng, p_tz_confirmed);
 
   insert into public.appointments (invite_code, host_id, title, local_at, tz, meet_at,
       place_name, place_note, place_lat, place_lng,
-      stake, radius_m, unit_minutes, penalty_per_unit, grace_minutes, close_at)
+      stake, radius_m, unit_minutes, penalty_per_unit, grace_minutes, close_at, request_id)
   values (private.lb_new_invite_code(), v_uid, btrim(p_title),
       to_char(v_meet at time zone p_tz, 'YYYY-MM-DD"T"HH24:MI'), p_tz, v_meet,   -- DST 로 없는 시각을 넣어도 표시와 판정이 일치하도록 서버가 다시 쓴다
-      btrim(p_place_name), coalesce(p_place_note, ''), p_lat, p_lng,
+      btrim(p_place_name), btrim(coalesce(p_place_note, '')), p_lat, p_lng,   -- 메모도 제목·장소처럼 양끝 공백을 지운다
       v_stake, v_radius, v_unit, v_ppu, v_grace,
-      private.lb_close_at(v_meet, v_stake, v_unit, v_ppu, v_grace))
+      private.lb_close_at(v_meet, v_stake, v_unit, v_ppu, v_grace), p_request_id)
   returning * into a;   -- 범위 위반은 CHECK 제약이 거른다(23514)
 
   insert into public.participants (appointment_id, user_id, nickname) values (a.id, v_uid, v_me.nickname);
@@ -573,13 +590,20 @@ begin
 end $$;
 
 -- 3) 초대 코드 미리보기(참여 전 조건 확인용). 명단은 멤버가 아니어도 보인다(자기 이름을 골라야 하므로) — 누가 골랐는지는 claimed 로만.
+--    약속 시각이 지났으면 여기서도 게으른 참여 마감(안 들어온 이름 삭제)·시작 안 된 약속의 자동 무효를 먼저 한다(fakeApi 의 tick 과 같은 타이밍 —
+--    약속 시각이 지난 초대장에 고를 수 있는 빈 이름이 남아 보이지 않게).
 create function public.lb_peek_invite(p_code text) returns jsonb
-language plpgsql stable security definer set search_path = '' as $$
+language plpgsql volatile security definer set search_path = '' as $$
 declare v_uid uuid := private.lb_uid(); a public.appointments; v_member boolean;
 begin
   select * into a from public.appointments where invite_code = upper(btrim(coalesce(p_code, '')));
   if not found or exists (select 1 from private.lb_bans where appointment_id = a.id and user_id = v_uid) then
     raise exception 'LB_INVITE_NOT_FOUND';
+  end if;
+  if a.status = 'open' and now() >= a.meet_at then
+    perform private.lb_close_roster(a.id);
+    if a.started_at is null or now() > a.close_at + interval '15 seconds' then perform private.lb_try_settle(a.id); end if;
+    select * into a from public.appointments where id = a.id;
   end if;
   v_member := exists (select 1 from public.participants where appointment_id = a.id and user_id = v_uid);
   return jsonb_build_object(
@@ -712,7 +736,7 @@ create function public.lb_update_memo(p_appt uuid, p_title text, p_place_note te
 language plpgsql volatile security definer set search_path = '' as $$
 declare v_uid uuid := private.lb_uid();
 begin
-  update public.appointments set title = btrim(p_title), place_note = coalesce(p_place_note, '')
+  update public.appointments set title = btrim(p_title), place_note = btrim(coalesce(p_place_note, ''))
    where id = p_appt and host_id = v_uid and status = 'open';
   if not found then raise exception 'LB_NOT_HOST'; end if;
 end $$;
@@ -747,6 +771,7 @@ begin
   v_place_name := btrim(coalesce(v_patch->>'placeName', a.place_name));
   v_lat        := coalesce((v_patch->>'lat')::float8, a.place_lat);
   v_lng        := coalesce((v_patch->>'lng')::float8, a.place_lng);
+  if (v_patch ? 'lat') <> (v_patch ? 'lng') then raise exception 'LB_BAD_POSITION'; end if;   -- 핀은 lat·lng 둘 다(fakeApi 와 같다)
   v_stake  := coalesce((v_pol->>'stake')::int, a.stake);
   v_radius := coalesce((v_pol->>'radiusM')::int, a.radius_m);
   v_unit   := coalesce((v_pol->>'unitMinutes')::int, a.unit_minutes);
@@ -991,6 +1016,54 @@ begin
       from public.participants p
       left join public.locations l on l.appointment_id = p.appointment_id and l.user_id = p.user_id
       where p.appointment_id = p_appt));
+end $$;
+
+-- 15.5) 홈 목록(LbMyAppointment[]): 내가 멤버인 약속. 열린 약속(약속 시각 가까운 순) → 끝난 약속(최근 순).
+--      약속 시각이 지난 열린 약속은 여기서 게으른 참여 마감·정산을 먼저 한다(lb_get_live 와 같은 조건 — 홈만 열어도 무효·정산이 확정된다).
+create function public.lb_list_my_appointments() returns jsonb
+language plpgsql volatile security definer set search_path = '' as $$
+declare v_uid uuid := private.lb_uid(); r record;
+begin
+  for r in select a.id, a.started_at, a.meet_at, a.close_at
+             from public.appointments a join public.participants p on p.appointment_id = a.id and p.user_id = v_uid
+            where a.status = 'open' and now() >= a.meet_at
+            order by a.id loop
+    perform private.lb_close_roster(r.id);
+    if r.started_at is null or now() > r.close_at + interval '15 seconds'
+       or not exists (select 1 from public.participants x where x.appointment_id = r.id and x.arrived_at is null) then
+      perform private.lb_try_settle(r.id);
+    end if;
+  end loop;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', a.id, 'title', a.title, 'localAt', a.local_at, 'tz', a.tz, 'meetAtMs', private.lb_ms(a.meet_at),
+             'startedAtMs', private.lb_ms(a.started_at), 'closeMs', private.lb_ms(a.close_at), 'placeName', a.place_name,
+             'status', a.status, 'policy', private.lb_policy_json(a), 'hostId', a.host_id, 'isHost', a.host_id = v_uid,
+             'myState', 'active',
+             'memberCount', (select count(*) from public.participants x where x.appointment_id = a.id),
+             'unclaimedCount', (select count(*) from public.invitees i where i.appointment_id = a.id and i.claimed_by is null))
+           order by (a.status <> 'open'),
+                    case when a.status = 'open' then a.meet_at end asc,
+                    case when a.status <> 'open' then a.meet_at end desc,
+                    a.created_at, a.id)                                  -- 같은 약속 시각끼리는 만든 순서
+      from public.appointments a join public.participants p on p.appointment_id = a.id and p.user_id = v_uid), '[]'::jsonb);
+end $$;
+
+-- 15.6) 내 원장(LbLedgerEntry[], 최신순). RLS select 로도 읽을 수 있지만 내보내진 약속의 제목은 RLS 로 못 보므로 여기서 붙인다.
+--      p_limit 는 1~500(기본 100).
+create function public.lb_list_ledger(p_limit int default 100) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare v_uid uuid := private.lb_uid();
+begin
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+           'id', l.id, 'kind', l.kind, 'amount', l.amount, 'balanceAfter', l.balance_after,
+           'appointmentId', l.appointment_id, 'appointmentTitle', a.title,
+           'reason', l.meta->>'reason', 'reliefFor', l.meta->>'for', 'createdAtMs', private.lb_ms(l.created_at))
+         order by l.id desc), '[]'::jsonb)
+    from (select * from public.ledger
+           where user_id = v_uid
+           order by id desc limit least(greatest(coalesce(p_limit, 100), 1), 500)) l
+    left join public.appointments a on a.id = l.appointment_id);
 end $$;
 
 -- 16) 감사(오너가 SQL 에디터에서): 0행이면 정상

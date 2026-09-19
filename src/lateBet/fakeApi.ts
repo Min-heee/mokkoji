@@ -28,6 +28,7 @@ import { START_BALANCE, presetPolicy, validatePolicy } from '../domain/latePrese
 import { isKnownTz, isTzSuspect, msToLocalAt, wallClockToMs } from '../domain/tzGuard';
 import type { LateBetApi } from './api';
 import { LateBetError, type LateBetErrorCode } from './errors';
+import { serverClock, type ServerClock } from './serverClock';
 import type {
   LbAppointment,
   LbAppointmentChange,
@@ -68,6 +69,10 @@ export const FAKE_MAX_ACTIVE = 20;
 export const FAKE_MAX_OPEN_HOSTED = 10;
 /** 시작 후 시간 미루기 상한 */
 export const FAKE_MAX_POSTPONE_MS = 180 * MIN;
+/** 생성 때 정책에서 빠진 키의 기본값(SQL lb_create_appointment 의 coalesce 와 같다) */
+const CREATE_POLICY_BASE: LatePolicy = { stake: 0, radiusM: 100, unitMinutes: 5, penaltyPerUnit: 0, graceMinutes: 0 };
+/** 원장 조회 상한(SQL lb_list_ledger 와 같다) */
+export const FAKE_LEDGER_MAX = 500;
 
 /** 가짜 서버에서 '나' */
 export const FAKE_ME = 'fake-me';
@@ -136,6 +141,8 @@ interface ApptRow {
   /** 주최자가 [시작하기]를 누른 시각. null = 시작 전 */
   startedAtMs: number | null;
   changes: ChangeRow[];
+  /** 생성 멱등 키(LbCreateInput.requestId). 없으면 null */
+  requestId?: string | null;
 }
 interface PartRow {
   appointmentId: string;
@@ -439,14 +446,24 @@ export class FakeServer {
     return meetMs;
   }
 
-  /** 테이블 CHECK 제약(23514) */
-  private checkPolicy(policy: LatePolicy): LatePolicy {
-    const raw = policy as unknown as Record<string, unknown>;
-    for (const k of ['stake', 'radiusM', 'unitMinutes', 'penaltyPerUnit', 'graceMinutes']) {
-      if (raw == null || typeof raw[k] !== 'number' || !Number.isInteger(raw[k] as number)) {
-        fail('LB_CHECK_VIOLATION', `policy.${k}`);
-      }
+  /**
+   * 정책 합치기 = SQL 의 `coalesce((p_policy->>'stake')::int, 기준값)` — 있는 키만 바꾸고 없는 키는 기준값(생성: CREATE_POLICY_BASE,
+   * 수정: 지금 값). 있는 키가 정수가 아니면 SQL 의 ::int 캐스트 오류(22P02)와 같이 LB_CHECK_VIOLATION. 범위는 여기서 보지 않는다(checkPolicy)
+   */
+  private mergePolicy(patch: unknown, base: LatePolicy): LatePolicy {
+    const raw = (patch !== null && typeof patch === 'object' ? patch : {}) as Record<string, unknown>;
+    const out: LatePolicy = { ...base };
+    for (const k of ['stake', 'radiusM', 'unitMinutes', 'penaltyPerUnit', 'graceMinutes'] as const) {
+      const v = raw[k];
+      if (v === undefined || v === null) continue;
+      if (typeof v !== 'number' || !Number.isInteger(v)) fail('LB_CHECK_VIOLATION', `policy.${k}`);
+      out[k] = v as number;
     }
+    return out;
+  }
+
+  /** 테이블 CHECK 제약(23514) — 범위·180분 절벽 */
+  private checkPolicy(policy: LatePolicy): LatePolicy {
     const v = validatePolicy(policy);
     if (!v.ok) fail('LB_CHECK_VIOLATION', v.issues.map((i) => i.field).join(','));
     return { ...policy };
@@ -459,12 +476,13 @@ export class FakeServer {
     return s;
   }
 
+  /** 핀 좌표: 숫자가 아니거나 범위(위도 ±90·경도 ±180) 밖이면 LB_BAD_POSITION (SQL 생성·수정과 같다) */
   private checkPosition(lat: unknown, lng: unknown): void {
     if (typeof lat !== 'number' || typeof lng !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lng)) {
       fail('LB_BAD_POSITION');
     }
     if ((lat as number) < -90 || (lat as number) > 90 || (lng as number) < -180 || (lng as number) > 180) {
-      fail('LB_CHECK_VIOLATION', 'place');
+      fail('LB_BAD_POSITION');
     }
   }
 
@@ -642,6 +660,12 @@ export class FakeServer {
       const me = this.profile(uid);
       if (!me) fail('LB_NO_PROFILE');
       const host = me as ProfileRow;
+      // SQL 과 같다: 같은 주최자·같은 멱등 키면 새로 만들지 않고 그때 만든 약속(검사·에스크로 없이)
+      const requestId = typeof input.requestId === 'string' && input.requestId !== '' ? input.requestId : null;
+      if (requestId) {
+        const prev = this.state.appts.find((x) => x.hostId === uid && x.requestId === requestId);
+        if (prev) return this.toAppointment(prev);
+      }
       if (input.consent !== true) fail('LB_CONSENT_REQUIRED');
       if (this.state.appts.filter((a) => a.hostId === uid && a.status === 'open').length >= FAKE_MAX_OPEN_HOSTED) {
         fail('LB_TOO_MANY_OPEN');
@@ -649,19 +673,23 @@ export class FakeServer {
       if (input.lat == null || input.lng == null) fail('LB_BAD_POSITION');
       this.checkPosition(input.lat, input.lng);
       const meetAtMs = this.resolveMeet(input.localAt, input.tz, input.lng, input.tzConfirmed === true);
-      const policy = this.checkPolicy(input.policy);
+      // SQL 과 같은 순서: 정책 캐스트 → 행 CHECK(제목·장소·메모·정책) → 명단(이름·인원)
+      const policy = this.checkPolicy(this.mergePolicy(input.policy, CREATE_POLICY_BASE));
+      const title = this.checkText(input.title, 1, 40, 'title');
+      const placeName = this.checkText(input.placeName, 1, 60, 'place_name');
+      const placeNote = this.checkText(input.placeNote ?? '', 0, 200, 'place_note');
       const names = this.cleanInviteeNames(input.invitees, host.nickname, []);
       if (names.length + 1 > FAKE_MAX_ACTIVE) fail('LB_FULL');
       const a: ApptRow = {
         id: this.nextId('appt'),
         inviteCode: this.newInviteCode(),
         hostId: uid,
-        title: this.checkText(input.title, 1, 40, 'title'),
+        title,
         localAt: msToLocalAt(meetAtMs, input.tz),
         tz: input.tz,
         meetAtMs,
-        placeName: this.checkText(input.placeName, 1, 60, 'place_name'),
-        placeNote: this.checkText(input.placeNote ?? '', 0, 200, 'place_note'),
+        placeName,
+        placeNote,
         placeLat: input.lat,
         placeLng: input.lng,
         policy,
@@ -674,6 +702,7 @@ export class FakeServer {
         invitees: names.map((name) => ({ name, claimedByUserId: null, claimedAtMs: null })),
         startedAtMs: null,
         changes: [],
+        requestId,
       };
       this.state.appts.push(a);
       this.insertPart(a.id, uid, host.nickname);
@@ -756,8 +785,10 @@ export class FakeServer {
     if (version !== a.version) fail('LB_APPT_CHANGED');
     if (consent !== true) fail('LB_CONSENT_REQUIRED');
     if (!this.profile(uid)) fail('LB_NO_PROFILE');
-    const key = nickKey(name);
-    if (key === '') fail('LB_BAD_NICKNAME');
+    // SQL 과 같이 정리한 이름이 1~12자가 아니면 명단을 보기 전에 LB_BAD_NICKNAME(명단 이름은 전부 1~12자라 어차피 없다)
+    const cleaned = cleanNick(name);
+    if (charLen(cleaned) < 1 || charLen(cleaned) > 12) fail('LB_BAD_NICKNAME');
+    const key = nickKey(cleaned);
     const slot = a.invitees.find((i) => nickKey(i.name) === key);
     if (!slot) fail('LB_NOT_INVITED', cleanNick(name));
     if (slot.claimedByUserId !== null) fail('LB_SLOT_TAKEN', slot.name);
@@ -887,26 +918,32 @@ export class FakeServer {
       if (row.status !== 'open' || now > row.closeMs || (!started && now >= row.meetAtMs)) fail('LB_EDIT_CLOSED');
       if (version !== row.version) fail('LB_APPT_CHANGED');
 
+      // SQL lb_edit_appointment 와 같은 순서·같은 판정
       const tz = patch.tz ?? row.tz;
       const localAt = patch.localAt ?? row.localAt;
-      const timeGiven = patch.localAt !== undefined || patch.tz !== undefined;
-      const placeGiven = patch.placeName !== undefined || patch.lat !== undefined || patch.lng !== undefined;
       if ((patch.lat === undefined) !== (patch.lng === undefined)) fail('LB_BAD_POSITION');
       const lat = patch.lat ?? row.placeLat;
       const lng = patch.lng ?? row.placeLng;
-      if (placeGiven) this.checkPosition(lat, lng);
-      const placeName = patch.placeName !== undefined ? this.checkText(patch.placeName, 1, 60, 'place_name') : row.placeName;
-      const policy = patch.policy !== undefined ? this.checkPolicy(patch.policy) : row.policy;
+      const policy = patch.policy !== undefined ? this.mergePolicy(patch.policy, row.policy) : row.policy; // 없는 키는 그대로
+      this.checkPosition(lat, lng);
+      const tzConfirmed = patch.tzConfirmed === true;
+      let meetAtMs = row.meetAtMs;
+      if (localAt !== row.localAt || tz !== row.tz) {
+        // 벽시계·시간대가 실제로 바뀔 때만 '지금+5분~90일' 검사 — 약속 직전·지각 중에 장소만 바꾸며 같은 localAt 을 실어 보내도 막지 않는다
+        meetAtMs = this.resolveMeet(localAt, tz, lng, tzConfirmed);
+      } else if (lng !== row.placeLng && isTzSuspect(tz, lng, meetAtMs) && !tzConfirmed) {
+        fail('LB_TZ_SUSPECT'); // 핀만 다른 시간대로 옮겨도 시간대 의심 검사(SQL lb_check_tz)
+      }
       const policyChanged = !samePolicy(policy, row.policy);
-      if (started && policyChanged) fail('LB_EDIT_FROZEN');
-
-      const meetAtMs = timeGiven ? this.resolveMeet(localAt, tz, lng, patch.tzConfirmed === true) : row.meetAtMs;
-      const timeChanged = meetAtMs !== row.meetAtMs || tz !== row.tz;
-      if (started && timeChanged) {
+      if (started) {
+        if (policyChanged) fail('LB_EDIT_FROZEN');
         if (meetAtMs < row.meetAtMs) fail('LB_POSTPONE_ONLY');
         if (meetAtMs > row.meetAtMs + FAKE_MAX_POSTPONE_MS) fail('LB_POSTPONE_TOO_FAR');
       }
-      const placeChanged = placeName !== row.placeName || lat !== row.placeLat || lng !== row.placeLng;
+      const placeName = patch.placeName !== undefined ? (typeof patch.placeName === 'string' ? patch.placeName.trim() : '') : row.placeName;
+      const timeChanged = meetAtMs !== row.meetAtMs || tz !== row.tz;
+      const pinMoved = lat !== row.placeLat || lng !== row.placeLng;
+      const placeChanged = placeName !== row.placeName || pinMoved;
       if (!timeChanged && !placeChanged && !policyChanged) return this.toAppointment(row); // 바뀐 게 없다
 
       const before = this.snapshot(row);
@@ -917,6 +954,13 @@ export class FakeServer {
           if (diff > 0) this.hold(p.userId, apptId, diff, { reason: 'policy_change', heldHere: row.policy.stake });
           else this.post(p.userId, apptId, 'refund', -diff, { reason: 'policy_change' });
         }
+      }
+      // 행 CHECK 제약(SQL 은 update 때 23514)
+      this.checkText(placeName, 1, 60, 'place_name');
+      if (policyChanged) this.checkPolicy(policy);
+      if (pinMoved) {
+        // 옛 장소 근처에 있었다는 기록은 새 장소의 근거가 못 된다(보증 도착 시각으로 쓰이지 않게)
+        for (const p of this.partsOf(apptId)) if (p.arrivedAtMs === null) p.firstNearAtMs = null;
       }
       row.localAt = msToLocalAt(meetAtMs, tz);
       row.tz = tz;
@@ -978,9 +1022,10 @@ export class FakeServer {
     let reason: LbReportReason | null = null;
     if (row.status !== 'open') reason = 'closed';
     else if (row.startedAtMs === null && now >= row.meetAtMs) {
-      // 시작 없이 약속 시각이 지났다 → 게으른 무효(notStarted) 뒤 closed (SQL lb_report_location 과 같다)
+      // 시작 없이 약속 시각이 지났다 → 게으른 무효(notStarted) 뒤 closed (SQL lb_report_location 과 같다).
+      // 무효 정산 자체가 실패해 아직 open 이면 SQL 처럼 '시작 전' 그대로 not_open
       this.trySettle(apptId);
-      reason = 'closed';
+      reason = this.appt(apptId)?.status !== 'open' ? 'closed' : 'not_open';
     } else if (me.arrivedAtMs !== null) reason = 'already_arrived';
     else if (row.startedAtMs === null || now < row.startedAtMs) reason = 'not_open';
     else if (now > row.closeMs) {
@@ -1161,11 +1206,14 @@ export class FakeServer {
         unclaimedCount: a.invitees.filter((i) => i.claimedByUserId === null).length,
       });
     }
+    // 같은 약속 시각끼리는 만든 순서(SQL lb_list_my_appointments 와 같다: created_at, id)
+    const created = (id: string) => this.appt(id)?.createdAtMs ?? 0;
     return out.sort((x, y) => {
       const xo = x.status === 'open' ? 0 : 1;
       const yo = y.status === 'open' ? 0 : 1;
       if (xo !== yo) return xo - yo;
-      return xo === 0 ? x.meetAtMs - y.meetAtMs : y.meetAtMs - x.meetAtMs;
+      const byMeet = xo === 0 ? x.meetAtMs - y.meetAtMs : y.meetAtMs - x.meetAtMs;
+      return byMeet || created(x.id) - created(y.id) || byId(x.id, y.id);
     });
   }
 
@@ -1175,7 +1223,7 @@ export class FakeServer {
     return this.state.ledger
       .filter((l) => l.userId === uid)
       .sort((x, y) => y.id - x.id)
-      .slice(0, Math.max(1, limit))
+      .slice(0, Math.min(FAKE_LEDGER_MAX, Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 100))))
       .map((l) => ({
         id: l.id,
         kind: l.kind,
@@ -1493,6 +1541,11 @@ export interface FakeApiOptions {
   latencyMs?: number;
   /** true 를 돌려주면 그 호출은 LB_OFFLINE 으로 실패한다(FakeDevPanel 의 '연결 끊기') */
   isOffline?: () => boolean;
+  /**
+   * serverNowMs 가 든 응답(ping·peekInvite·reportLocation·getLive)으로 잴 시계. live(supabaseApi)와 같은 자리에서 잰다 —
+   * 화면은 withClockSample 로 한 번 더 감싸지 않는다(두 번 재면 바깥 샘플이 안쪽 샘플을 덮는다). 기본 null(재지 않음)
+   */
+  clock?: ServerClock | null;
 }
 
 /** FakeServer 를 '이 사용자'의 LateBetApi 로 감싼다 */
@@ -1503,13 +1556,22 @@ export function createFakeApi(server: FakeServer, userId: string = FAKE_ME, opti
     if (options.isOffline?.()) throw new LateBetError('LB_OFFLINE');
     return fn();
   };
+  const clock = options.clock ?? null;
+  const now = () => Date.now();
+  /** 왕복(지연 포함)으로 시계를 잰다 — supabaseApi.run 의 sample 과 같은 규칙 */
+  const sampled = async <T extends { serverNowMs: number }>(fn: () => T): Promise<T> => {
+    const t0 = now();
+    const res = await run(fn);
+    if (clock) clock.addSample(res.serverNowMs, t0, now());
+    return res;
+  };
   return {
     restoreSession: () => run(() => userId),
     ensureSignedIn: () => run(() => userId),
-    ping: () => run(() => server.ping()),
+    ping: () => sampled(() => server.ping()),
     ensureProfile: (nickname) => run(() => server.ensureProfile(userId, nickname)),
     createAppointment: (input) => run(() => server.createAppointment(userId, input)),
-    peekInvite: (code) => run(() => server.peekInvite(userId, normalizeCode(code) ?? code)),
+    peekInvite: (code) => sampled(() => server.peekInvite(userId, normalizeCode(code) ?? code)),
     claimSlot: (id, name, version, consent) => run(() => server.claimSlot(userId, id, name, version, consent)),
     start: (id) => run(() => server.start(userId, id)),
     editInvitees: (id, patch) => run(() => server.editInvitees(userId, id, patch)),
@@ -1518,10 +1580,10 @@ export function createFakeApi(server: FakeServer, userId: string = FAKE_ME, opti
     updateMemo: (id, title, placeNote) => run(() => server.updateMemo(userId, id, title, placeNote)),
     edit: (id, patch, version) => run(() => server.edit(userId, id, patch, version)),
     cancel: (id) => run(() => server.cancel(userId, id)),
-    reportLocation: (id, input) => run(() => server.reportLocation(userId, id, input)),
+    reportLocation: (id, input) => sampled(() => server.reportLocation(userId, id, input)),
     stopSharing: (id) => run(() => server.stopSharing(userId, id)),
     vouch: (id, target) => run(() => server.vouch(userId, id, target)),
-    getLive: (id) => run(() => server.getLive(userId, id)),
+    getLive: (id) => sampled(() => server.getLive(userId, id)),
     getMyProfile: () => run(() => server.getMyProfile(userId)),
     listMyAppointments: () => run(() => server.listMyAppointments(userId)),
     listLedger: (limit) => run(() => server.listLedger(userId, limit)),
@@ -1551,7 +1613,7 @@ export function isFakeOffline(): boolean {
 function ensureSingleton(): { server: FakeServer; api: LateBetApi } {
   if (!singleton) {
     const server = new FakeServer({ seedDemo: true });
-    singleton = { server, api: createFakeApi(server, FAKE_ME, { latencyMs: 150, isOffline: () => offline }) };
+    singleton = { server, api: createFakeApi(server, FAKE_ME, { latencyMs: 150, isOffline: () => offline, clock: serverClock }) };
   }
   return singleton;
 }

@@ -3,13 +3,15 @@
  *
  * 화면·훅은 이 인터페이스만 안다. 구현은 둘이다.
  * - fakeApi.ts   메모리 가짜 서버 (모드 fake: 개발 번들, 또는 beta 채널 네이티브 빌드)
- * - supabaseApi  RPC 래퍼 + 타임아웃 8초 + 40P01/40001 1회 재시도 — P2 에서 만든다.
- *                그때까지 live/off 모드의 getLateBetApi() 는 모든 호출이 LB_NOT_CONFIGURED 로 실패하는 자리표시자다.
+ * - supabaseApi.ts  RPC 래퍼 + 타임아웃 8초 + 40P01/40001 1회 재시도 (모드 live). 클라이언트는 supabase.native.ts 가
+ *                   처음 필요할 때 만든다(웹은 supabase.ts — supabase-js 없음, 모든 호출 LB_NOT_CONFIGURED).
+ * - off 모드의 getLateBetApi() 는 모든 호출이 LB_NOT_CONFIGURED 로 실패하는 자리표시자다.
  *
  * 규칙: 모든 메서드는 Promise 이고, 실패는 항상 LateBetError(code) 로 던진다(errors.ts). 낙관적 업데이트는 하지 않는다.
  */
 import { LateBetError } from './errors';
 import { LATEBET_MODE } from './mode';
+import { serverClock } from './serverClock';
 import type {
   LbAppointment,
   LbCreateInput,
@@ -104,7 +106,7 @@ export interface LateBetApi {
 
 const notConfigured = (): Promise<never> => Promise.reject(new LateBetError('LB_NOT_CONFIGURED'));
 
-/** live 구현(P2)이 들어오기 전까지의 자리표시자. 저장된 세션도 없다고 답한다 */
+/** off 모드(와 live 구현을 못 만든 경우)의 자리표시자. 저장된 세션도 없다고 답한다 */
 const placeholderApi: LateBetApi = {
   restoreSession: () => Promise.resolve(null),
   ensureSignedIn: notConfigured,
@@ -148,6 +150,14 @@ export function getLateBetApi(): LateBetApi {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fake = require('./fakeApi') as typeof import('./fakeApi');
     cached = fake.getFakeApi();
+  } else if (process.env.EXPO_OS !== 'web' && LATEBET_MODE === 'live') {
+    // live: supabase-js 는 이 가지에서만 require 된다(off·fake 는 모듈 평가조차 안 한다). 웹 번들은 EXPO_OS 치환으로 가지째 빠지고,
+    // 빠지지 않더라도 './supabase' 는 웹에서 supabase.ts(자리표시자)로 resolve 된다.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const backend = (require('./supabase') as typeof import('./supabase')).getLiveBackend();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createSupabaseApi } = require('./supabaseApi') as typeof import('./supabaseApi');
+    cached = createSupabaseApi({ ...backend, clock: serverClock });
   } else {
     cached = placeholderApi;
   }

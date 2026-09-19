@@ -49,6 +49,7 @@ import {
 } from '@/domain/tzGuard';
 import {
   errorMessage,
+  isConnectivityError,
   isTzSuspectError,
   LateBetError,
   RAISE_STAKE_INSUFFICIENT_MESSAGE,
@@ -61,7 +62,7 @@ import { markSeenVersion } from '@/lateBet/useLive';
 import { FakeDevPanel } from '@/lateBet/screens/FakeDevPanel';
 import { InviteeEditor, inviteeNameIssue } from '@/lateBet/screens/InviteeEditor';
 import { LateBetUnavailable, NicknameGate } from '@/lateBet/screens/NicknameGate';
-import { withClockSample } from '@/lateBet/serverClock';
+import { newRequestId } from '@/lateBet/requestId';
 import type { LbAppointment, LbCreateInput, LbEditPatch, LbLive } from '@/lateBet/types';
 import { useServerNow } from '@/lateBet/useServerNow';
 import { Card, Chip, EmptyState, LoadingState, PrimaryButton, Row, Screen, SectionTitle, TextField } from '@/ui/components';
@@ -136,7 +137,7 @@ function Loader() {
     if (!targetId) return;
     setLoading(true);
     setError(null);
-    withClockSample(() => api.getLive(targetId))
+    api.getLive(targetId)
       .then((res) => setLive(res))
       .catch((e: unknown) => setError(toLateBetError(e)))
       .finally(() => setLoading(false));
@@ -217,6 +218,9 @@ function initialRadius(radiusM: number): { choice: RadiusChoice; text: string } 
 function Form({ mode, prefill, initialLive }: FormProps) {
   const router = useRouter();
   const { api, mode: lateBetMode, profile, balance, refresh } = useLateBet();
+  // 생성 멱등 키: 이 폼에서 [만들기]를 몇 번 누르든 같은 값 — 타임아웃 뒤 다시 눌러도 약속·에스크로가 두 번 생기지 않는다(서버가 이미 만든 약속을 돌려준다)
+  const createRequestId = useRef<string>('');
+  if (createRequestId.current === '') createRequestId.current = newRequestId();
   // 기기 시간대: 네이티브는 expo-localization, 웹은 Intl(@/lateBet/deviceTz). 모르면 'Asia/Seoul' — needsTzChoice·tzChoices 는
   // null 을 서울로 보므로 결과가 같다
   const [deviceTz] = useState(readDeviceTz);
@@ -316,7 +320,7 @@ function Form({ mode, prefill, initialLive }: FormProps) {
   const reloadAppt = useCallback(async () => {
     if (!apptId) return;
     try {
-      const res = await withClockSample(() => api.getLive(apptId));
+      const res = await api.getLive(apptId);
       setAppt(res.appointment);
       setMemberCount(res.participants.length);
       if (res.appointment.startedAtMs !== null) {
@@ -414,6 +418,7 @@ function Form({ mode, prefill, initialLive }: FormProps) {
           invitees: names,
           consent: agreeLocation && agreeAge,
           tzConfirmed: confirmedArg,
+          requestId: createRequestId.current,
         };
         const created = await api.createAppointment(input);
         // 만든 직후의 조건이 기준 version(주최자는 배너를 보지 않지만 기록은 같은 규칙으로 남긴다)
@@ -453,6 +458,9 @@ function Form({ mode, prefill, initialLive }: FormProps) {
       } else {
         setFormError(err.message);
       }
+      // 생성이 타임아웃·오프라인으로 끝났으면 서버는 이미 만들었을 수 있다 → 목록을 다시 읽어 둔다.
+      // [만들기]를 다시 눌러도 같은 멱등 키라 두 번 생기지 않는다(이미 있으면 그 약속으로 간다)
+      if (!isEdit && isConnectivityError(err)) void refresh();
       // 조건이 어긋났으면(다른 기기에서 바꿈·시작됨·끝남) 대상을 다시 읽어 폼 규칙을 맞춘다
       if (isEdit && (err.code === 'LB_APPT_CHANGED' || err.code === 'LB_EDIT_FROZEN' || err.code === 'LB_EDIT_CLOSED')) void reloadAppt();
     } finally {

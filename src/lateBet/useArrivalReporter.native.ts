@@ -59,7 +59,7 @@ import {
   type ReportTarget,
   type WatchTier,
 } from './reportPolicy';
-import { serverClock, withClockSample } from './serverClock';
+import { serverClock } from './serverClock';
 import type { LbLive, LbReportResult } from './types';
 
 export { fakeDevice, shareOffStore } from './arrivalShared';
@@ -257,9 +257,7 @@ export function useArrivalReporter(live: LbLive | null, options: UseArrivalRepor
       if (share) sharedSinceStop.current = true;
       const inside = likelyInside(distanceToTarget(s, t), s.accuracyM, t.radiusM);
       try {
-        const res = await withClockSample(() =>
-          api.reportLocation(appointmentId, { lat: s.lat, lng: s.lng, accuracyM: s.accuracyM, mocked: s.mocked, share }),
-        );
+        const res = await api.reportLocation(appointmentId, { lat: s.lat, lng: s.lng, accuracyM: s.accuracyM, mocked: s.mocked, share });
         policy.current = afterReport(policy.current, { ok: true, reason: res.reason, arrived: res.arrived, inside }, Date.now());
         // 응답을 기다리는 사이 루프가 멈췄다 → 방금 올라간 좌표를 다시 지운다
         if (share && !runningRef.current && sharedSinceStop.current) {

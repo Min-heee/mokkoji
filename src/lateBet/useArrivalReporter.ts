@@ -29,7 +29,7 @@ import {
 } from './arrivalShared';
 import { LateBetError, toLateBetError } from './errors';
 import { sampleQuality } from './reportPolicy';
-import { serverClock, withClockSample } from './serverClock';
+import { serverClock } from './serverClock';
 import { useLateBet } from './LateBetContext';
 import type { LbLive, LbReportResult } from './types';
 
@@ -128,9 +128,7 @@ export function useArrivalReporter(live: LbLive | null, options: UseArrivalRepor
       busy.current = true;
       if (share) sharedSinceStop.current = true;
       try {
-        const res = await withClockSample(() =>
-          api.reportLocation(appointmentId, { lat: pos.lat, lng: pos.lng, accuracyM: pos.accuracyM, mocked: pos.mocked, share }),
-        );
+        const res = await api.reportLocation(appointmentId, { lat: pos.lat, lng: pos.lng, accuracyM: pos.accuracyM, mocked: pos.mocked, share });
         // 응답을 기다리는 사이 루프가 멈췄다 → 방금 올라간 좌표를 다시 지운다
         if (share && !runningRef.current && sharedSinceStop.current) {
           sharedSinceStop.current = false;

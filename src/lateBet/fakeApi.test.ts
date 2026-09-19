@@ -88,6 +88,26 @@ describe('fakeApi: 프로필과 에스크로', () => {
     assert.deepEqual(server.audit(), []);
   });
 
+  it('생성 멱등 키: 같은 주최자·같은 requestId 재시도는 같은 약속(에스크로·명단 한 번). 키가 다르거나 없으면 새 약속', () => {
+    const { server, user, input, balance } = setup();
+    const host = user('host', '지수');
+    const rid = '7d4b1c2e-0000-4000-8000-00000000abcd';
+    const a = server.createAppointment(host, { ...input(180), requestId: rid });
+    const b = server.createAppointment(host, { ...input(180), requestId: rid });
+    assert.equal(b.id, a.id);
+    assert.equal(b.inviteCode, a.inviteCode);
+    assert.equal(balance('host'), 900);
+    assert.equal(server.listMyAppointments('host').length, 1);
+    // 재시도는 첫 요청이 통과한 검사를 다시 하지 않는다(SQL 과 같다)
+    assert.equal(server.createAppointment(host, { ...input(180), consent: false, requestId: rid }).id, a.id);
+    assert.notEqual(server.createAppointment(host, { ...input(180), requestId: 'other' }).id, a.id);
+    assert.notEqual(server.createAppointment(host, input(180)).id, a.id);
+    // 키는 주최자별
+    const other = user('other', '현우');
+    assert.notEqual(server.createAppointment(other, { ...input(180), requestId: rid }).id, a.id);
+    assert.deepEqual(server.audit(), []);
+  });
+
   it('명단은 주최자 이름·중복을 조용히 빼고, 빈 이름·13자 이름은 거절한다', () => {
     const { server, user, input } = setup();
     user('host', '지수');
@@ -870,5 +890,88 @@ describe('fakeApi: 봇과 시간 빨리 감기', () => {
     await assert.rejects(api.ping(), (e: unknown) => e instanceof LateBetError && e.code === 'LB_OFFLINE');
     offline = false;
     assert.equal((await api.ping()).serverNowMs, T0);
+  });
+});
+
+describe('fakeApi: SQL 과 맞춘 판정(Conformance 에서 찾은 차이)', () => {
+  it('13자 이름으로 수락하면 명단을 보기 전에 LB_BAD_NICKNAME (SQL lb_claim_slot 과 같다)', () => {
+    const { server, user, input, claim } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    user('g', '현우');
+    throwsCode(() => claim('g', a.id, '가나다라마바사아자차카타파'), 'LB_BAD_NICKNAME');
+    throwsCode(() => claim('g', a.id, ' ​ '), 'LB_BAD_NICKNAME');
+    throwsCode(() => claim('g', a.id, '철수'), 'LB_NOT_INVITED');
+  });
+
+  it('시작 후 약속 직전에 장소만 바꾸며 같은 localAt 을 실어 보내도 된다(시각이 실제로 바뀔 때만 5분 검사)', () => {
+    const { server, user, input, clock, claim, start } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180, ['현우']));
+    claim(user('g', '현우'), a.id, '현우');
+    start(a.id);
+    clock.t = a.meetAtMs - 3 * MIN;
+    const moved = server.edit('host', a.id, { localAt: a.localAt, tz: a.tz, placeName: '강남역 2층' }, a.version);
+    assert.equal(moved.placeName, '강남역 2층');
+    assert.equal(moved.meetAtMs, a.meetAtMs);
+    assert.equal(moved.version, a.version + 1);
+    // 시각이 실제로 바뀌면 그대로 검사한다(5분 안으로는 못 미룬다)
+    throwsCode(
+      () => server.edit('host', a.id, { localAt: msToLocalAt(a.meetAtMs + 1 * MIN, TZ), tz: TZ }, moved.version),
+      'LB_TIME_IN_PAST',
+    );
+  });
+
+  it('핀을 옮기면 아직 안 온 사람의 first_near 는 지워진다 — 보증 도착 시각은 옛 장소 근처가 아니라 누른 순간', () => {
+    const { server, user, input, clock, claim, start, here } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180, ['현우']));
+    claim(user('g', '현우'), a.id, '현우');
+    start(a.id);
+    clock.t = a.meetAtMs - 20 * MIN;
+    const near = offsetPoint(PLACE.lat, PLACE.lng, 30, 0);
+    assert.equal(server.reportLocation('g', a.id, { ...near, accuracyM: 150 }).reason, 'low_accuracy');
+    const pin = offsetPoint(PLACE.lat, PLACE.lng, 40, Math.PI / 2);
+    const moved = server.edit('host', a.id, { lat: pin.lat, lng: pin.lng }, a.version);
+    clock.t = a.meetAtMs - 10 * MIN;
+    assert.equal(server.reportLocation('host', a.id, { ...here, lat: pin.lat, lng: pin.lng }).arrived, true);
+    server.vouch('host', a.id, 'g');
+    const g = server.getLive('host', a.id).participants.find((p) => p.userId === 'g');
+    assert.equal(g?.arrivedAtMs, clock.t);
+    assert.equal(moved.version, a.version + 1);
+  });
+
+  it('시각을 안 바꾸고 핀만 다른 시간대 경도로 옮기면 LB_TZ_SUSPECT, 확인하면 통과', () => {
+    const { server, user, input } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180));
+    throwsCode(() => server.edit('host', a.id, { lat: 40.7, lng: -74 }, a.version), 'LB_TZ_SUSPECT');
+    assert.equal(server.edit('host', a.id, { lat: 40.7, lng: -74, tzConfirmed: true }, a.version).placeLng, -74);
+  });
+
+  it('범위 밖 핀은 생성·수정 모두 LB_BAD_POSITION', () => {
+    const { server, user, input } = setup();
+    user('host', '지수');
+    throwsCode(() => server.createAppointment('host', { ...input(180), lat: 200 }), 'LB_BAD_POSITION');
+    const a = server.createAppointment('host', input(180));
+    throwsCode(() => server.edit('host', a.id, { lat: 95, lng: PLACE.lng }, a.version), 'LB_BAD_POSITION');
+  });
+
+  it('정책은 있는 키만 바꾼다(SQL coalesce): 수정은 지금 값, 생성은 기본값(반경 100·5분·0P·0분)을 채운다', () => {
+    const { server, user, input, balance } = setup();
+    const a = server.createAppointment(user('host', '지수'), input(180, [], presetPolicy('normal')));
+    const e = server.edit('host', a.id, { policy: { stake: 50 } as unknown as LatePolicy }, a.version);
+    assert.deepEqual(e.policy, { ...a.policy, stake: 50 });
+    assert.equal(balance('host'), 1000 - 50);
+    throwsCode(() => server.edit('host', a.id, { policy: { stake: 1.5 } as unknown as LatePolicy }, e.version), 'LB_CHECK_VIOLATION');
+    const b = server.createAppointment('host', { ...input(200), policy: { stake: 20 } as unknown as LatePolicy });
+    assert.deepEqual(b.policy, { stake: 20, radiusM: 100, unitMinutes: 5, penaltyPerUnit: 0, graceMinutes: 0 });
+  });
+
+  it('홈 목록: 약속 시각이 같으면 만든 순서, 원장 조회는 최대 500줄', () => {
+    const { server, user, input, clock } = setup();
+    user('host', '지수');
+    const ids = [0, 1, 2].map((i) => {
+      clock.t += 1000;
+      return server.createAppointment('host', { ...input(180, [], presetPolicy('normal'), `약속 ${i}`), localAt: msToLocalAt(T0 + 180 * MIN, TZ) }).id;
+    });
+    assert.deepEqual(server.listMyAppointments('host').map((x) => x.id), ids);
+    assert.equal(server.listLedger('host', 10_000).length, 4);
   });
 });

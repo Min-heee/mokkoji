@@ -124,6 +124,11 @@ export interface LbCreateInput {
   consent: boolean;
   /** LB_TZ_SUSPECT 를 받은 뒤 시간대 시트에서 고르고 다시 보낼 때 true */
   tzConfirmed?: boolean;
+  /**
+   * 생성 멱등 키(uuid). 폼 한 번에 하나 만들고 재시도(타임아웃·오프라인 뒤 [만들기] 다시 누르기)에 같은 값을 쓴다 →
+   * 서버가 이미 만들었으면 새로 만들지 않고 그 약속을 돌려준다(약속·에스크로 중복 방지). 없으면 멱등하지 않다
+   */
+  requestId?: string;
 }
 
 /**

@@ -72,6 +72,8 @@ export type LbClientErrorCode =
   | 'LB_CHECK_VIOLATION'
   /** 교착·직렬화 실패(SQLSTATE 40P01·40001) — api 래퍼가 조용히 1회 재시도한다 */
   | 'LB_RETRYABLE'
+  /** 서버 응답이 계약(types.ts)과 모양이 다르다(필수 필드 누락·타입 불일치) — rpcMap 검증 */
+  | 'LB_BAD_RESPONSE'
   | 'LB_UNKNOWN';
 
 export type LateBetErrorCode = LbServerErrorCode | LbClientErrorCode;
@@ -124,6 +126,7 @@ export const LATE_BET_ERROR_MESSAGES: Record<LateBetErrorCode, string> = {
   LB_RATE_LIMITED: '잠시 후 다시 시도해 주세요.',
   LB_CHECK_VIOLATION: '설정 값을 확인해 주세요.',
   LB_RETRYABLE: FALLBACK,
+  LB_BAD_RESPONSE: '서버 응답을 읽지 못했어요. 앱을 최신 버전으로 업데이트해 주세요.',
   LB_UNKNOWN: FALLBACK,
 };
 
@@ -135,6 +138,8 @@ export const REMOVED_MESSAGE = '주최자가 내보냈어요. 건 포인트는 �
 export const REPEATED_FAILURE_MESSAGE = '문제가 계속되면 만든 사람에게 알려 주세요.';
 /** 오프라인으로 캐시를 보여 줄 때(§5.3-A) */
 export const STALE_NOTICE = '연결이 없어 마지막으로 본 내용을 보여드려요.';
+/** 로그인이 풀려(refresh 토큰 무효 등) 새 익명 계정으로 다시 시작했다 — 이전 계정은 되살릴 수 없다 */
+export const ACCOUNT_RESET_NOTICE = '로그인이 풀려서 새로 시작했어요. 이전에 걸어 둔 약속과 포인트는 이 기기에서 더 볼 수 없어요.';
 /** 서버 장애(§5.3-A) */
 export const SERVER_DOWN_NOTICE = '지금은 약속 서버에 연결할 수 없어요.';
 /** settlePending 이 1분 넘게 이어질 때(§5.4) */

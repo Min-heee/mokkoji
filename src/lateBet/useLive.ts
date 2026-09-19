@@ -24,7 +24,7 @@ import { useLateBet } from './LateBetContext';
 import type { LateBetMode } from './mode';
 import { createRefreshGate } from './refreshGate';
 import { getSeenVersion, seedSeenVersion, setSeenVersion as storeSeenVersion, unseenChanges as pickUnseen } from './seenVersions';
-import { serverClock, withClockSample } from './serverClock';
+import { serverClock } from './serverClock';
 import type { LbAppointmentChange, LbLive, LbLiveParticipant } from './types';
 
 const CACHE_KEY = 'yaho.late.cache.v1';
@@ -143,7 +143,7 @@ export function useLive(appointmentId: string | null | undefined): UseLiveResult
   const gate = useMemo(() => {
     if (!id) return null;
     return createRefreshGate<LbLive>({
-      read: () => withClockSample(() => api.getLive(id)),
+      read: () => api.getLive(id), // 시계 샘플은 api 가 rpc 왕복으로 넣는다(여기서 또 재지 않는다)
       onValue: (next) => {
         memoryCache.set(id, next);
         // 처음 보는 약속은 지금 version 을 '본 것'으로 삼는다(만든·참여한 직후의 조건이 기준).

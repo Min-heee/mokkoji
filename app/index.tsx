@@ -12,7 +12,7 @@ import {
 import { formatKrw } from '@/domain/format';
 import { roundBaseTotal } from '@/domain/settlement';
 import type { Session } from '@/domain/types';
-import { isConnectivityError, REPEATED_FAILURE_MESSAGE, SERVER_DOWN_NOTICE, STALE_NOTICE } from '@/lateBet/errors';
+import { ACCOUNT_RESET_NOTICE, isConnectivityError, REPEATED_FAILURE_MESSAGE, SERVER_DOWN_NOTICE, STALE_NOTICE } from '@/lateBet/errors';
 import {
   HOME_BADGE_LABEL,
   homeBadge,
@@ -244,7 +244,7 @@ const ENDED_LIMIT = 2;
  */
 function LateHomeSection() {
   const router = useRouter();
-  const { status, appointments, error, failCount, stale, needsUpdate, installUrl, refresh } = useLateBet();
+  const { status, appointments, error, failCount, stale, needsUpdate, installUrl, accountReset, refresh } = useLateBet();
   // 카운트다운은 서버 기준 시각으로(가짜 서버의 빨리 감기와 맞물린다). 목록은 30초면 충분하다
   const now = useServerNow(30_000);
   const [showEnded, setShowEnded] = useState(false);
@@ -264,6 +264,7 @@ function LateHomeSection() {
     else notice = SERVER_DOWN_NOTICE;
     if (failCount >= 3) notice = `${notice} ${REPEATED_FAILURE_MESSAGE}`;
   }
+  if (accountReset) notice = notice ? `${ACCOUNT_RESET_NOTICE} ${notice}` : ACCOUNT_RESET_NOTICE;
 
   const { shown, hiddenEnded } = splitHomeAppointments(appointments, showEnded ? appointments.length : ENDED_LIMIT);
   const initialLoading = status === 'loading' && appointments.length === 0;
