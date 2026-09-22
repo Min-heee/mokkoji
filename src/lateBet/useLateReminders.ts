@@ -19,7 +19,7 @@ import { serverClock } from './serverClock';
 import type { LbLive } from './types';
 
 /** '알림 켜기' 안내를 한 번 보였다(앱 전체에서 1회) */
-const PROMPT_KEY = 'yaho.late.notifyPrompt.v1';
+const PROMPT_KEY = 'mokkoji.late.notifyPrompt.v1';
 
 /**
  * 계획이 그대로여도 이 간격마다 한 번은 OS 예약을 다시 맞춘다 — 홈 새로고침의 정리(pruneReminders)가

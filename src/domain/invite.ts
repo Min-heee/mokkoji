@@ -20,7 +20,7 @@ export const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
  */
 export const INVITE_PAGE_URL = 'https://mokkoji.expo.app/';
 /** 앱 스킴 (app.json scheme) */
-export const APP_SCHEME = 'nbbang';
+export const APP_SCHEME = 'mokkoji';
 
 /**
  * 사용자가 친 값을 코드로. 공백을 지우고 대문자로 바꾼 뒤 정규식을 통과해야만 돌려준다. 아니면 null.
@@ -53,7 +53,7 @@ const safeDecode = (s: string): string => {
 
 /**
  * 링크·붙여넣은 문구에서 초대 코드를 꺼낸다. 없으면 null.
- * 받는 모양: 코드 그 자체 / https://…/?c=CODE / nbbang://j/CODE · /j/CODE / 공유 문구 전체('초대 코드 CODE').
+ * 받는 모양: 코드 그 자체 / https://…/?c=CODE / mokkoji://j/CODE · /j/CODE / 공유 문구 전체('초대 코드 CODE').
  * 어떤 경로로 찾든 마지막에 CODE_RE 를 통과해야 한다. 쿼리의 다른 값은 읽지 않는다.
  */
 export function parseInviteUrl(input: unknown): string | null {
@@ -69,7 +69,7 @@ export function parseInviteUrl(input: unknown): string | null {
     const code = normalizeCode(safeDecode(m[1]));
     if (code) return code;
   }
-  // …/j/CODE (nbbang://j/CODE, https://…/j/CODE, /j/CODE)
+  // …/j/CODE (mokkoji://j/CODE, https://…/j/CODE, /j/CODE)
   for (const m of text.matchAll(/(?:^|\/)j\/([^/?#\s]+)/gi)) {
     const code = normalizeCode(safeDecode(m[1]));
     if (code) return code;
@@ -96,7 +96,7 @@ export function buildInviteUrl(code: string, pageUrl: string = INVITE_PAGE_URL):
   return `${base}?c=${c}`;
 }
 
-/** 앱 딥링크 nbbang://j/CODE. 코드가 형식에 안 맞으면 null */
+/** 앱 딥링크 mokkoji://j/CODE. 코드가 형식에 안 맞으면 null */
 export function buildAppLink(code: string): string | null {
   const c = normalizeCode(code);
   return c ? `${APP_SCHEME}://j/${c}` : null;

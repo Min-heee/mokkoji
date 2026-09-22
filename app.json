@@ -9,7 +9,10 @@
     "updates": {
       "url": "https://u.expo.dev/95aba195-94f4-4191-bcae-c7d104fd5327"
     },
-    "scheme": "nbbang",
+    "scheme": [
+      "mokkoji",
+      "nbbang"
+    ],
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "backgroundColor": "#EFE9DB",

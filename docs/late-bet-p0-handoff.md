@@ -105,7 +105,7 @@
 3. [오너 → AI] Project Settings → API Keys 에서 **Project URL** 과 **Publishable key(`sb_publishable_…`)** 두 개만 전달. `sb_secret_…`/`service_role` 은 절대 주지 않는다.
 4. [AI] `eas env:create` 로 3환경(development·preview·production)에 `EXPO_PUBLIC_SUPABASE_URL`·`EXPO_PUBLIC_SUPABASE_KEY`(가시성 plaintext — 번들에 평문으로 들어가는 공개 값) 등록. `EXPO_PUBLIC_LATEBET_MODE=live` 는 **preview 먼저**(beta 리허설용), production 은 8번 직전에. `.env.local` 에 URL·KEY·`live` 기록(gitignore 확인).
    - 참고: beta 빌드(store 배포, `environment` 미지정)는 EAS **production** 환경 + 프로필 env(`MODE=fake`)로 빌드되고, beta OTA 는 **preview** 환경으로 만든다.
-5. [오너 터미널] `cd nbbang && npx supabase login` → `npx supabase link --project-ref <ref>`(DB 비밀번호 입력) → `npx supabase db push`(마이그레이션 `20260918000000_late_bet.sql` 1개). 끝나면 대시보드 SQL Editor 에서 `select public.lb_ping();`.
+5. [오너 터미널] `cd mokkoji && npx supabase login` → `npx supabase link --project-ref <ref>`(DB 비밀번호 입력) → `npx supabase db push`(마이그레이션 `20260918000000_late_bet.sql` 1개). 끝나면 대시보드 SQL Editor 에서 `select public.lb_ping();`.
 6. [AI] `npm run ota:beta -- "약속 내기 live 리허설"` → beta(TestFlight/APK) 폰 두 대가 live 로 뜨는지(홈에 약속 잡기, FakeDevPanel 사라짐).
 7. [오너+AI] **두 폰 리허설**(설계서 P3 표): "12분 뒤 약속" 생성 → 초대 코드 → 다른 폰 이름 고르고 포인트 걸고 수락 → [시작하기] → 서로 지도에 보이는지 → 한 대는 도착, 한 대는 일부러 지각·앱 닫기(3분 뒤 좌표 사라짐) → 정산·원장. 끝나면 SQL Editor 에서 `select * from private.lb_audit();`·`select * from private.lb_settle_errors;` 0행.
 8. [AI] production 환경에 `EXPO_PUBLIC_LATEBET_MODE=live` 등록 → `npm run ota -- "약속 내기 출시"`(가드 통과 확인) → production 0.4.0 사용자에게 노출.
@@ -186,7 +186,7 @@
 
 부록 A~E 파일은 모두 만들었지만 `test:sql`·`test:parity`는 돌리지 못했습니다. 이 머신에 PostgreSQL이 떠 있지 않았고, 지시대로 기동하지 않았습니다. 따라서 시나리오 FAIL 0줄·패리티 불일치 0은 이번에 확인되지 않았습니다. `npm run typecheck`와 `npm test`(214개)는 통과했습니다.
 
-## 만든 파일 (리포 `/Users/byungheemin/.openclaw/workspace/nbbang`)
+## 만든 파일 (리포 `/Users/byungheemin/.openclaw/workspace/mokkoji`)
 - `supabase/migrations/20260918000000_late_bet.sql` (873줄, 부록 A)
 - `supabase/tests/stub.sql` (13줄, 부록 B)
 - `supabase/tests/scenario.sql` (211줄, 부록 C)
@@ -223,7 +223,7 @@
 
 기존 `lateBet.ts`, `geo.ts`, `appointment.ts`는 재사용만 하고 고치지 않았습니다. 새 의존성·커밋은 없고, [domain] 소유 파일 외에는 만들거나 고치지 않았습니다. 여섯 모듈 모두 순수 함수이며 `Date.now()`나 기기 타임존에 기대지 않습니다.
 
-## 만든 파일 (전부 `/Users/byungheemin/.openclaw/workspace/nbbang/src/domain/` 아래)
+## 만든 파일 (전부 `/Users/byungheemin/.openclaw/workspace/mokkoji/src/domain/` 아래)
 
 | 파일 | 새 테스트 |
 |---|---|
@@ -368,13 +368,13 @@
 
 ## 0. 실행
 
-- fake 모드: `cd /Users/byungheemin/.openclaw/workspace/nbbang && EXPO_PUBLIC_LATEBET_MODE=fake npx expo start --web --port <각자 포트>`. `.env.local`은 만들지 않았습니다. 참고는 `.env.example`.
+- fake 모드: `cd /Users/byungheemin/.openclaw/workspace/mokkoji && EXPO_PUBLIC_LATEBET_MODE=fake npx expo start --web --port <각자 포트>`. `.env.local`은 만들지 않았습니다. 참고는 `.env.example`.
 - 모드 규칙은 `src/lateBet/modeRule.ts`(테스트 있음)에 있고 `src/lateBet/mode.ts`가 상수를 냅니다: `LATEBET_MODE`, `LATEBET_ENABLED`, `LATEBET_FAKE`.
   - 규칙(P1, 9/18 [setup]): `fake` 는 개발 번들(`__DEV__`, 웹 프리뷰 포함)이거나 **네이티브이고 EAS 채널(`Updates.channel`)이 정확히 `'beta'`** 일 때만 켜진다. 웹 릴리스는 `__DEV__` 만. production·preview·채널 없음·대소문자 변형 등 그 밖의 모든 릴리스는 `off`(불변식은 `modeRule.test.ts`). `live` 는 웹이 아니고 Supabase 키 둘 다 있을 때만. 채널은 `src/lateBet/releaseChannel(.native).ts` 가 읽는다(웹은 항상 null).
   - beta 채널 = `eas.json` 의 `beta` 프로필(store 배포, `EXPO_PUBLIC_LATEBET_MODE=fake`). Supabase 전에 TestFlight 실기기에서 진짜 지도·GPS·알림을 가짜 서버로 체험하는 용도. production 프로필 env 는 비어 있다.
 - 화면은 `useLateBet().enabled`로만 분기합니다. off면 약속 UI를 아무것도 그리지 않습니다.
 
-## 1. 파일 (전부 `/Users/byungheemin/.openclaw/workspace/nbbang/` 아래)
+## 1. 파일 (전부 `/Users/byungheemin/.openclaw/workspace/mokkoji/` 아래)
 
 - **`src/lateBet/`**
   - `types.ts`, `api.ts`, `errors.ts`
@@ -635,7 +635,7 @@ P1 에서 네이티브 구현이 생겼다(위 'P1 상태'). 아래 P0 계약은
 | `/late/[id]` | `router.push(`/late/${id}`)` |
 | `/late/points` | |
 | `/j` | 코드 입력 |
-| `/j/[code]` | 딥링크 `nbbang://j/CODE` |
+| `/j/[code]` | 딥링크 `mokkoji://j/CODE` |
 
 - 참여 흐름(`/j/[code]`): `peekInvite(code)` → 명단에서 빈 이름 고르기(`invitees` 중 `!claimed`; `mine` 이 있으면 바로 약속 화면으로) + 동의 2개 → `claimSlot(preview.id, name, preview.version, true)` → `router.replace('/late/' + appointmentId)`(이미 시작한 약속이면 `result.started === true` 이고 컨테이너가 바로 LiveView 를 그린다). 빈 이름이 없으면 "초대 명단에 없어요. 주최자에게 이름을 추가해 달라고 해주세요." + [홈으로]. `serverNowMs >= meetAtMs` 이거나 status 가 open 이 아니면 `LB_JOIN_CLOSED` 문구. `startedAtMs` 가 있으면 카드에 "주최자가 이미 시작했어요. 들어오면 바로 위치가 보여요". `LB_SLOT_TAKEN`·`LB_APPT_CHANGED` 는 미리보기를 다시 읽는다. `LocationPrimer` 문구는 "주최자가 시작하면 서로 위치가 보여요". P1: 네이티브에서는 LocationPrimer 가 OS 권한을 직접 요청하고 허용됐을 때만 `onAllow` 를 부른다 — 부모는 약속 화면으로 넘기기만 한다(알림은 약속 화면에서).
 - 생성 성공도 같은 경로로 replace합니다.

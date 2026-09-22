@@ -4,7 +4,7 @@
  * - 주기: latePhase.pollIntervalMs — 대기실 10초(주최자의 [시작하기]를 게스트가 곧 봐야 한다), 시작 뒤·정산 대기 5초, 끝났으면 멈춤.
  * - 화면이 포커스를 잃거나 앱이 백그라운드로 가면 멈추고, 돌아오면 즉시 1회 읽는다.
  * - 마지막 상태 캐시: 오류가 나도 마지막으로 본 내용을 계속 그린다(stale=true).
- *   live 모드는 AsyncStorage 'yaho.late.cache.v1' 에도 남긴다. fake 모드는 메모리만(가짜 서버가 메모리라 id 가 매번 바뀐다).
+ *   live 모드는 AsyncStorage 'mokkoji.late.cache.v1' 에도 남긴다. fake 모드는 메모리만(가짜 서버가 메모리라 id 가 매번 바뀐다).
  * - phase 는 1초마다 다시 계산하지만 값이 바뀔 때만 상태를 바꾼다(화면 전체가 매초 다시 그려지지 않는다).
  * - 변경 배너: 마지막으로 본 version(seenVersion)보다 큰 appointment.changes 를 unseenChanges 로 내려 준다.
  *   화면은 [확인]에 ackChanges() 를 부른다. live 모드는 캐시와 함께 AsyncStorage 에 남는다.
@@ -27,7 +27,7 @@ import { getSeenVersion, seedSeenVersion, setSeenVersion as storeSeenVersion, un
 import { serverClock } from './serverClock';
 import type { LbAppointmentChange, LbLive, LbLiveParticipant } from './types';
 
-const CACHE_KEY = 'yaho.late.cache.v1';
+const CACHE_KEY = 'mokkoji.late.cache.v1';
 const CACHE_MAX = 8;
 const SETTLE_DELAY_MS = 60_000;
 

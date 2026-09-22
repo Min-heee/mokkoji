@@ -2,7 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { Friend, LedgerEntry } from '@/domain/friends';
 
-const STORAGE_KEY = 'nbbang.friends.v1';
+import { pickStoredRaw } from './legacy';
+
+const STORAGE_KEY = 'mokkoji.friends.v1';
+/** 이름을 바꾸기 전(엔빵·정산야호) 키. 새 키가 비었을 때만 읽어 옮긴다 */
+const LEGACY_STORAGE_KEY = 'nbbang.friends.v1';
 
 export interface FriendsState {
   friends: Friend[];
@@ -53,9 +57,14 @@ export function normalizeFriendsState(parsed: unknown): FriendsState {
 
 export async function loadFriendsState(): Promise<FriendsState> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return EMPTY_FRIENDS_STATE;
-    return normalizeFriendsState(JSON.parse(raw));
+    const { raw, migrated } = pickStoredRaw(
+      await AsyncStorage.getItem(STORAGE_KEY),
+      await AsyncStorage.getItem(LEGACY_STORAGE_KEY),
+    );
+    if (raw === null) return EMPTY_FRIENDS_STATE;
+    const state = normalizeFriendsState(JSON.parse(raw));
+    if (migrated && (state.friends.length > 0 || state.entries.length > 0)) await saveFriendsState(state);
+    return state;
   } catch {
     return EMPTY_FRIENDS_STATE;
   }

@@ -1,10 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { normalizeAppointment } from '@/domain/appointment';
+
+import { pickStoredRaw } from './legacy';
 import { BASE_CURRENCY } from '@/domain/currency';
 import type { Item, Round, Session } from '@/domain/types';
 
-const STORAGE_KEY = 'nbbang.sessions.v1';
+const STORAGE_KEY = 'mokkoji.sessions.v1';
+/** 이름을 바꾸기 전(엔빵·정산야호) 키. 새 키가 비었을 때만 읽어 옮긴다 — 쓰던 모임 기록이 사라지지 않게 */
+const LEGACY_STORAGE_KEY = 'nbbang.sessions.v1';
 
 /** 배열이 아니면(손상·구버전 데이터) 빈 배열로 취급해 화면 렌더 크래시를 막는다 */
 function asArray<T>(value: unknown): T[] {
@@ -80,9 +84,14 @@ export function normalizeStoredSessions(parsed: unknown): Session[] {
 
 export async function loadSessions(): Promise<Session[]> {
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    return normalizeStoredSessions(JSON.parse(raw));
+    const { raw, migrated } = pickStoredRaw(
+      await AsyncStorage.getItem(STORAGE_KEY),
+      await AsyncStorage.getItem(LEGACY_STORAGE_KEY),
+    );
+    if (raw === null) return [];
+    const sessions = normalizeStoredSessions(JSON.parse(raw));
+    if (migrated && sessions.length > 0) await saveSessions(sessions);
+    return sessions;
   } catch {
     return [];
   }

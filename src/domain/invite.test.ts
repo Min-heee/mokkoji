@@ -65,6 +65,8 @@ describe('parseInviteUrl', () => {
   });
 
   it('앱 딥링크와 경로', () => {
+    assert.equal(parseInviteUrl(`mokkoji://j/${CODE}`), CODE);
+    // 개명 전 링크(이미 나간 초대)도 계속 열린다
     assert.equal(parseInviteUrl(`nbbang://j/${CODE}`), CODE);
     assert.equal(parseInviteUrl(`/j/${CODE}`), CODE);
     assert.equal(parseInviteUrl(`https://example.expo.app/j/${CODE}?x=1`), CODE);
@@ -94,7 +96,7 @@ describe('parseInviteUrl', () => {
       'https://example.expo.app/?c=X;S.browser_fallback_url=https://evil',
       'https://example.expo.app/?c=UB7NPZT0',
       'https://example.expo.app/?code=UB7NPZT7X',
-      'nbbang://j/',
+      'mokkoji://j/',
       'nbbang://session/abc',
       '%E0%A4%A',
       '',
@@ -115,7 +117,7 @@ describe('buildInviteUrl · buildAppLink', () => {
   it('검증된 코드로만 만든다', () => {
     assert.equal(buildInviteUrl(CODE), `${INVITE_PAGE_URL}?c=${CODE}`);
     assert.equal(buildInviteUrl('ub7npzt7', 'https://x.expo.app'), `https://x.expo.app/?c=${CODE}`);
-    assert.equal(buildAppLink(CODE), `nbbang://j/${CODE}`);
+    assert.equal(buildAppLink(CODE), `mokkoji://j/${CODE}`);
     assert.equal(buildInviteUrl('X;evil'), null);
     assert.equal(buildAppLink('../../x'), null);
   });

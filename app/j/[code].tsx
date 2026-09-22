@@ -1,5 +1,5 @@
 /**
- * 초대 참여 (설계서 §3.2, §5.3-D·E, §0-1 규칙 4·5). 딥링크 nbbang://j/CODE. 담당: [join]
+ * 초대 참여 (설계서 §3.2, §5.3-D·E, §0-1 규칙 4·5). 딥링크 mokkoji://j/CODE (옛 nbbang:// 도 받는다). 담당: [join]
  *
  * 흐름: 코드 형식 검사(invite.normalizeCode — 통과한 값만 RPC 에 넣는다) → 조용히 익명 로그인(ensureReady)
  *   → lb_peek_invite 미리보기(조건 카드 + 초대 명단) → 명단에서 내 이름 고르기 + 동의 2개

@@ -26,7 +26,7 @@ export interface FxResult {
   stale: boolean;
 }
 
-const CACHE_KEY = 'nbbang.fxRates.v1';
+const CACHE_KEY = 'mokkoji.fxRates.v1';
 const API_URL = 'https://open.er-api.com/v6/latest/KRW';
 const FETCH_TIMEOUT_MS = 8000;
 

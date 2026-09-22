@@ -115,8 +115,8 @@ export const fakeDevice = {
 
 // ───────────────────────── 약속별 [위치 공유 끄기] ─────────────────────────
 
-/** 설계서 §3.3: AsyncStorage 'yaho.late.shareOff.v1'. live 모드만 저장한다(fake 는 메모리 — 가짜 서버 id 가 매번 바뀐다) */
-export const SHARE_OFF_KEY = 'yaho.late.shareOff.v1';
+/** 설계서 §3.3: AsyncStorage 'mokkoji.late.shareOff.v1'. live 모드만 저장한다(fake 는 메모리 — 가짜 서버 id 가 매번 바뀐다) */
+export const SHARE_OFF_KEY = 'mokkoji.late.shareOff.v1';
 /** 저장해 둘 약속 수 상한(오래된 것부터 버린다) */
 const SHARE_OFF_MAX = 50;
 

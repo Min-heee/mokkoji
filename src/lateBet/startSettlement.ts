@@ -2,7 +2,7 @@
  * [정산 시작] — 약속 내기 결과 → 기존 정산(Session) 만들기. 멱등.
  *
  * 같은 약속으로 두 번 누르면 새 세션을 만들지 않고 이미 만든 세션을 돌려준다.
- * 설계서는 AsyncStorage 맵('yaho.late.sessionMap.v1')을 말하지만, Session.lateBetId 가 세션과 함께 저장되므로
+ * 설계서는 AsyncStorage 맵('mokkoji.late.sessionMap.v1')을 말하지만, Session.lateBetId 가 세션과 함께 저장되므로
  * 그것을 기준으로 삼는다(세션을 지우면 연결도 같이 사라진다 — 따로 맞출 맵이 없다).
  * 메모리 맵은 createSession 직후 sessions 상태가 아직 갱신되기 전의 연타를 막는다.
  *

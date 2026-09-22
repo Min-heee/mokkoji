@@ -3,7 +3,7 @@
 - 상태: 구현 착수용 최종본 (2026-09-17). 통합 설계서에 적대적 비평 30건을 판정해 반영했다(맨 끝 부록).
 - 이 문서만 읽고 구현할 수 있게 썼다. 마이그레이션 SQL·테스트 SQL 전문이 부록 A~D에 들어 있다. 예전 임시 폴더의 `migration.sql`은 더 이상 기준이 아니다.
 - 검증 상태: 부록 A의 SQL은 로컬 PostgreSQL 16.14에서 `stub.sql → 마이그레이션 → scenario.sql`로 돌려 단언 88개가 전부 통과했고, 현재 `src/domain/lateBet.ts`로 만든 패리티 벡터 3,000건에서 불일치 0건이었다(익명 아닌 `authenticated` 롤로 실행). 동시성(병렬 체크인·병렬 정산) 테스트는 아직 안 돌렸다 → P3 과제.
-- 리포: `/Users/byungheemin/.openclaw/workspace/nbbang`. 이 문서 외에는 리포에 아무것도 쓰지 않았다.
+- 리포: `/Users/byungheemin/.openclaw/workspace/mokkoji`. 이 문서 외에는 리포에 아무것도 쓰지 않았다.
 
 ---
 
@@ -126,7 +126,7 @@
 
 - `src/domain/lateBet.ts`·`geo.ts`는 테스트와 함께 존재한다. `fullForfeitAtMs = 마감 + grace + (ceil(stake/ppu) − 1) × unit`, `locationShareWindow.endMs = min(전액 시각, 마감+180분)`(단위 차감 0이면 마감+60분). SQL `private.lb_close_at`이 같은 식이다.
 - `createSession(title, people, appointment?)`가 있다(`src/state/SessionsContext.tsx`). `mapSearchUrl`은 이름 검색 URL이다(`src/domain/appointment.ts:237`) — 약속 내기에서는 쓰지 않는다.
-- app.json: `scheme: nbbang`, `runtimeVersion.policy: appVersion`, version 0.3.0, `newArchEnabled: true`, owner `untitled98`. `.gitignore`는 `.env*.local`만 막는다. `docs/`·`supabase/`·`public/`은 없다.
+- app.json: `scheme: ["mokkoji","nbbang"]`, `runtimeVersion.policy: appVersion`, version 0.3.0, `newArchEnabled: true`, owner `untitled98`. `.gitignore`는 `.env*.local`만 막는다. `docs/`·`supabase/`·`public/`은 없다.
 - `npm test`는 `tsx --test "src/**/*.test.ts"`다.
 
 공식 문서(이번에 열어서 확인):
@@ -169,7 +169,7 @@ flowchart LR
   LOC --> API
   AUTH -. JWT .-> RPC
   GHA --> RPC
-  UI -- "Share.share(문구+링크+코드)" --> KAKAO --> LAND -- "nbbang://j/CODE" --> UI
+  UI -- "Share.share(문구+링크+코드)" --> KAKAO --> LAND -- "mokkoji://j/CODE" --> UI
   UI -- "[정산 시작] createSession(닉네임들)" --> SESS
 ```
 
@@ -314,7 +314,7 @@ sequenceDiagram
 
 ### 3.2 초대·참여 (스테이크 에스크로)
 
-1. 카톡 링크 → 랜딩(§7) → [앱에서 열기] → `nbbang://j/CODE` → `app/j/[code].tsx`. 코드는 `^[2-9A-HJKMNP-Z]{8}$`로 거른 뒤에만 RPC를 부른다.
+1. 카톡 링크 → 랜딩(§7) → [앱에서 열기] → `mokkoji://j/CODE` → `app/j/[code].tsx`. 코드는 `^[2-9A-HJKMNP-Z]{8}$`로 거른 뒤에만 RPC를 부른다.
 2. 세션이 없으면 조용히 익명 로그인 → `lb_peek_invite` → 조건 카드.
    - 시각: "9월 25일 (금) 오후 7:30 · 한국 시각 · 지금부터 2시간 10분 뒤" (`meetAtMs − serverNowMs`).
    - 장소: 이름 + **핀 지도(반경 원)** + "핀 위치가 맞는지 확인해 주세요" + [카카오맵에서 보기](`/link/map/`).
@@ -736,9 +736,9 @@ module.exports = ({ config }) => ({ ...config,
       $('copy').textContent = '복사했어요';
     });
     $('open').href = isAndroid
-      ? 'intent://j/' + code + '#Intent;scheme=nbbang;package=com.minheee.nbbang;S.browser_fallback_url='
+      ? 'intent://j/' + code + '#Intent;scheme=mokkoji;package=com.minheee.nbbang;S.browser_fallback_url='
         + encodeURIComponent(PAGE + '?c=' + code + '&noapp=1') + ';end'
-      : 'nbbang://j/' + code;
+      : 'mokkoji://j/' + code;
   }
   $('install').href = isAndroid ? ANDROID_INSTALL : IOS_INSTALL;
   if (q.get('noapp') === '1') $('install').className = 'primary';
@@ -799,7 +799,7 @@ module.exports = ({ config }) => ({ ...config,
 10. **TestFlight 공개 링크.** App Store Connect → TestFlight → 외부 테스트 그룹 + 공개 링크(베타 심사 필요). 앱 개인정보 항목에 '정확한 위치(앱 기능)' 추가.
 11. **APK 올릴 공개 저장소.** GitHub에 공개 저장소 하나(예: `Min-heee/yaho-dl`) → Releases에 APK를 `yaho.apk`라는 이름으로 올린다. (`nbbang` 저장소가 공개라면 그 저장소의 Releases를 써도 된다.)
 12. **링크 전달.** TestFlight 공개 링크와 저장소 이름을 AI에게 주면 `invite.js` 상수와 `lb_config` 갱신 SQL(`update private.lb_config set ios_url=…, android_url=…, min_build=…`)을 만들어 준다. SQL 에디터에 붙여 실행.
-13. **keepalive.** GitHub `Min-heee/nbbang` → Settings → Secrets and variables → Actions에 `SUPABASE_URL`, `SUPABASE_KEY`(publishable) 추가. 워크플로가 하루 2회 `lb_ping`을 부르고, 실패하면 GitHub이 메일을 보낸다.
+13. **keepalive.** GitHub `Min-heee/mokkoji` → Settings → Secrets and variables → Actions에 `SUPABASE_URL`, `SUPABASE_KEY`(publishable) 추가. 워크플로가 하루 2회 `lb_ping`을 부르고, 실패하면 GitHub이 메일을 보낸다.
 
 **반복**
 
@@ -2098,7 +2098,7 @@ jobs:
 | 1 | `eas deploy --export-dir invite-web`이 임의 정적 폴더를 받아 주는지 | P0-c 첫 실행 |
 | 2 | 폴백: `public/j.html`이 SPA 폴백보다 먼저 서빙되는지 | 1이 실패할 때만 |
 | 3 | EAS Hosting 무료 요청 한도 수치 | P0-c, Expo 문서·대시보드 |
-| 4 | 카카오톡 인앱 브라우저에서 `intent://`·`nbbang://` 탭이 동작하는지 | P0-c 실기기 4칸 |
+| 4 | 카카오톡 인앱 브라우저에서 `intent://`·`mokkoji://` 탭이 동작하는지 | P0-c 실기기 4칸 |
 | 5 | react-native-maps × New Architecture(SDK 54) | P1 첫날 dev 빌드 |
 | 6 | `expo-localization` 없이 Hermes `Intl`로 기기 tz를 얻을 수 있는지 | P1 (안 되면 그대로 expo-localization) |
 | 7 | `react-native-url-polyfill` 필요 여부 | P2 첫 연결 |
