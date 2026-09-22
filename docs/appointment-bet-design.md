@@ -749,7 +749,7 @@ module.exports = ({ config }) => ({ ...config,
 - 카카오 인앱 브라우저에서 `intent://`가 실제로 동작하는지는 실기기로 확인(확인 필요). P0-c 검증 조합: iOS/갤럭시 × 설치/미설치 4칸 + 악성 쿼리 2개(`?c=<img onerror=…>`, `?c=X;S.browser_fallback_url=…`)가 아무 효과 없음을 확인.
 - 디퍼드 딥링크 없음. 공유 문구에 코드를 항상 평문으로 넣는다. 앱 홈에 [초대 코드 입력]·[붙여넣기].
 - 앱 쪽 `app/j/[code].tsx`와 `invite.ts` 파서도 같은 정규식으로 거른 뒤에만 RPC를 부른다.
-- `scheme: "nbbang"`이 이미 있으므로 `app/j/[code].tsx`가 곧 딥링크 핸들러다. 이 라우트의 스텁은 순수 JS라 **현행 0.3.0에 OTA로 먼저 내보내 링크→앱 열림을 새 빌드 전에 검증**할 수 있다(네이티브 모듈 import 금지, 스텁 전용 브랜치에서 발행).
+- `scheme`(현재 `["mokkoji","nbbang"]`)이 이미 있으므로 `app/j/[code].tsx`가 곧 딥링크 핸들러다. 이 라우트의 스텁은 순수 JS라 **현행 0.3.0에 OTA로 먼저 내보내 링크→앱 열림을 새 빌드 전에 검증**할 수 있다(네이티브 모듈 import 금지, 스텁 전용 브랜치에서 발행).
 - **설치 링크 만료 대책**: APK는 EAS 아티팩트 URL(기간 뒤 삭제됨, 기간은 (확인 필요))이 아니라 공개 저장소 Releases의 `releases/latest/download/yaho.apk`에 올린다. TestFlight 빌드는 업로드 90일 뒤 실행되지 않으므로 80일마다 재빌드가 오너 반복 업무다(§9). 같은 링크를 `private.lb_config`에도 넣어 앱이 `minBuild` 안내에 쓴다.
 - 후속: 유니버설 링크(AASA·assetlinks, 새 빌드 필요), 카카오 SDK 카드형 공유, 스토어 등록.
 
@@ -797,7 +797,7 @@ module.exports = ({ config }) => ({ ...config,
 
 9. **빌드.** iOS: `eas build -p ios --profile production` → `eas submit`. 안드로이드: `eas build -p android --profile preview`.
 10. **TestFlight 공개 링크.** App Store Connect → TestFlight → 외부 테스트 그룹 + 공개 링크(베타 심사 필요). 앱 개인정보 항목에 '정확한 위치(앱 기능)' 추가.
-11. **APK 올릴 공개 저장소.** GitHub에 공개 저장소 하나(예: `Min-heee/yaho-dl`) → Releases에 APK를 `yaho.apk`라는 이름으로 올린다. (`nbbang` 저장소가 공개라면 그 저장소의 Releases를 써도 된다.)
+11. **APK 올릴 공개 저장소.** GitHub에 공개 저장소 하나(예: `Min-heee/yaho-dl`) → Releases에 APK를 `yaho.apk`라는 이름으로 올린다. (`mokkoji` 저장소가 공개라면 그 저장소의 Releases를 써도 된다.)
 12. **링크 전달.** TestFlight 공개 링크와 저장소 이름을 AI에게 주면 `invite.js` 상수와 `lb_config` 갱신 SQL(`update private.lb_config set ios_url=…, android_url=…, min_build=…`)을 만들어 준다. SQL 에디터에 붙여 실행.
 13. **keepalive.** GitHub `Min-heee/mokkoji` → Settings → Secrets and variables → Actions에 `SUPABASE_URL`, `SUPABASE_KEY`(publishable) 추가. 워크플로가 하루 2회 `lb_ping`을 부르고, 실패하면 GitHub이 메일을 보낸다.
 

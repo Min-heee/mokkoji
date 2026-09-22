@@ -701,3 +701,12 @@ P1 에서 네이티브 구현이 생겼다(위 'P1 상태'). 아래 P0 계약은
    - `closeMs`(체크인 마감·정산 기준)는 `closeAtMs` 를 그대로 따르므로 30분 꼬리만큼 같이 늦어진다. 꼬리 안에 온 사람은 '지각(전액)'.
    - 홈 배지에서 [오늘]을 뺐다(오너 목록은 네 가지뿐). 열린 약속은 항상 [모이는 중]/[진행 중]/[정산 확인 중] 중 하나다(`homeBadge` 가 null 을 돌려주지 않는다). 대기실 폴링은 30초 → 10초.
    - **[rules-sql] 에게**: `lb_settle` 조건에 "시작 안 됨 ∧ now ≥ meet_at" 을 추가하고 `lb_get_live`·`lb_ping`(또는 조회 앞)에서 그 조건이면 정산을 부르면 fake 와 같은 타이밍이 된다. `scripts/parity.ts` 는 `locationShareWindow(policy, deadline).endMs` 대신 `closeAtMs(policy, deadline)` 를 쓰면 된다.
+
+## 이름 (2026-09-22)
+
+앱 이름은 **모꼬지**(Mokkoji). 엔빵 → 정산야호 → 모꼬지. GitHub 저장소·로컬 폴더도 `mokkoji`, 저장 키는 `mokkoji.*`(옛 `nbbang.*`·`yaho.late.*` 는 `src/storage/legacy.ts` 로 한 번 인계), 딥링크는 `mokkoji://`(app.json 에 옛 `nbbang` 스킴도 남겨 이미 깔린 빌드의 링크를 살려 둠).
+
+바꾸지 않은 것과 이유:
+- **번들 id `com.minheee.nbbang`** — 바꾸면 스토어에서 완전히 다른 앱이 된다(TestFlight·심사 이력 초기화). 영구히 이 값으로 간다.
+- **expo slug `nbbang`** — EAS 프로젝트(`@untitled98/nbbang`) 이름과 같아야 빌드·OTA 가 된다. 바꾸려면 오너가 expo.dev 프로젝트 설정에서 이름을 먼저 바꾸고, 그 다음 app.json slug 를 맞춘다(CLI 에는 rename 명령이 없다).
+- **App Store Connect 앱 이름** — 오너가 ASC 에서 직접 바꾼다. 홈 화면 런처 이름은 app.json `name` 이 결정하며 **OTA 로는 안 바뀌고 다음 스토어 빌드부터** 반영된다.
