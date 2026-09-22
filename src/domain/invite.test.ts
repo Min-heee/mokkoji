@@ -155,7 +155,7 @@ describe('buildShareText', () => {
     assert.equal(
       buildShareText(base),
       [
-        '[정산야호] 금요일 곱창 — 9월 25일 (금) 오후 7:30 (한국 시각), 강남역 2번 출구 곱창',
+        '[모꼬지] 금요일 곱창 — 9월 25일 (금) 오후 7:30 (한국 시각), 강남역 2번 출구 곱창',
         '100P 걸기 · 5분 늦을 때마다 10P',
         `참여: ${INVITE_PAGE_URL}?c=${CODE}  (초대 코드 ${CODE})`,
       ].join('\n'),
@@ -163,7 +163,7 @@ describe('buildShareText', () => {
   });
 
   it('취소하고 새로 만든 약속은 [변경]을 붙인다', () => {
-    assert.ok(buildShareText({ ...base, changed: true }).startsWith('[변경] [정산야호] 금요일 곱창'));
+    assert.ok(buildShareText({ ...base, changed: true }).startsWith('[변경] [모꼬지] 금요일 곱창'));
   });
 
   it('다른 시간대면 그 시간대의 벽시계와 라벨', () => {
@@ -172,7 +172,7 @@ describe('buildShareText', () => {
   });
 
   it('제목의 줄바꿈은 한 줄로, 코드가 틀리면 빈 문자열', () => {
-    assert.ok(buildShareText({ ...base, title: '금요일\n곱창' }).startsWith('[정산야호] 금요일 곱창 —'));
+    assert.ok(buildShareText({ ...base, title: '금요일\n곱창' }).startsWith('[모꼬지] 금요일 곱창 —'));
     assert.equal(buildShareText({ ...base, inviteCode: 'nope' }), '');
   });
 });

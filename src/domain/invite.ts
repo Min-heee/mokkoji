@@ -18,7 +18,7 @@ export const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
  * 초대 페이지 주소. 서브도메인은 오너가 `eas deploy` 때 고른다(설계서 §9-1) — 확정되면 이 상수와
  * invite-web/invite.js 의 PAGE 상수를 같이 바꾼다. 끝은 항상 '/'.
  */
-export const INVITE_PAGE_URL = 'https://jeongsan-yaho.expo.app/';
+export const INVITE_PAGE_URL = 'https://mokkoji.expo.app/';
 /** 앱 스킴 (app.json scheme) */
 export const APP_SCHEME = 'nbbang';
 
@@ -135,7 +135,7 @@ const oneLine = (s: string) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').t
 /**
  * 공유 문구(설계서 §3.1). 코드는 항상 평문으로도 넣는다(디퍼드 딥링크가 없어서).
  *
- * [정산야호] 금요일 곱창 — 9월 25일 (금) 오후 7:30 (한국 시각), 강남역 2번 출구 곱창
+ * [모꼬지] 금요일 곱창 — 9월 25일 (금) 오후 7:30 (한국 시각), 강남역 2번 출구 곱창
  * 100P 걸기 · 5분 늦을 때마다 10P
  * 참여: https://…/?c=UB7NPZT7  (초대 코드 UB7NPZT7)
  *
@@ -145,7 +145,7 @@ export function buildShareText(input: ShareTextInput): string {
   const code = normalizeCode(input.inviteCode);
   const url = code ? buildInviteUrl(code, input.pageUrl) : null;
   if (!code || !url) return '';
-  const head = input.changed ? '[변경] [정산야호]' : '[정산야호]';
+  const head = input.changed ? '[변경] [모꼬지]' : '[모꼬지]';
   const title = oneLine(input.title) || '약속';
   const when = formatKoreanDateTime(input.meetAtMs, input.tz);
   const whenPart = when ? `${when} (${tzLabel(input.tz)})` : '';

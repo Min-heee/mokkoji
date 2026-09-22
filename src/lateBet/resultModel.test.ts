@@ -291,11 +291,11 @@ describe('buildResultModel — 확정 전(settling)', () => {
 });
 
 describe('buildResultShareText', () => {
-  it('[정산야호] 제목 / 시각 · 장소 / 머리 문장 / 번호. 이름 · 상세 · 증감', () => {
+  it('[모꼬지] 제목 / 시각 · 장소 / 머리 문장 / 번호. 이름 · 상세 · 증감', () => {
     const live = settledLive();
     const text = buildResultShareText(live, buildResultModel(live, 'settled'));
     const lines = text.split('\n');
-    assert.equal(lines[0], '[정산야호] 금요일 곱창 결과');
+    assert.equal(lines[0], '[모꼬지] 금요일 곱창 결과');
     assert.match(lines[1], /^9월 25일 \(금\) 오후 7:30 · 강남역 2번 출구 곱창$/);
     assert.equal(lines[2], '모인 포인트 120P → 제시간에 온 2명이 나눠 가졌어요');
     assert.equal(lines[3], '1. 지수 · 오후 7:21 · 제시간 · GPS ±12m · +60P');

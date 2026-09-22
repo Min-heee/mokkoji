@@ -1,4 +1,4 @@
-# 정산야호 '약속 내기' 최종 설계서
+# 모꼬지 '약속 내기' 최종 설계서
 
 - 상태: 구현 착수용 최종본 (2026-09-17). 통합 설계서에 적대적 비평 30건을 판정해 반영했다(맨 끝 부록).
 - 이 문서만 읽고 구현할 수 있게 썼다. 마이그레이션 SQL·테스트 SQL 전문이 부록 A~D에 들어 있다. 예전 임시 폴더의 `migration.sql`은 더 이상 기준이 아니다.
@@ -145,7 +145,7 @@
 
 ```mermaid
 flowchart LR
-  subgraph App["정산야호 앱 (Expo SDK54, iOS/Android)"]
+  subgraph App["모꼬지 앱 (Expo SDK54, iOS/Android)"]
     UI["app/late/* · app/j/[code] · 홈 '약속' 섹션"]
     DOM["src/domain (순수): lateBet · geo · latePhase · latePresets · invite · mapRoute · tzGuard · toSession"]
     API["src/lateBet/api.ts — LateBetApi 인터페이스"]
@@ -307,7 +307,7 @@ sequenceDiagram
 - 공유 문구(`invite.buildShareText`):
 
 ```
-[정산야호] 금요일 곱창 — 9월 25일 (금) 오후 7:30 (한국 시각), 강남역 2번 출구 곱창
+[모꼬지] 금요일 곱창 — 9월 25일 (금) 오후 7:30 (한국 시각), 강남역 2번 출구 곱창
 100P 걸기 · 5분 늦을 때마다 10P
 참여: https://<sub>.expo.app/?c=UB7NPZT7  (초대 코드 UB7NPZT7)
 ```
@@ -518,7 +518,7 @@ export const LATEBET_MODE =
 **A. 홈** — 기존 화면 위에 섹션 하나.
 
 ```
-정산야호                                   [ 820P ]   ← 탭하면 /late/points
+모꼬지                                   [ 820P ]   ← 탭하면 /late/points
 약속
 ┌ 금요일 곱창                        [오늘] ┐
 │ 9월 25일 (금) 오후 7:30 · 2시간 뒤        │
@@ -706,9 +706,9 @@ module.exports = ({ config }) => ({ ...config,
 <!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'">
-<meta property="og:title" content="정산야호 — 약속에 초대받았어요">
-<title>정산야호</title></head><body>
-<h1>정산야호</h1><p>약속에 초대받았어요</p>
+<meta property="og:title" content="모꼬지 — 약속에 초대받았어요">
+<title>모꼬지</title></head><body>
+<h1>모꼬지</h1><p>약속에 초대받았어요</p>
 <div id="with-code"><p>초대 코드</p><p id="code"></p><button id="copy">코드 복사</button>
   <a id="open" class="primary">앱에서 열기</a></div>
 <div id="no-code" hidden><p>앱 첫 화면의 '초대 코드 입력'에 받은 코드를 넣어 주세요.</p></div>
@@ -778,7 +778,7 @@ module.exports = ({ config }) => ({ ...config,
 
 **P0-c 때**
 
-1. **초대 페이지 서브도메인 고르기.** AI가 `eas deploy`를 처음 실행할 때 서브도메인(예: `jeongsan-yaho`)을 묻는다. 고른 URL을 AI에게 알려 주면 `invite.ts`와 `invite.js` 상수에 넣는다.
+1. **초대 페이지 서브도메인 고르기.** AI가 `eas deploy`를 처음 실행할 때 서브도메인(예: `mokkoji`)을 묻는다. 고른 URL을 AI에게 알려 주면 `invite.ts`와 `invite.js` 상수에 넣는다.
 
 **P1 빌드 전**
 
@@ -788,7 +788,7 @@ module.exports = ({ config }) => ({ ...config,
 
 **P2 전**
 
-5. **Supabase 프로젝트 만들기.** supabase.com 가입 → New project. 이름 `jeongsan-yaho`, 리전 **Northeast Asia (Seoul)**. DB 비밀번호는 비밀번호 관리자에 저장.
+5. **Supabase 프로젝트 만들기.** supabase.com 가입 → New project. 이름 `mokkoji`, 리전 **Northeast Asia (Seoul)**. DB 비밀번호는 비밀번호 관리자에 저장.
 6. **익명 로그인 켜기.** Authentication → Sign In / Providers → **Allow anonymous sign-ins** ON. 다른 설정은 건드리지 않는다.
 7. **키 전달.** Project Settings → API Keys에서 **Project URL**과 **Publishable key**(`sb_publishable_…`)를 AI에게 준다. AI가 `eas env:create`로 `EXPO_PUBLIC_SUPABASE_URL`·`EXPO_PUBLIC_SUPABASE_KEY`·`EXPO_PUBLIC_LATEBET_MODE=live`를 3개 환경에 넣고 `.env.local`을 만든다. **secret / service_role 키는 복사하지도 채팅에 올리지도 않는다.** 이 설계는 그 키를 쓰지 않는다.
 8. **마이그레이션 적용.** 터미널에서 `npx supabase login` → `npx supabase link --project-ref <ref>` → `npx supabase db push`. 이후 마이그레이션은 마지막 명령만. (원격 push에 Docker가 필요한지는 (확인 필요).)

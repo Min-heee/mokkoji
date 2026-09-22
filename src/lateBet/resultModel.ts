@@ -204,7 +204,7 @@ export function resultRowDelta(model: ResultModel, row: ResultRow): string {
 /**
  * [결과 공유] 텍스트.
  *
- *   [정산야호] 금요일 곱창 결과
+ *   [모꼬지] 금요일 곱창 결과
  *   9월 25일 (금) 오후 7:30 · 강남역 2번 출구 곱창
  *   모인 포인트 120P → 제시간에 온 2명이 나눠 가졌어요
  *   1. 지수 · 오후 7:21 · 제시간 · GPS ±12m · +60P
@@ -213,7 +213,7 @@ export function buildResultShareText(live: LbLive, model: ResultModel): string {
   const a = live.appointment;
   const when = formatKoreanDateTime(a.meetAtMs, a.tz);
   const zone = a.tz === 'Asia/Seoul' ? '' : ` (${tzLabel(a.tz)})`;
-  const lines = [`[정산야호] ${model.title}`, [`${when}${zone}`, a.placeName].filter((s) => s.trim() !== '').join(' · '), model.headline];
+  const lines = [`[모꼬지] ${model.title}`, [`${when}${zone}`, a.placeName].filter((s) => s.trim() !== '').join(' · '), model.headline];
   if (model.notStarted) {
     // 순위가 없다 — 들어와 있던 사람 이름만
     if (model.rows.length > 0) lines.push(`참여: ${model.rows.map((r) => r.nickname).join(', ')}`);

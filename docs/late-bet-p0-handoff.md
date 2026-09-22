@@ -90,7 +90,7 @@
 | 번들 | supabase / gotrue / signInAnonymously | 가짜 서버(`getFakeApi`) | 비고 |
 |---|---|---|---|
 | web(`expo export --platform web`, `.env.local`=fake) | 0 / 0 / 0 (`postgrest` 0) | — | 웹은 `./supabase` 가 자리표시자로 resolve + `EXPO_OS` 치환으로 가지째 빠짐 |
-| `npm run ait:build` → `dist/` | 0 / 0 / 0 (`postgrest` 0) | 0 | 성공(`jeongsan-yaho.ait`) |
+| `npm run ait:build` → `dist/` | 0 / 0 / 0 (`postgrest` 0) | 0 | 성공(`mokkoji.ait`) |
 | iOS live(URL·키 더미) | 76 / 19 / 1, URL·키 문자열 있음 | 0 | 성공 |
 | Android live | 76 / 19 / 1, URL·키 문자열 있음 | 0 | 성공 |
 | iOS env 없음(`EXPO_NO_DOTENV=1`) | 75 / 19 / 1, URL·키 없음 | 0 | 모드는 런타임 결정이라 **네이티브 번들에는 supabase-js 가 항상 실린다**(평가는 live 일 때만). 가짜 서버는 번들 시점 치환으로 빠짐 |
@@ -192,7 +192,7 @@
 - `supabase/tests/scenario.sql` (211줄, 부록 C)
 - `scripts/parity.ts`, `scripts/test-sql.sh`, `scripts/ota.sh` (부록 D, 셸 두 개는 실행 권한 부여)
 - `.github/workflows/keepalive.yml` (부록 E)
-- `supabase/config.toml` (새로 작성): `project_id = "jeongsan-yaho"`, `[api] schemas = ["public"]`, `[auth] enable_anonymous_sign_ins = true`
+- `supabase/config.toml` (새로 작성): `project_id = "mokkoji"`, `[api] schemas = ["public"]`, `[auth] enable_anonymous_sign_ins = true`
 - `package.json`: scripts에 `test:sql`, `test:parity`, `ota` 3줄만 추가
 
 부록 A~E는 손으로 옮기지 않고 설계서 코드펜스 안쪽을 `sed -n`으로 뽑았습니다. 뽑은 뒤 7개 파일 모두 설계서 해당 구간과 `diff`로 동일함을 확인했습니다. `lb_clean_nick` 정규식의 보이지 않는 문자(U+00AD, U+200B–200F, U+2028–202F, U+2060–2064, U+FEFF)도 그대로 들어 있습니다. SQL·스크립트는 고친 곳이 없습니다. git commit/push는 하지 않았고 다른 담당의 파일은 건드리지 않았습니다.
@@ -341,7 +341,7 @@
 5. **`policyWithStake`를 추가했습니다.** 폼이 걸 포인트와 프리셋을 따로 고르는데 프리셋에는 고유 스테이크가 있어, 맵기는 두고 스테이크만 바꾸는 함수가 필요했습니다. 단위 차감은 올림해서 전액 시점이 프리셋보다 늦어지지 않습니다.
    - 순한맛과 보통은 차감 비율이 같아서(5분마다 10%) 스테이크를 바꾸면 둘이 구분되지 않습니다. 이때 `matchPreset`은 정확히 일치하는 프리셋을 먼저 찾고, 없으면 보통으로 봅니다.
 6. **`buildInviteUrl`과 `buildAppLink`는 코드가 형식에 안 맞으면 null을 돌려줍니다.** `buildShareText`는 그 경우 빈 문자열입니다.
-7. **`INVITE_PAGE_URL`은 잠정값 `https://jeongsan-yaho.expo.app/`입니다.** 서브도메인은 오너가 `eas deploy` 때 정하므로, 확정되면 이 상수와 `invite-web/invite.js`를 같이 바꿔야 합니다.
+7. **`INVITE_PAGE_URL`은 잠정값 `https://mokkoji.expo.app/`입니다.** 서브도메인은 오너가 `eas deploy` 때 정하므로, 확정되면 이 상수와 `invite-web/invite.js`를 같이 바꿔야 합니다.
 8. **`parseInviteUrl`은 네 가지 입력을 받습니다.**
    - 입력 모양: URL(`?c=`, `/j/CODE`), 코드 단독, 공유 문구 전체, 대문자 8자 토큰.
    - 홈의 [초대 코드 붙여넣기]에서 공유 문구를 통째로 붙여넣는 경우를 위해서입니다.

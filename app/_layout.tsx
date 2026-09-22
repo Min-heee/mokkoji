@@ -22,7 +22,7 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: colors.bg },
         }}
       >
-        <Stack.Screen name="index" options={{ title: '정산야호' }} />
+        <Stack.Screen name="index" options={{ title: '모꼬지' }} />
         <Stack.Screen name="friends/index" options={{ title: '친구' }} />
         <Stack.Screen name="friends/[friendId]" options={{ title: '친구' }} />
         <Stack.Screen name="session/new" options={{ title: '새 모임' }} />
