@@ -708,5 +708,5 @@ P1 에서 네이티브 구현이 생겼다(위 'P1 상태'). 아래 P0 계약은
 
 바꾸지 않은 것과 이유:
 - **번들 id `com.minheee.nbbang`** — 바꾸면 스토어에서 완전히 다른 앱이 된다(TestFlight·심사 이력 초기화). 영구히 이 값으로 간다.
-- **expo slug `nbbang`** — EAS 프로젝트(`@untitled98/nbbang`) 이름과 같아야 빌드·OTA 가 된다. 바꾸려면 오너가 expo.dev 프로젝트 설정에서 이름을 먼저 바꾸고, 그 다음 app.json slug 를 맞춘다(CLI 에는 rename 명령이 없다).
+- **expo slug `nbbang`** — **바꿀 수 없다.** slug 는 EAS 프로젝트를 만들 때 정해지고 이후 변경 불가다(대시보드 Project settings 의 Display name 은 웹사이트 표시용일 뿐 slug 가 아니다 — 2026-09-22 오너가 mokkoji 로 바꿨지만 `eas project:info` 의 fullName 은 그대로 `@untitled98/nbbang`). 바꾸려면 새 EAS 프로젝트를 만들어야 하는데 projectId 가 바뀌어 **이미 설치된 빌드로 가는 OTA 가 끊기고 빌드 번호도 초기화**된다. 사용자에게 보이지 않는 값이므로 영구히 이대로 간다.
 - **App Store Connect 앱 이름** — 오너가 ASC 에서 직접 바꾼다. 홈 화면 런처 이름은 app.json `name` 이 결정하며 **OTA 로는 안 바뀌고 다음 스토어 빌드부터** 반영된다.
