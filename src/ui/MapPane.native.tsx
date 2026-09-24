@@ -23,6 +23,7 @@ import { HAS_EMBEDDED_GOOGLE_MAPS_KEY } from './googleMapsKey';
 import { MapPaneFallback } from './MapPaneFallback';
 import {
   androidMarkerBoxDp,
+  drawnRadiusM,
   easeOutCubic,
   fitMarkerContentDp,
   isUserMove,
@@ -31,6 +32,7 @@ import {
   markerInitial,
   mePlan,
   needsRefit,
+  NO_RADIUS_FRAMING_M,
   regionForPoints,
   sameLatLng,
   visibleMarkerSignature,
@@ -111,6 +113,9 @@ function NativeMap(props: MapPaneProps) {
     accessibilityLabel,
   } = props;
   const h = height ?? (readonly ? 140 : 220);
+  // 원을 그릴 반경. 없으면(모임 약속) 원 없이 동네 몇 블록 크기로 확대 수준만 잡는다
+  const circleM = drawnRadiusM(radiusM);
+  const framingM = circleM ?? NO_RADIUS_FRAMING_M;
 
   const mapRef = useRef<MapView>(null);
   const [ready, setReady] = useState(false);
@@ -134,7 +139,7 @@ function NativeMap(props: MapPaneProps) {
 
   // 영역에 넣을 점: 목적지 + 친구 + 내 위치(우리가 그리든 OS 가 그리든)
   const pointsKey = [
-    `${k(destination.lat)},${k(destination.lng)},${radiusM}`,
+    `${k(destination.lat)},${k(destination.lng)},${framingM}`,
     ...visible.map((m) => `${m.id}:${k(m.lat)},${k(m.lng)}`),
     meFit ? `me:${k(meFit.lat)},${k(meFit.lng)}` : '',
   ].join('|');
@@ -149,12 +154,12 @@ function NativeMap(props: MapPaneProps) {
     [pointsKey],
   );
   const target = useMemo(
-    () => regionForPoints(points, { circle: { lat: destination.lat, lng: destination.lng, radiusM } }),
+    () => regionForPoints(points, { circle: { lat: destination.lat, lng: destination.lng, radiusM: framingM } }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pointsKey],
   );
   // 목적지·반경·보이는 친구 집합이 바뀌면 무조건 다시 맞춘다(좌표만 움직이면 가장자리로 빠질 때만)
-  const fitKey = `${k(destination.lat)},${k(destination.lng)},${radiusM}|${visibleMarkerSignature(visible)}|${meFit ? 'me' : ''}`;
+  const fitKey = `${k(destination.lat)},${k(destination.lng)},${framingM}|${visibleMarkerSignature(visible)}|${meFit ? 'me' : ''}`;
 
   const [initialRegion] = useState<Region | undefined>(() => target ?? undefined);
 
@@ -262,14 +267,16 @@ function NativeMap(props: MapPaneProps) {
         accessible
         accessibilityLabel={a11y}
       >
-        <Circle
-          center={center}
-          radius={Math.max(1, radiusM)}
-          strokeColor={colors.primary}
-          strokeWidth={1.5}
-          fillColor={colors.primaryDim}
-          zIndex={1}
-        />
+        {circleM !== null ? (
+          <Circle
+            center={center}
+            radius={circleM}
+            strokeColor={colors.primary}
+            strokeWidth={1.5}
+            fillColor={colors.primaryDim}
+            zIndex={1}
+          />
+        ) : null}
         <DestinationMarker latitude={destination.lat} longitude={destination.lng} name={destination.name} />
         {meDot ? <MeDotMarker latitude={meDot.lat} longitude={meDot.lng} /> : null}
         {visible.map((m) => (

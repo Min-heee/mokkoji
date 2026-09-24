@@ -5,7 +5,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { formatDistance, mapAccessibilityLabel, markerInitial } from './mapGeometry';
+import { drawnRadiusM, formatDistance, mapAccessibilityLabel, markerInitial } from './mapGeometry';
 import type { MapPaneFallbackReason, MapPaneProps } from './mapPaneTypes';
 import { colors, fontSize, radius, spacing } from './theme';
 
@@ -28,17 +28,20 @@ export function MapPaneFallback({
   const h = height ?? (readonly ? 140 : 220);
   const visibleCount = markers.filter((m) => !m.isMe && m.lat !== null && m.lng !== null).length;
   const label = accessibilityLabel ?? mapAccessibilityLabel(destination.name, radiusM, visibleCount);
+  // 반경이 없으면(모임 약속) 원 테두리와 '도착 인정 거리' 문구를 빼고 핀·좌표만
+  const circleM = drawnRadiusM(radiusM);
+  const coords = `${destination.lat.toFixed(5)}, ${destination.lng.toFixed(5)}`;
   const body = (
     <View style={[styles.map, { minHeight: h }]} accessible accessibilityLabel={label}>
       <Text style={styles.mapLabel}>{REASON_LABEL[reason]}</Text>
-      <View style={styles.ring}>
+      <View style={[styles.ring, circleM === null && styles.ringNone]}>
         <View style={styles.pin} />
       </View>
       <Text style={styles.placeName} numberOfLines={1}>
         {destination.name}
       </Text>
       <Text style={styles.sub}>
-        도착 인정 거리 {radiusM}m · {destination.lat.toFixed(5)}, {destination.lng.toFixed(5)}
+        {circleM !== null ? `도착 인정 거리 ${circleM}m · ${coords}` : coords}
       </Text>
     </View>
   );
@@ -100,6 +103,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginVertical: spacing.xs,
   },
+  ringNone: { borderWidth: 0, backgroundColor: 'transparent' },
   pin: { width: 10, height: 10, borderRadius: radius.pill, backgroundColor: colors.text },
   placeName: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
   sub: { fontSize: fontSize.xs, color: colors.subtext },

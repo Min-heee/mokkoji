@@ -2,8 +2,18 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  applyPickedPlace,
+  appointmentDirectionsUrl,
+  appointmentPlaceLabel,
+  appointmentPoint,
   appointmentStatus,
+  buildAppointment,
   buildLocalAt,
+  editPlaceName,
+  EMPTY_PLACE_FORM,
+  pinAfterTextOnlyEdit,
+  placeFormFromAppointment,
+  PINNED_PLACE_FALLBACK_NAME,
   compareByAppointment,
   formatAppointmentTime,
   formatCountdown,
@@ -13,7 +23,8 @@ import {
   parseAppointmentInput,
   toLocalInputValue,
 } from './appointment';
-import type { Session } from './types';
+import { mapRouteUrl } from './mapRoute';
+import type { Appointment, Session } from './types';
 
 const pad = (n: number) => `${n}`.padStart(2, '0');
 
@@ -289,5 +300,219 @@ describe('mapSearchUrl', () => {
 
   it('빈 장소는 null', () => {
     assert.equal(mapSearchUrl('   '), null);
+  });
+});
+
+// ───────────────────────── 지도 핀 (2026-09-24: 모임 약속 장소도 지도로) ─────────────────────────
+
+const GANGNAM = { lat: 37.4979, lng: 127.0276 };
+/** 강남역에서 북쪽으로 약 55m (위도 0.0005도) */
+const GANGNAM_NEAR = { lat: 37.4984, lng: 127.0276 };
+/** 강남역에서 약 3km 떨어진 곳 */
+const FAR = { lat: 37.5249, lng: 127.0276 };
+
+const appt = (over: Partial<Appointment> = {}): Appointment => ({ at: null, place: '', placeNote: '', ...over });
+
+describe('normalizeAppointment · 핀 좌표', () => {
+  it('유효한 위도·경도 한 쌍은 그대로 싣는다', () => {
+    const a = normalizeAppointment({ place: '강남역', placeLat: GANGNAM.lat, placeLng: GANGNAM.lng });
+    assert.equal(a.placeLat, GANGNAM.lat);
+    assert.equal(a.placeLng, GANGNAM.lng);
+    assert.deepEqual(appointmentPoint(a), GANGNAM);
+  });
+
+  it('옛 데이터(좌표 필드 없음)는 핀 없음 — 모양도 예전 그대로', () => {
+    const a = normalizeAppointment({ at: null, place: '곱창집', placeNote: '' });
+    assert.deepEqual(a, { at: null, place: '곱창집', placeNote: '' });
+    assert.equal(appointmentPoint(a), null);
+  });
+
+  it('쓰레기 좌표(범위 밖·NaN·문자열·한쪽만·null)는 버린다', () => {
+    const cases: unknown[] = [
+      { placeLat: 91, placeLng: 127 },
+      { placeLat: 37.5, placeLng: 181 },
+      { placeLat: Number.NaN, placeLng: 127 },
+      { placeLat: Number.POSITIVE_INFINITY, placeLng: 127 },
+      { placeLat: '37.5', placeLng: '127' },
+      { placeLat: 37.5 },
+      { placeLat: null, placeLng: null },
+    ];
+    for (const raw of cases) {
+      const a = normalizeAppointment({ place: 'x', ...(raw as object) });
+      assert.equal(a.placeLat ?? null, null, JSON.stringify(raw));
+      assert.equal(a.placeLng ?? null, null, JSON.stringify(raw));
+      assert.equal(appointmentPoint(a), null);
+    }
+  });
+
+  it('저장 → 읽기 왕복에서 핀이 살아남는다', () => {
+    const saved = buildAppointment({ at: wall(2026, 9, 25, 19, 30), placeName: ' 강남역 ', pin: GANGNAM });
+    const read = normalizeAppointment(JSON.parse(JSON.stringify(saved)));
+    assert.deepEqual(read, { at: '2026-09-25T19:30', place: '강남역', placeNote: '', placeLat: GANGNAM.lat, placeLng: GANGNAM.lng });
+  });
+
+  it('핀을 지우고 저장하면(null) 읽을 때 핀 없음', () => {
+    const saved = buildAppointment({ at: null, placeName: '강남역', pin: null });
+    assert.equal(saved.placeLat, null);
+    assert.equal(saved.placeLng, null);
+    assert.equal(appointmentPoint(normalizeAppointment(JSON.parse(JSON.stringify(saved)))), null);
+  });
+});
+
+describe('appointmentPlaceLabel · hasAppointment (핀만 있는 장소)', () => {
+  it('이름이 있으면 이름', () => {
+    assert.equal(appointmentPlaceLabel(appt({ place: ' 곱창집 ', placeLat: 37.5, placeLng: 127 })), '곱창집');
+  });
+
+  it('이름 없이 핀만 있으면 "지도에서 정한 장소", 그래서 약속이 있는 것으로 본다', () => {
+    const a = appt({ placeLat: 37.5, placeLng: 127 });
+    assert.equal(appointmentPlaceLabel(a), PINNED_PLACE_FALLBACK_NAME);
+    assert.equal(hasAppointment(a), true);
+  });
+
+  it('둘 다 없으면 빈 문자열', () => {
+    assert.equal(appointmentPlaceLabel(appt()), '');
+    assert.equal(appointmentPlaceLabel(null), '');
+    assert.equal(hasAppointment(appt({ placeLat: 999, placeLng: 127 })), false);
+  });
+});
+
+describe('appointmentDirectionsUrl (길찾기)', () => {
+  it('핀이 있으면 좌표 길찾기(카카오맵 link/to)', () => {
+    const a = appt({ place: '강남역', placeLat: GANGNAM.lat, placeLng: GANGNAM.lng });
+    assert.equal(appointmentDirectionsUrl(a), mapRouteUrl('강남역', GANGNAM.lat, GANGNAM.lng));
+    assert.ok(appointmentDirectionsUrl(a)?.startsWith('https://map.kakao.com/link/to/'));
+  });
+
+  it('핀만 있고 이름이 없어도 좌표 길찾기("약속 장소")', () => {
+    const url = appointmentDirectionsUrl(appt({ placeLat: GANGNAM.lat, placeLng: GANGNAM.lng }));
+    assert.equal(url, mapRouteUrl('', GANGNAM.lat, GANGNAM.lng));
+    assert.ok(url?.includes(encodeURIComponent('약속 장소')));
+  });
+
+  it('핀이 없으면 예전처럼 이름 검색, 이름도 없으면 null', () => {
+    assert.equal(appointmentDirectionsUrl(appt({ place: '강남역 곱창' })), mapSearchUrl('강남역 곱창'));
+    assert.equal(appointmentDirectionsUrl(appt({ place: '강남역', placeLat: Number.NaN, placeLng: 127 })), mapSearchUrl('강남역'));
+    assert.equal(appointmentDirectionsUrl(appt()), null);
+    assert.equal(appointmentDirectionsUrl(null), null);
+  });
+});
+
+describe('applyPickedPlace (지도에서 돌아왔을 때 이름 채우기)', () => {
+  it('처음 정할 때: 검색 결과·주소 이름으로 채운다', () => {
+    const s = applyPickedPlace(EMPTY_PLACE_FORM, { ...GANGNAM, name: '  강남역  2호선 ', nameSource: 'search' });
+    assert.deepEqual(s, { name: '강남역 2호선', pin: GANGNAM, nameEdited: false });
+    const t = applyPickedPlace(EMPTY_PLACE_FORM, { ...GANGNAM, name: '서울 강남구 역삼동 858', nameSource: 'address' });
+    assert.equal(t.name, '서울 강남구 역삼동 858');
+  });
+
+  it('이름을 못 얻으면(none) 이름은 비고 핀만', () => {
+    assert.deepEqual(applyPickedPlace(EMPTY_PLACE_FORM, { ...GANGNAM, nameSource: 'none' }), {
+      name: '',
+      pin: GANGNAM,
+      nameEdited: false,
+    });
+    // nameSource 가 none 이면 name 이 실려 와도 쓰지 않는다
+    assert.equal(applyPickedPlace(EMPTY_PLACE_FORM, { ...GANGNAM, name: '무시', nameSource: 'none' }).name, '');
+  });
+
+  it('사람이 고친 이름은 같은 장소(100m 안)에서 핀을 다듬어도 지킨다', () => {
+    const edited = editPlaceName(applyPickedPlace(EMPTY_PLACE_FORM, { ...GANGNAM, name: '강남역', nameSource: 'search' }), '우리 아지트');
+    const s = applyPickedPlace(edited, { ...GANGNAM_NEAR, name: '서울 강남구 어딘가', nameSource: 'address' });
+    assert.deepEqual(s, { name: '우리 아지트', pin: GANGNAM_NEAR, nameEdited: true });
+  });
+
+  it('자동으로 채운 이름은 같은 장소에서 새 이름이 오면 바꾸고, 이름이 안 오면 둔다', () => {
+    const auto = applyPickedPlace(EMPTY_PLACE_FORM, { ...GANGNAM, name: '강남역', nameSource: 'search' });
+    assert.equal(applyPickedPlace(auto, { ...GANGNAM_NEAR, name: '강남역 11번 출구', nameSource: 'search' }).name, '강남역 11번 출구');
+    assert.equal(applyPickedPlace(auto, { ...GANGNAM_NEAR, nameSource: 'none' }).name, '강남역');
+  });
+
+  it('먼 곳으로 옮기면 고친 이름도 새 결과로 바꾼다, 결과 이름이 없으면 비운다', () => {
+    const edited = { name: '우리 아지트', pin: GANGNAM, nameEdited: true };
+    assert.deepEqual(applyPickedPlace(edited, { ...FAR, name: '압구정역', nameSource: 'search' }), {
+      name: '압구정역',
+      pin: FAR,
+      nameEdited: false,
+    });
+    assert.deepEqual(applyPickedPlace(edited, { ...FAR, nameSource: 'none' }), { name: '', pin: FAR, nameEdited: false });
+  });
+
+  it('핀 없이 이름만 있던 옛 약속: 결과 이름이 있으면 그걸로, 없으면 적어둔 이름 유지', () => {
+    const legacy = placeFormFromAppointment(appt({ place: '강남역 곱창집' }));
+    assert.deepEqual(legacy, { name: '강남역 곱창집', pin: null, nameEdited: true });
+    assert.equal(applyPickedPlace(legacy, { ...GANGNAM, name: 'OO곱창 강남점', nameSource: 'search' }).name, 'OO곱창 강남점');
+    assert.deepEqual(applyPickedPlace(legacy, { ...GANGNAM, nameSource: 'none' }), {
+      name: '강남역 곱창집',
+      pin: GANGNAM,
+      nameEdited: true,
+    });
+  });
+
+  it('폴백 이름 칸에서 확정한 이름(nameConfirmed)은 고친 이름·같은 장소 규칙보다 앞선다', () => {
+    const edited = { name: '우리 아지트', pin: GANGNAM, nameEdited: true };
+    // 같은 장소에서 다듬었어도 폴백 화면에서 적은 이름으로 바뀐다
+    assert.deepEqual(applyPickedPlace(edited, { ...GANGNAM_NEAR, name: '강남 곱창 2층', nameSource: 'search', nameConfirmed: true }), {
+      name: '강남 곱창 2층',
+      pin: GANGNAM_NEAR,
+      nameEdited: true,
+    });
+    // 이름 칸을 비우고 확정했으면 비운다
+    assert.deepEqual(applyPickedPlace(edited, { ...GANGNAM_NEAR, nameSource: 'none', nameConfirmed: true }), {
+      name: '',
+      pin: GANGNAM_NEAR,
+      nameEdited: false,
+    });
+  });
+
+  it('쓰레기 좌표 결과는 무시한다', () => {
+    const prev = { name: '강남역', pin: GANGNAM, nameEdited: false };
+    assert.equal(applyPickedPlace(prev, { lat: Number.NaN, lng: 127, name: 'x' }), prev);
+  });
+});
+
+describe('placeFormFromAppointment', () => {
+  it('저장된 약속의 이름·핀을 입력 상태로', () => {
+    assert.deepEqual(placeFormFromAppointment(appt({ place: '강남역', placeLat: GANGNAM.lat, placeLng: GANGNAM.lng })), {
+      name: '강남역',
+      pin: GANGNAM,
+      nameEdited: true,
+    });
+    assert.deepEqual(placeFormFromAppointment(null), EMPTY_PLACE_FORM);
+    assert.deepEqual(placeFormFromAppointment(appt({ placeLat: GANGNAM.lat, placeLng: GANGNAM.lng })), {
+      name: '',
+      pin: GANGNAM,
+      nameEdited: false,
+    });
+  });
+});
+
+describe('pinAfterTextOnlyEdit (지도 없는 기기에서 이름만 고칠 때)', () => {
+  const pinned = appt({ place: '강남역  곱창', placeLat: GANGNAM.lat, placeLng: GANGNAM.lng });
+
+  it('이름이 그대로면(공백 차이 무시) 다른 기기에서 정한 핀을 지킨다', () => {
+    assert.deepEqual(pinAfterTextOnlyEdit(pinned, ' 강남역 곱창 '), GANGNAM);
+  });
+
+  it('이름을 바꾸면 핀을 버린다 — 옛 핀으로 길찾기가 열리지 않게', () => {
+    assert.equal(pinAfterTextOnlyEdit(pinned, '압구정 곱창'), null);
+    assert.equal(pinAfterTextOnlyEdit(pinned, ''), null);
+  });
+
+  it('원래 핀이 없으면 null', () => {
+    assert.equal(pinAfterTextOnlyEdit(appt({ place: '강남역' }), '강남역'), null);
+    assert.equal(pinAfterTextOnlyEdit(null, '강남역'), null);
+  });
+});
+
+describe('buildAppointment', () => {
+  it('이름·메모를 다듬고, 쓰레기 핀은 null 로', () => {
+    assert.deepEqual(buildAppointment({ at: null, placeName: ' 곱창 ', pin: { lat: 91, lng: 0 }, placeNote: ' 2번 출구 ' }), {
+      at: null,
+      place: '곱창',
+      placeNote: '2번 출구',
+      placeLat: null,
+      placeLng: null,
+    });
   });
 });

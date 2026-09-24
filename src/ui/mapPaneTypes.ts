@@ -41,8 +41,8 @@ export interface MapPaneMe {
 
 export interface MapPaneProps {
   destination: MapPaneDestination;
-  /** 도착 인정 반경(m) — 목적지 둘레의 원 */
-  radiusM: number;
+  /** 도착 인정 반경(m) — 목적지 둘레의 원. null(또는 0 이하)이면 원과 '도착 인정 거리' 문구를 그리지 않는다(모임 약속) */
+  radiusM: number | null;
   /** 친구 마커. readonly 에서는 보통 비운다 */
   markers?: readonly MapPaneMarker[];
   /** 내 위치(기기에서 읽은 값). 모르면 null */

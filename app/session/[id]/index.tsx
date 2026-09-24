@@ -5,14 +5,19 @@ import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   EMPTY_APPOINTMENT,
+  appointmentDirectionsUrl,
   appointmentInputHint,
+  appointmentPlaceLabel,
   appointmentStatus,
+  buildAppointment,
   formatAppointmentTime,
   formatCountdown,
   hasAppointment,
-  mapSearchUrl,
   parseAppointmentInput,
+  pinAfterTextOnlyEdit,
+  placeFormFromAppointment,
   toLocalInputValue,
+  type PlaceFormState,
 } from '@/domain/appointment';
 import { formatMoney } from '@/domain/currency';
 import type { Friend } from '@/domain/friends';
@@ -23,6 +28,8 @@ import type { Appointment, Round } from '@/domain/types';
 import { useFriends } from '@/state/FriendsContext';
 import { useSessions } from '@/state/SessionsContext';
 import { alertDialog, confirmDialog } from '@/ui/dialogs';
+import { placePickerUsesMap } from '@/ui/PlacePicker';
+import { SessionPlaceField, useSessionPlacePicker } from '@/ui/SessionPlaceField';
 import { useNow } from '@/ui/useNow';
 import {
   Card,
@@ -37,14 +44,14 @@ import {
 } from '@/ui/components';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
-/** 약속 → 편집 입력 텍스트 4종 ('YYYY-MM-DDTHH:mm'을 날짜/시간으로 쪼갠다) */
+/** 약속 → 편집 입력 4종 ('YYYY-MM-DDTHH:mm'을 날짜/시간으로 쪼갠다, 장소는 이름+지도 핀) */
 function appointmentFields(appointment: Appointment) {
   const local = toLocalInputValue(appointment.at);
   const [date = '', time = ''] = local ? local.split('T') : [];
   return {
     date,
     time,
-    place: appointment.place,
+    place: placeFormFromAppointment(appointment),
     note: appointment.placeNote,
   };
 }
@@ -65,9 +72,12 @@ export default function SessionDetailScreen() {
   const [editing, setEditing] = useState(false);
   const [dateText, setDateText] = useState(() => appointmentFields(appointment).date);
   const [timeText, setTimeText] = useState(() => appointmentFields(appointment).time);
-  const [placeText, setPlaceText] = useState(() => appointmentFields(appointment).place);
+  const [place, setPlace] = useState<PlaceFormState>(() => appointmentFields(appointment).place);
   const [noteText, setNoteText] = useState(() => appointmentFields(appointment).note);
   const now = useNow();
+  // 장소: 지도가 뜨는 기기면 지도 핀 + 이름, 아니면(웹·앱인토스·키 없는 안드로이드) 이름 글자만
+  const [usesMap] = useState(() => placePickerUsesMap());
+  const openPlaceMap = useSessionPlacePicker(setPlace);
 
   // 첫 렌더는 로딩 중이라 초기값이 비어 있을 수 있다.
   // 편집을 열 때·취소할 때 항상 현재 약속에서 다시 채운다
@@ -75,7 +85,7 @@ export default function SessionDetailScreen() {
     const fields = appointmentFields(a);
     setDateText(fields.date);
     setTimeText(fields.time);
-    setPlaceText(fields.place);
+    setPlace(fields.place);
     setNoteText(fields.note);
   };
 
@@ -185,19 +195,18 @@ export default function SessionDetailScreen() {
       return;
     }
 
+    // 지도가 없는 기기에선 핀을 고칠 수 없다 — 이름이 그대로면 다른 기기에서 정한 핀을 지키고, 바뀌면 버린다
+    const pin = usesMap ? place.pin : pinAfterTextOnlyEdit(appointment, place.name);
     updateSession(session.id, (s) => ({
       ...s,
-      appointment: {
-        at: parsed.at,
-        place: placeText.trim(),
-        placeNote: noteText.trim(),
-      },
+      appointment: buildAppointment({ at: parsed.at, placeName: place.name, pin, placeNote: noteText }),
     }));
     setEditing(false);
   };
 
   const openMap = () => {
-    const url = mapSearchUrl(appointment.place);
+    // 핀이 있으면 좌표 길찾기, 없으면 이름 검색
+    const url = appointmentDirectionsUrl(appointment);
     if (!url) return;
     if (Platform.OS === 'web') {
       // 웹(앱인토스 웹뷰)에서 Linking.openURL은 같은 탭을 통째로 갈아치워
@@ -210,7 +219,8 @@ export default function SessionDetailScreen() {
     Linking.openURL(url).catch(() => alertDialog('지도를 열 수 없어요'));
   };
 
-  const placeName = appointment.place.trim();
+  // 이름 없이 핀만 있으면 '지도에서 정한 장소'
+  const placeName = appointmentPlaceLabel(appointment);
   const isPastAppointment = appointmentStatus(appointment, now) === 'past';
 
   return (
@@ -241,12 +251,7 @@ export default function SessionDetailScreen() {
               onChangeText={setTimeText}
               placeholder="19:30"
             />
-            <TextField
-              label="장소"
-              value={placeText}
-              onChangeText={setPlaceText}
-              placeholder="예: 강남역 2번출구 곱창"
-            />
+            <SessionPlaceField value={place} onChange={setPlace} onOpenMap={openPlaceMap} usesMap={usesMap} />
             <TextField
               label="장소 메모 (선택)"
               value={noteText}

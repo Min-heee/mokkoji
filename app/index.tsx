@@ -3,6 +3,7 @@ import React, { useCallback, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
+  appointmentPlaceLabel,
   appointmentStatus,
   compareByAppointment,
   formatAppointmentTime,
@@ -95,7 +96,8 @@ export default function HomeScreen() {
         const total = s.rounds.reduce((sum, r) => sum + roundBaseTotal(r), 0);
         const appt = s.appointment ?? null;
         const showAppointment = appt !== null && hasAppointment(appt);
-        const place = appt ? appt.place.trim() : '';
+        // 이름 없이 지도 핀만 정한 약속도 '지도에서 정한 장소'로 보인다
+        const place = appointmentPlaceLabel(appt);
         return (
           <Card
             key={s.id}

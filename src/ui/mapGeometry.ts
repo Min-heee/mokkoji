@@ -222,10 +222,21 @@ export function formatDistance(m: number | null | undefined): string {
 }
 
 /** 지도 전체의 스크린리더 라벨 */
-export function mapAccessibilityLabel(placeName: string, radiusM: number, visibleFriendCount: number): string {
+/**
+ * MapPane 이 그릴 반경 원(m). null·0 이하·NaN 이면 null = 원도 '도착 인정 거리' 문구도 없다(모임 약속 미리보기).
+ */
+export function drawnRadiusM(radiusM: number | null | undefined): number | null {
+  return typeof radiusM === 'number' && Number.isFinite(radiusM) && radiusM > 0 ? radiusM : null;
+}
+
+/** 원이 없을 때 지도 확대 수준을 잡는 기준 반경(m) — PlacePicker 의 FRAMING_RADIUS_M 과 같은 동네 몇 블록 */
+export const NO_RADIUS_FRAMING_M = 100;
+
+export function mapAccessibilityLabel(placeName: string, radiusM: number | null, visibleFriendCount: number): string {
   const name = placeName.trim() || '약속 장소';
   const parts = [`${name} 지도`];
-  if (Number.isFinite(radiusM) && radiusM > 0) parts.push(`도착 인정 거리 ${Math.round(radiusM)}m`);
+  const r = drawnRadiusM(radiusM);
+  if (r !== null) parts.push(`도착 인정 거리 ${Math.round(r)}m`);
   if (visibleFriendCount > 0) parts.push(`친구 ${visibleFriendCount}명 위치 표시`);
   return parts.join(', ');
 }

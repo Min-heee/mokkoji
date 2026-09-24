@@ -5,6 +5,7 @@ import {
   ANDROID_MARKER_BITMAP_PX,
   MIN_REGION_DELTA,
   androidMarkerBoxDp,
+  drawnRadiusM,
   fitMarkerContentDp,
   mePlan,
   easeOutCubic,
@@ -268,6 +269,18 @@ describe('표시 문자열', () => {
     assert.equal(mapAccessibilityLabel('강남역 곱창', 100, 0), '강남역 곱창 지도, 도착 인정 거리 100m');
     assert.equal(mapAccessibilityLabel(' ', 100, 2), '약속 장소 지도, 도착 인정 거리 100m, 친구 2명 위치 표시');
     assert.equal(mapAccessibilityLabel('집', NaN, 0), '집 지도');
+    assert.equal(mapAccessibilityLabel('모임 장소', null, 0), '모임 장소 지도');
+  });
+
+  it('drawnRadiusM: 반경이 없으면(null·0 이하·NaN) 원도 도착 인정 거리 문구도 없다(모임 약속 미리보기)', () => {
+    assert.equal(drawnRadiusM(100), 100);
+    assert.equal(drawnRadiusM(30), 30);
+    assert.equal(drawnRadiusM(null), null);
+    assert.equal(drawnRadiusM(undefined), null);
+    assert.equal(drawnRadiusM(0), null);
+    assert.equal(drawnRadiusM(-5), null);
+    assert.equal(drawnRadiusM(Number.NaN), null);
+    assert.equal(drawnRadiusM(Number.POSITIVE_INFINITY), null);
   });
 });
 

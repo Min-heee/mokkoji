@@ -207,3 +207,167 @@ export function pinLimitStatus(
   const distanceM = haversineMeters(center, value);
   return { distanceM, over: distanceM > radiusM };
 }
+
+// ───────────────────────── 도착 인정 거리 칩(지도 아래) ─────────────────────────
+
+/** 위치 정하기 화면의 기본 거리 칩(m) */
+export const RADIUS_PICKER_CHOICES: readonly number[] = [50, 100, 200, 300, 500];
+/** 원이 없을 때(모임 약속) 지도 확대 수준을 잡는 기준 반경 — 동네 몇 블록 */
+export const FRAMING_RADIUS_M = 100;
+/** 원 지름이 지도 짧은 변의 이 비율을 넘으면 원이 잘려 보인다 → 줌 아웃 */
+export const CIRCLE_FIT_MAX_SHARE = 0.8;
+/** 원 지름이 지도 짧은 변의 이 비율보다 작으면 점처럼 보인다 → 줌 인 */
+export const CIRCLE_FIT_MIN_SHARE = 0.1;
+
+/** 칩·원으로 쓸 수 있는 반경인가(양의 정수) */
+export function isUsableRadius(m: unknown): m is number {
+  return typeof m === 'number' && Number.isInteger(m) && m > 0;
+}
+
+/**
+ * 칩 목록: 기본 목록 + 현재 값(목록에 없으면 끼운다). 오름차순·중복 없음·이상한 값 제외.
+ * 현재 값이 없거나 이상하면 기본 목록만
+ */
+export function radiusChipList(base: readonly number[], current: number | null | undefined): number[] {
+  const set = new Set<number>();
+  for (const m of base) if (isUsableRadius(m)) set.add(m);
+  if (isUsableRadius(current)) set.add(current);
+  return [...set].sort((a, b) => a - b);
+}
+
+/** 칩 하나를 눌렀을 때의 새 반경. 잠겨 있거나 이상한 값이면 지금 값 그대로 */
+export function pickRadius(locked: boolean | undefined, current: number, picked: number): number {
+  if (locked) return current;
+  return isUsableRadius(picked) ? picked : current;
+}
+
+/** 지도 영역의 짧은 변(m). 이상하면 null */
+export function regionShortSideM(region: MapRegion | null | undefined): number | null {
+  if (!region) return null;
+  const { latitude, latitudeDelta, longitudeDelta } = region;
+  if (![latitude, latitudeDelta, longitudeDelta].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  if (latitudeDelta <= 0 || longitudeDelta <= 0) return null;
+  const heightM = latitudeDelta * METERS_PER_DEG_LAT;
+  const widthM = longitudeDelta * METERS_PER_DEG_LAT * Math.cos((latitude * Math.PI) / 180);
+  const short = Math.min(heightM, widthM);
+  return short > 0 ? short : null;
+}
+
+/**
+ * 반경을 바꾼 뒤 지도를 다시 맞출 영역. 지금 보이는 영역에 원이 알맞게 들어 있으면 null(움직이지 않는다).
+ * - 원 지름이 짧은 변의 80%를 넘으면(잘림) 또는 10%보다 작으면(점) → regionAround(center, radiusM):
+ *   원 지름이 짧은 변의 40% = 중심에서 반경의 2.5배까지 보인다.
+ * - 지금 영역을 모르면 맞춘다
+ */
+export function radiusRefitRegion(
+  current: MapRegion | null | undefined,
+  center: GeoPoint,
+  radiusM: number | null | undefined,
+): MapRegion | null {
+  if (!isUsableRadius(radiusM)) return null;
+  const short = regionShortSideM(current);
+  if (short === null) return regionAround(center, radiusM);
+  const share = (2 * radiusM) / short;
+  if (share > CIRCLE_FIT_MAX_SHARE || share < CIRCLE_FIT_MIN_SHARE) return regionAround(center, radiusM);
+  return null;
+}
+
+/** 칩 아래 한 줄 */
+export function radiusSentence(radiusM: number): string {
+  return `핀에서 ${radiusM}m 안에 들어오면 도착이에요`;
+}
+
+// ───────────────────────── 약속 잡기 폼의 장소 이름 채우기 ─────────────────────────
+
+export interface FillPlaceNameInput {
+  /** 지금 폼에 적힌 이름 */
+  current: string;
+  /** 사용자가 이름 칸을 직접 고친 적이 있는가(저장된 약속에서 불러온 이름도 사용자 것으로 본다) */
+  edited: boolean;
+  /** 위치 정하기 화면이 돌려준 이름·출처 */
+  name?: string | null;
+  nameSource?: 'search' | 'address' | 'none' | null;
+  /**
+   * 위치 정하기 화면의 이름 칸에 보이던 그대로인가(지도 없는 폴백). true 면 edited 와 상관없이 이 이름으로 바꾼다 —
+   * 사용자가 그 화면에서 보고 적은(고른) 이름이라 '고친 이름 지키기'로 버리면 조용히 사라진다
+   */
+  nameConfirmed?: boolean | null;
+  /** 이름 최대 글자 수(넘으면 자른다) */
+  maxChars: number;
+}
+
+/**
+ * 지도에서 돌아왔을 때 폼의 장소 이름.
+ * - 위치 정하기 화면의 이름 칸에서 확정한 이름(nameConfirmed)이면 그대로 쓴다(비어 있으면 비운다)
+ * - 사용자가 고친 적이 있으면(그리고 칸이 비어 있지 않으면) 건드리지 않는다
+ * - 아니면 결과 이름으로 덮는다. nameSource 'none'(또는 이름 없음)이면 칸을 비워 사용자가 적게 한다
+ * - 칸을 고쳤다가 다 지웠으면 고치지 않은 것과 같다(빈 칸은 채운다)
+ */
+export function fillPlaceName({ current, edited, name, nameSource, nameConfirmed, maxChars }: FillPlaceNameInput): string {
+  if (!nameConfirmed && edited && current.trim() !== '') return current;
+  const picked = typeof name === 'string' ? name.replace(/\s+/g, ' ').trim() : '';
+  if (nameSource === 'none' || picked === '') return '';
+  const chars = Array.from(picked);
+  return chars.length > maxChars ? chars.slice(0, maxChars).join('').trim() : picked;
+}
+
+/**
+ * 지도 핀의 이름 출처 올리기: 지도를 움직여 'none' 으로 보낸 핀에 역지오코딩 주소가 도착하면 'address' 로 다시 보낸다.
+ * 보낼 것이 없으면 null(검색 이름·이미 같은 주소·주소 없음)
+ */
+export function upgradeWithAddress<
+  T extends { lat: number; lng: number; name?: string; nameSource?: 'search' | 'address' | 'none' },
+>(
+  value: T | null | undefined,
+  address: string,
+): (T & { name: string; nameSource: 'address' }) | null {
+  if (!value || address.trim() === '') return null;
+  if (value.nameSource !== 'none') return null;
+  return { ...value, name: address.trim(), nameSource: 'address' };
+}
+
+/** 주소를 아직 찾는 중인 핀인가(이 동안은 확정하지 않는다 — 확정하면 빈 이름이 폼에 들어간다) */
+export function isNamePending<T extends { nameSource?: 'search' | 'address' | 'none'; namePending?: boolean }>(
+  value: T | null | undefined,
+): boolean {
+  return !!value && value.nameSource === 'none' && value.namePending === true;
+}
+
+/**
+ * 지도를 움직인 핀의 이름 정리 — 가장 가까운 주소 조회가 끝났을 때(또는 주소를 찾을 수 없게 됐을 때) 다시 보낼 값.
+ * - 주소가 왔으면: 'address' 로(찾는 중 표시를 뗀다)
+ * - 조회가 끝났는데 주소가 없거나(실패·빈 결과), 주소를 찾을 수 없게 됐으면(권한): 찾는 중 표시만 뗀 'none'
+ * - 보낼 것이 없으면 null(검색 이름·이미 주소·아직 찾는 중)
+ * lookup.settled = 이 핀 좌표에 대한 조회가 끝났는가(성공·실패 모두)
+ */
+export function settleNearestName<
+  T extends { lat: number; lng: number; name?: string; nameSource?: 'search' | 'address' | 'none'; namePending?: boolean },
+>(value: T | null | undefined, lookup: { text: string; settled: boolean }, addressPossible: boolean): T | null {
+  if (!value || value.nameSource !== 'none') return null;
+  const { namePending: _pending, ...rest } = value;
+  if (lookup.text.trim() !== '') {
+    const up = upgradeWithAddress(rest as T, lookup.text);
+    if (up) return up;
+  }
+  if (value.namePending === true && (lookup.settled || !addressPossible)) return rest as T;
+  return null;
+}
+
+// ───────────────────────── 도착 인정 거리 직접 적기 ─────────────────────────
+
+/** 직접 적은 거리: 정수이고 [min, max] 안이면 그 값, 아니면 null(서버 CHECK 와 같은 범위) */
+export function parseRadiusText(text: string, min: number, max: number): number | null {
+  const t = text.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= min && n <= max ? n : null;
+}
+
+/**
+ * [완료](또는 키보드가 내려감)를 눌렀을 때 직접 적기 줄을 닫을지.
+ * 비었거나 올바른 값이면 닫는다(값은 적는 동안 이미 반영됐다). 이상한 값이면 열어 두고 경고를 보인다 —
+ * 닫으면 칩으로 고른 옛 값이 말없이 저장된다
+ */
+export function shouldCloseCustomRadius(text: string, min: number, max: number): boolean {
+  return text.trim() === '' || parseRadiusText(text, min, max) !== null;
+}

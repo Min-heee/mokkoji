@@ -2,8 +2,9 @@
  * 약속 잡기 (설계서 §5.3-B + §0-1 규칙 4·5·7). 담당: [create]
  *
  * 쿼리
- * - (없음)      새 약속. 제목 → 초대할 친구(InviteeEditor) → 날짜·시간(+시간대 라벨) → 장소 이름·메모 → [지도에서 위치 정하기]
- *               → 걸 포인트 → 늦으면(프리셋) → 봐주는 시간 → 도착 인정 거리 → 동의 2개 → [약속 만들기]
+ * - (없음)      새 약속. 제목 → 초대할 친구(InviteeEditor) → 날짜·시간(+시간대 라벨) → [지도에서 장소 정하기]
+ *               (핀 + 도착 인정 거리를 지도에서) → 장소 이름(지도 결과로 채움)·메모 → 걸 포인트 → 늦으면(프리셋)
+ *               → 봐주는 시간 → 동의 2개 → [약속 만들기]
  * - ?from=<id>  그 약속(보통 취소한 것)의 값으로 폼을 채운 새 약속. 읽지 못하면 빈 폼.
  * - ?edit=<id>  주최자의 조건 변경. 시작 전에는 전부(명단 편집은 api.editInvitees 로 즉시), 시작 후에는
  *               시간 뒤로 미루기·장소만 — 동결된 항목은 비활성 + 이유(LB_EDIT_FROZEN 문구). 제목·메모는 updateMemo.
@@ -12,6 +13,15 @@
  * - R1 시작 후 미루기: 지금 약속 시각 전에만, 시작하던 순간의 약속 시각 + 3시간까지(누적). 남은 한도를 보여 준다.
  * - R2 시작 후 장소: 시작하던 순간의 핀에서 500m 안(누적). 위치 정하기 화면에 한도를 넘긴다(draft.limit).
  * - R3 시작 전, 친구가 들어와 있을 때 시각·시간대·핀·정책을 바꾸면 5분 동안 [시작하기]가 막힌다 → 저장 전에 한 번 묻는다.
+ *
+ * 장소는 지도 우선(오너 2026-09-24 "장소 정하기 할 때 지도로 정하게 해줘. 그래야 500m 든 몇 미터든 기준을 정할 수 있지")
+ * - 핀이 없으면 이름 칸도 없다 — [지도에서 장소 정하기] 하나. 이름은 지도에서 고른 결과(검색 상호명·핀 근처 주소)로 채우고 고칠 수 있다.
+ * - 이름 채우기(placePickerModel.fillPlaceName): 사용자가 이름을 직접 고친 적이 없으면 결과 이름으로 덮고, 고쳤으면 두고,
+ *   결과에 이름이 없으면(nameSource 'none') 칸을 비워 적게 한다. 저장된 약속에서 불러온 이름은 '고친 이름'으로 본다.
+ *   단 지도 없는 폴백의 이름 칸에서 확정한 이름(nameConfirmed)은 늘 그것으로 바꾼다(그 화면에서 적은 이름이 조용히 버려지지 않게).
+ * - 결과는 takePlaceResult('late') 로 약속 잡기 위치 화면이 남긴 것만 꺼낸다(모임 위치 화면의 남은 결과가 새지 않게).
+ * - 도착 인정 거리 칩은 지도 화면(late/place)으로 옮겼다. 폼에는 요약 한 줄만 두고 지도에서 돌려받은 값으로 radiusM 을 갱신한다.
+ *   시작한 약속은 정책 동결이라 지도 화면의 칩이 잠긴다(draft.radiusLocked).
  *
  * 규칙
  * - '위치 공개 시점' 입력은 없다. 위치는 대기실에서 주최자가 [시작하기]를 누르는 순간부터 보인다(폼은 그 사실만 안내한다).
@@ -37,8 +47,6 @@ import {
   matchPreset,
   POLICY_LIMITS,
   policyWithStake,
-  RADIUS_CHOICES,
-  SMALL_RADIUS_WARN_M,
   STAKE_CHOICES,
   validatePolicy,
   type LatePresetId,
@@ -82,6 +90,7 @@ import { Card, Chip, EmptyState, LoadingState, PrimaryButton, Row, Screen, Secti
 import { confirmDialog } from '@/ui/dialogs';
 import { MapPane } from '@/ui/MapPane';
 import { openPlaceDraft, takePlaceResult, type PlacePickerValue } from '@/ui/PlacePicker';
+import { fillPlaceName, RADIUS_PICKER_CHOICES } from '@/ui/placePickerModel';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 const MIN = 60_000;
@@ -95,7 +104,9 @@ const PLACE_NOTE_MAX = 200;
 const START_NOTICE =
   '만든 뒤 대기실에서 [시작하기]를 누르면 그때부터 서로 위치가 보여요. 친구는 초대 링크를 열고 명단에서 자기 이름을 골라 들어와요.';
 const PIN_REQUIRED = '장소 위치를 정해야 도착을 확인할 수 있어요';
-const SMALL_RADIUS_WARNING = '지하·실내는 GPS가 잘 안 잡혀요. 100m를 권해요';
+const PLACE_PICK_HINT = '지도에서 핀을 찍고, 몇 m 안에 들어오면 도착인지 정해요';
+const RADIUS_LOCKED_REASON = '이미 시작한 약속이라 도착 인정 거리는 바꿀 수 없어요';
+const DEFAULT_RADIUS_M = 100;
 const CONSENT_LOCATION =
   '내가 [시작하기]를 누른 뒤부터 도착할 때까지, 앱을 켜 둔 동안 내 위치를 같은 약속의 친구들에게 보여 주는 데 동의해요';
 const CONSENT_AGE = '만 14세 이상이에요';
@@ -207,8 +218,6 @@ function Loader() {
 
 // ───────────────────────── 폼 ─────────────────────────
 
-type RadiusChoice = number | 'custom';
-
 interface FormProps {
   mode: Mode;
   /** 값을 채울 약속(edit: 대상, create+from: 본보기). 없으면 빈 폼 */
@@ -220,10 +229,6 @@ interface FormProps {
 function splitLocalAt(localAt: string): { date: string; time: string } {
   const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/.exec(localAt);
   return m ? { date: m[1], time: m[2] } : { date: '', time: '' };
-}
-
-function initialRadius(radiusM: number): { choice: RadiusChoice; text: string } {
-  return RADIUS_CHOICES.includes(radiusM) ? { choice: radiusM, text: '' } : { choice: 'custom', text: String(radiusM) };
 }
 
 function Form({ mode, prefill, initialLive }: FormProps) {
@@ -247,7 +252,6 @@ function Form({ mode, prefill, initialLive }: FormProps) {
   );
 
   const split = prefill ? splitLocalAt(prefill.localAt) : { date: '', time: '' };
-  const startRadius = initialRadius(prefill?.policy.radiusM ?? 100);
 
   const [title, setTitle] = useState(prefill?.title ?? '');
   const [names, setNames] = useState<string[]>(!isEdit && prefill ? prefill.invitees.map((i) => i.name) : []);
@@ -256,13 +260,15 @@ function Form({ mode, prefill, initialLive }: FormProps) {
   const [tz, setTz] = useState(prefill?.tz ?? SEOUL_TZ);
   const [tzConfirmed, setTzConfirmed] = useState(false);
   const [placeName, setPlaceName] = useState(prefill?.placeName ?? '');
+  // 사용자가 장소 이름을 직접 고쳤는가(지도에서 돌아올 때 덮을지). 저장된 약속에서 불러온 이름은 사용자 것으로 본다
+  const placeNameEdited = useRef((prefill?.placeName ?? '').trim() !== '');
   const [placeNote, setPlaceNote] = useState(prefill?.placeNote ?? '');
   const [pin, setPin] = useState<PlacePickerValue | null>(prefill ? { lat: prefill.placeLat, lng: prefill.placeLng } : null);
   const [presetId, setPresetId] = useState<LatePresetId>(prefill ? (matchPreset(prefill.policy) ?? DEFAULT_PRESET_ID) : DEFAULT_PRESET_ID);
   const [stake, setStake] = useState(prefill?.policy.stake ?? policyWithStake(DEFAULT_PRESET_ID, Number.NaN).stake);
   const [grace, setGrace] = useState(prefill?.policy.graceMinutes ?? 0);
-  const [radiusChoice, setRadiusChoice] = useState<RadiusChoice>(startRadius.choice);
-  const [radiusText, setRadiusText] = useState(startRadius.text);
+  // 도착 인정 거리 — 지도 화면(late/place)에서 정해 돌려받는다
+  const [radiusM, setRadiusM] = useState(prefill?.policy.radiusM ?? DEFAULT_RADIUS_M);
   // edit 모드: 걸 포인트·지각 규칙·봐주는 시간·거리 중 하나라도 건드리기 전에는 서버 정책을 그대로 쓴다(프리셋 역추적 오차 방지)
   const [policyTouched, setPolicyTouched] = useState(false);
   const [agreeLocation, setAgreeLocation] = useState(false);
@@ -284,12 +290,15 @@ function Form({ mode, prefill, initialLive }: FormProps) {
   const localAt = parsed.at;
   const meetAtMs = localAt ? wallClockToMs(localAt, tz) : null;
 
-  const radiusM =
-    radiusChoice === 'custom' ? (/^\d+$/.test(radiusText.trim()) ? Number(radiusText.trim()) : Number.NaN) : radiusChoice;
   const composed = policyWithStake(presetId, stake, { radiusM, graceMinutes: grace });
   const policy = isEdit && appt && (!policyTouched || started) ? appt.policy : composed;
   const validation = validatePolicy(policy);
-  const radiusValid = Number.isInteger(radiusM) && radiusM >= POLICY_LIMITS.radiusM.min && radiusM <= POLICY_LIMITS.radiusM.max;
+  // 실제로 보낼 반경(edit 에서 정책을 안 건드렸으면 서버 값). 요약·미리보기·지도 화면이 모두 이 값을 쓴다
+  const effectiveRadiusM = policy.radiusM;
+  const radiusValid =
+    Number.isInteger(effectiveRadiusM) &&
+    effectiveRadiusM >= POLICY_LIMITS.radiusM.min &&
+    effectiveRadiusM <= POLICY_LIMITS.radiusM.max;
   // 시각이 없어도 걸 포인트·지각 문장은 그릴 수 있다(close 문장만 시각이 필요하다)
   const desc = describePolicy(policy, meetAtMs ?? 0, tz);
 
@@ -325,10 +334,11 @@ function Form({ mode, prefill, initialLive }: FormProps) {
   else if (titleLen > TITLE_MAX) blockReason = `약속 이름은 ${TITLE_MAX}자까지예요`;
   else if (parsed.status === 'empty') blockReason = '날짜와 시간을 적어주세요';
   else if (timeIssue !== null) blockReason = timeIssue;
+  // 장소는 지도가 먼저다 — 핀이 없으면 이름 칸도 없으니 핀부터 묻는다
+  else if (!pin) blockReason = PIN_REQUIRED;
   else if (placeNameLen < 1) blockReason = '장소 이름을 적어주세요';
   else if (placeNameLen > PLACE_NAME_MAX) blockReason = `장소 이름은 ${PLACE_NAME_MAX}자까지예요`;
   else if (noteLen > PLACE_NOTE_MAX) blockReason = `장소 메모는 ${PLACE_NOTE_MAX}자까지예요`;
-  else if (!pin) blockReason = PIN_REQUIRED;
   else if (moveBlocked) blockReason = errorMessage('LB_MOVE_TOO_FAR');
   else if (!validation.ok) blockReason = validation.issues[0].message;
   else if (!isEdit && (!agreeLocation || !agreeAge)) blockReason = errorMessage('LB_CONSENT_REQUIRED');
@@ -350,9 +360,7 @@ function Form({ mode, prefill, initialLive }: FormProps) {
         setStake(p.stake);
         setGrace(p.graceMinutes);
         setPresetId(matchPreset(p) ?? DEFAULT_PRESET_ID);
-        const r = initialRadius(p.radiusM);
-        setRadiusChoice(r.choice);
-        setRadiusText(r.text);
+        setRadiusM(p.radiusM);
         setPolicyTouched(false);
       }
     } catch {
@@ -360,14 +368,36 @@ function Form({ mode, prefill, initialLive }: FormProps) {
     }
   }, [api, apptId]);
 
+  // 지도에서 돌려받은 반경을 비교할 최신 값(포커스 콜백이 옛 렌더의 값을 보지 않게)
+  const radiusRef = useRef(effectiveRadiusM);
+  radiusRef.current = effectiveRadiusM;
+  const startedRef = useRef(started);
+  startedRef.current = started;
+
   useFocusEffect(
     useCallback(() => {
-      const r = takePlaceResult();
+      // 약속 잡기 위치 화면(late/place)이 남긴 결과만 — 모임 위치 화면에서 남은 결과가 새어 들어오지 않게
+      const r = takePlaceResult('late');
       if (r) {
-        setPin({ lat: r.lat, lng: r.lng, name: r.name });
-        // 장소 이름이 비어 있으면 고른 장소 이름으로 채운다
-        const picked = r.name;
-        if (picked) setPlaceName((prev) => (prev.trim() === '' ? picked : prev));
+        const v = r.value;
+        setPin({ lat: v.lat, lng: v.lng, name: v.name, nameSource: v.nameSource });
+        // 이름 채우기: 위치 화면의 이름 칸에서 확정한 이름(지도 없는 폴백, nameConfirmed)이면 그것으로.
+        // 아니면 직접 고친 적이 없을 때만 결과 이름으로(없으면 비운다), 고쳤으면 그대로
+        setPlaceName((prev) =>
+          fillPlaceName({
+            current: prev,
+            edited: placeNameEdited.current,
+            name: v.name,
+            nameSource: v.nameSource,
+            nameConfirmed: v.nameConfirmed,
+            maxChars: PLACE_NAME_MAX,
+          }),
+        );
+        // 도착 인정 거리: 시작 전이고 실제로 바뀌었을 때만(정책을 건드린 것으로 본다 — 친구가 있으면 저장 때 쿨다운 경고)
+        if (!startedRef.current && typeof r.radiusM === 'number' && r.radiusM !== radiusRef.current) {
+          setRadiusM(r.radiusM);
+          setPolicyTouched(true);
+        }
         // 핀이 바뀌었으니 시간대는 다시 확인한다
         setTzConfirmed(false);
       }
@@ -375,13 +405,27 @@ function Form({ mode, prefill, initialLive }: FormProps) {
     }, [isEdit, reloadAppt]),
   );
 
+  const onPlaceNameText = (t: string) => {
+    placeNameEdited.current = true;
+    setPlaceName(t);
+  };
+
   const goPlace = () => {
     // 시작한 뒤에는 시작하던 순간의 핀에서 500m 안으로만(R2) — 위치 정하기 화면이 한도 원을 그리고 넘으면 막는다
     const limit =
       started && appt
         ? { lat: appt.startPlaceLat ?? appt.placeLat, lng: appt.startPlaceLng ?? appt.placeLng, radiusM: MOVE_AFTER_START_MAX_M }
         : null;
-    openPlaceDraft({ value: pin, radiusM: radiusValid ? radiusM : 100, placeName: placeName.trim(), limit });
+    openPlaceDraft({
+      value: pin,
+      // 시작 후에는 정책이 동결 — 서버 정책의 반경을 잠근 채로 보여 준다
+      radiusM: started || radiusValid ? effectiveRadiusM : DEFAULT_RADIUS_M,
+      radiusChoices: [...RADIUS_PICKER_CHOICES],
+      radiusLocked: started,
+      radiusLockedReason: started ? RADIUS_LOCKED_REASON : undefined,
+      placeName: placeName.trim(),
+      limit,
+    });
     router.push('/late/place');
   };
 
@@ -636,27 +680,32 @@ function Form({ mode, prefill, initialLive }: FormProps) {
         ) : null}
 
         <SectionTitle>어디서</SectionTitle>
-        <TextField
-          label={`장소 이름 (1~${PLACE_NAME_MAX}자)`}
-          value={placeName}
-          onChangeText={setPlaceName}
-          placeholder="예: 강남역 2번 출구 곱창"
-        />
-        <TextField label="장소 메모 (선택)" value={placeNote} onChangeText={setPlaceNote} placeholder="예: 2번 출구에서 도보 3분" />
         {pin ? (
-          <MapPane
-            destination={{ name: placeName.trim() || pin.name || '약속 장소', lat: pin.lat, lng: pin.lng }}
-            radiusM={radiusValid ? radiusM : 100}
-            readonly
-          />
-        ) : null}
-        <PrimaryButton
-          label={pin ? '지도에서 위치 다시 정하기' : '지도에서 위치 정하기'}
-          variant="ghost"
-          onPress={goPlace}
-          disabled={submitting}
-        />
-        {!pin ? <Text style={styles.warn}>{PIN_REQUIRED}</Text> : null}
+          <>
+            <MapPane
+              destination={{ name: placeName.trim() || pin.name || '약속 장소', lat: pin.lat, lng: pin.lng }}
+              radiusM={radiusValid ? effectiveRadiusM : DEFAULT_RADIUS_M}
+              readonly
+            />
+            <TextField
+              label={`장소 이름 (1~${PLACE_NAME_MAX}자)`}
+              value={placeName}
+              onChangeText={onPlaceNameText}
+              placeholder="예: 강남역 2번 출구 곱창"
+            />
+            <TextField label="장소 메모 (선택)" value={placeNote} onChangeText={setPlaceNote} placeholder="예: 2번 출구에서 도보 3분" />
+            <Text style={styles.summary}>
+              도착 인정 거리 {effectiveRadiusM}m
+              <Text style={styles.help}>{started ? ' · 시작한 약속이라 바꿀 수 없어요' : ' · 지도에서 바꿀 수 있어요'}</Text>
+            </Text>
+            <PrimaryButton label="지도에서 다시 정하기" variant="ghost" onPress={goPlace} disabled={submitting} />
+          </>
+        ) : (
+          <>
+            <PrimaryButton label="지도에서 장소 정하기" onPress={goPlace} disabled={submitting} />
+            <Text style={styles.help}>{PLACE_PICK_HINT}</Text>
+          </>
+        )}
 
         <SectionTitle>걸 포인트</SectionTitle>
         <Row>
@@ -724,62 +773,12 @@ function Form({ mode, prefill, initialLive }: FormProps) {
         </Row>
         <Text style={styles.help}>{started ? frozenNote : desc.grace}</Text>
 
-        <SectionTitle>도착 인정 거리</SectionTitle>
-        <Row>
-          {RADIUS_CHOICES.map((r) => (
-            <Chip
-              key={r}
-              label={`${r}m`}
-              selected={radiusChoice === r}
-              onPress={() => {
-                setPolicyTouched(true);
-                setRadiusChoice(r);
-              }}
-              disabled={submitting || started}
-            />
-          ))}
-          <Chip
-            label="직접"
-            selected={radiusChoice === 'custom'}
-            onPress={() => {
-              setPolicyTouched(true);
-              setRadiusChoice('custom');
-            }}
-            disabled={submitting || started}
-          />
-        </Row>
-        {radiusChoice === 'custom' && !started ? (
-          <TextField
-            label={`거리 (${POLICY_LIMITS.radiusM.min}~${POLICY_LIMITS.radiusM.max}m)`}
-            value={radiusText}
-            onChangeText={(t) => {
-              setPolicyTouched(true);
-              setRadiusText(t);
-            }}
-            placeholder="100"
-            keyboardType="number-pad"
-            suffix="m"
-          />
-        ) : null}
-        {started ? (
-          <Text style={styles.help}>{frozenNote}</Text>
-        ) : radiusValid ? (
-          <Text style={styles.help}>
-            {desc.radius}
-            {radiusM <= SMALL_RADIUS_WARN_M ? ` ${SMALL_RADIUS_WARNING}` : ''}
+        {/* 도착 인정 거리는 지도 화면에서 정한다(요약은 '어디서' 절). 값이 이상하면 여기서 한 번 더 알린다 */}
+        {validation.issues.map((i) => (
+          <Text key={i.field} style={styles.warn}>
+            {i.message}
           </Text>
-        ) : (
-          <Text style={styles.warn}>
-            {validation.issues.find((i) => i.field === 'radiusM')?.message ?? errorMessage('LB_CHECK_VIOLATION')}
-          </Text>
-        )}
-        {validation.issues
-          .filter((i) => i.field !== 'radiusM')
-          .map((i) => (
-            <Text key={i.field} style={styles.warn}>
-              {i.message}
-            </Text>
-          ))}
+        ))}
         {meetAtMs !== null && timeIssue === null && desc.close !== '' ? <Text style={styles.help}>{desc.close}</Text> : null}
 
         {!isEdit ? (
@@ -902,6 +901,7 @@ const styles = StyleSheet.create({
   warn: { fontSize: fontSize.sm, fontWeight: '600', color: colors.text, lineHeight: 20 },
   error: { fontSize: fontSize.sm, fontWeight: '600', color: colors.text, lineHeight: 20 },
   noticeTitle: { fontSize: fontSize.md, fontWeight: '700', color: colors.text },
+  summary: { fontSize: fontSize.md, fontWeight: '700', color: colors.text, lineHeight: 22 },
   link: { fontSize: fontSize.sm, fontWeight: '700', color: colors.text, textDecorationLine: 'underline' },
   // 잃는 포인트만 브릭
   loss: { color: colors.danger, fontWeight: '700' },

@@ -23,10 +23,16 @@ export function Screen({
   children,
   scroll = true,
   footer,
+  tightBottom,
 }: {
   children: React.ReactNode;
   scroll?: boolean;
   footer?: React.ReactNode;
+  /**
+   * 본문 아래 여백을 줄인다(48 → 16). 스크롤 없이 화면을 채우는 본문(지도 등)에서 — 스크롤 끝 여백이 필요 없고,
+   * 키보드가 올라와 본문이 줄 때 그만큼 지도·칩 자리가 남는다
+   */
+  tightBottom?: boolean;
 }) {
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
@@ -47,7 +53,7 @@ export function Screen({
           {children}
         </ScrollView>
       ) : (
-        <View style={[styles.screenContent, { flex: 1 }]}>{children}</View>
+        <View style={[styles.screenContent, { flex: 1 }, tightBottom && { paddingBottom: spacing.lg }]}>{children}</View>
       )}
       {footer ? (
         <View

@@ -4,9 +4,12 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import {
   appointmentInputHint,
+  buildAppointment,
+  EMPTY_PLACE_FORM,
   formatAppointmentTime,
   formatCountdown,
   parseAppointmentInput,
+  type PlaceFormState,
 } from '@/domain/appointment';
 import { useFriends } from '@/state/FriendsContext';
 import { useSessions, type NewPersonInput } from '@/state/SessionsContext';
@@ -18,6 +21,8 @@ import {
   SectionTitle,
   TextField,
 } from '@/ui/components';
+import { placePickerUsesMap } from '@/ui/PlacePicker';
+import { SessionPlaceField, useSessionPlacePicker } from '@/ui/SessionPlaceField';
 import { colors, fontSize } from '@/ui/theme';
 
 export default function NewSessionScreen() {
@@ -31,7 +36,10 @@ export default function NewSessionScreen() {
   const [selectedFriendIds, setSelectedFriendIds] = useState<string[]>([]);
   const [dateText, setDateText] = useState('');
   const [timeText, setTimeText] = useState('');
-  const [placeText, setPlaceText] = useState('');
+  // 장소: 지도가 뜨는 기기면 지도 핀 + 이름, 아니면(웹·앱인토스·키 없는 안드로이드) 이름 글자만
+  const [place, setPlace] = useState<PlaceFormState>(EMPTY_PLACE_FORM);
+  const [usesMap] = useState(() => placePickerUsesMap());
+  const openPlaceMap = useSessionPlacePicker(setPlace);
 
   const toggleFriend = (id: string) => {
     setSelectedFriendIds((prev) =>
@@ -74,11 +82,11 @@ export default function NewSessionScreen() {
 
   const create = () => {
     if (timeInvalid) return;
-    const session = createSession(title, effectivePeople, {
-      at,
-      place: placeText.trim(),
-      placeNote: '',
-    });
+    const session = createSession(
+      title,
+      effectivePeople,
+      buildAppointment({ at, placeName: place.name, pin: usesMap ? place.pin : null }),
+    );
     router.replace('/session/' + session.id);
   };
 
@@ -121,12 +129,7 @@ export default function NewSessionScreen() {
         </View>
       </Row>
 
-      <TextField
-        label="장소"
-        value={placeText}
-        onChangeText={setPlaceText}
-        placeholder="예: 강남역 2번출구 곱창집"
-      />
+      <SessionPlaceField value={place} onChange={setPlace} onOpenMap={openPlaceMap} usesMap={usesMap} />
 
       {at ? (
         <Text style={styles.help}>

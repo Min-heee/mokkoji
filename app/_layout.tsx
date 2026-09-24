@@ -26,6 +26,7 @@ export default function RootLayout() {
         <Stack.Screen name="friends/index" options={{ title: '친구' }} />
         <Stack.Screen name="friends/[friendId]" options={{ title: '친구' }} />
         <Stack.Screen name="session/new" options={{ title: '새 모임' }} />
+        <Stack.Screen name="session/place" options={{ title: '장소 정하기' }} />
         <Stack.Screen name="session/[id]/index" options={{ title: '모임' }} />
         <Stack.Screen name="session/[id]/bet" options={{ title: '모임 내기' }} />
         <Stack.Screen name="session/[id]/round/[roundId]" options={{ title: '차수' }} />

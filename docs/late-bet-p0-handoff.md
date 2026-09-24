@@ -1,6 +1,7 @@
 # 약속 내기 P0 — 진행 메모 (2026-09-18 2차 갱신)
 설계서: `docs/appointment-bet-design.md`. 이 파일은 P0 구현 워크플로의 인수인계 메모다. **설계서 §0-1(오너 확정 흐름 2026-09-18 — 주최자 [시작하기] 모델)이 본문보다 우선한다** — 아래 계약서는 그 흐름을 반영한 판이다.
 ## 상태
+- **2026-09-24 [지도로 장소 정하기 — 리뷰 결함 4건 수정]** ① 지도 없는 폴백의 이름 칸: 첫 값은 폼의 지금 이름(draft.placeName) 우선, 폴백이 보내는 핀엔 늘 `nameConfirmed:true` → `fillPlaceName`·`applyPickedPlace` 가 '고친 이름 지키기'보다 앞세워 그 이름으로 바꾼다. ② 지도를 움직인 핀은 주소를 찾는 동안 `nameSource 'none' + namePending:true` → late/place·session/place 의 확정 버튼이 '주소 찾는 중…'으로 막힘, 조회가 끝나면(성공 'address' / 실패 표시만 뗀 'none', `settleNearestName`) 풀림 + 안전판 타이머. ③ 거리 직접 적기를 footer → 칩 줄 아래 인라인(`PlaceRadiusOptions.custom`, 경고는 `warning`)으로, 적는 동안 안내·검색창·주소 줄·footer(키보드가 떠 있을 때) 접음, `Screen tightBottom`. ④ 결과에 `owner: 'late' | 'session'`, `takePlaceResult(owner)` 는 자기 것만, session/place 는 돌아갈 곳이 없으면 결과를 남기지 않는다.
 - **2026-09-19 [공정성 규칙 R1~R4] 완료 — 아래 '공정성 규칙 R1~R4' 절.** 적대 리뷰가 찾은 '주최자가 친구 포인트를 부당하게 가져가는 경로' 4개를 오너 결정대로 막았다(SQL·fakeApi·화면). 게이트: typecheck 0 · npm test 708 · test:sql ok 523 · parity 0 · conformance 0(408걸음) · check:native 5개 그대로 · 웹 export(--clear)·ait build supabase 0건.
 - **2026-09-19 [P2 적대 리뷰 클라이언트 5건 수정]** ① 생성 멱등 키: `LbCreateInput.requestId`(uuid, `src/lateBet/requestId.ts`) → `lb_create_appointment(…, p_request_id uuid default null)` + `appointments.request_id`·unique(host_id, request_id). 같은 주최자·같은 키 재시도는 검사·에스크로 없이 그때 만든 약속을 돌려준다(fakeApi 도 같다). 새 약속 폼은 화면당 키 하나, 타임아웃·오프라인이면 목록을 다시 읽는다. ② 세션 로직을 순수 모듈 `authSession.ts`로 분리: 진행 중인 익명 가입은 8초 타임아웃이 나도 버리지 않는다(재시도는 그 요청을 기다린다 — 계정 2개·세션 덮어쓰기 없음). ③ 서버가 JWT 를 거부(PGRST301/303·401)하면 supabaseApi 가 `refreshSession` 1회 → 같은 호출 1회 재시도. refresh 토큰 무효면 로컬 signOut + `LB_NOT_SIGNED_IN`. ④ 일반 RPC 는 `requireSession`(없으면 `LB_NOT_SIGNED_IN`) — 익명 가입은 `ensureSignedIn` 에서만. GoTrue refresh 오류 코드도 `LB_NOT_SIGNED_IN` 로 매핑. 다시 로그인해 계정이 바뀌면 컨텍스트가 상태를 비우고 `accountReset`(홈 `ACCOUNT_RESET_NOTICE`). ⑤ 서버 시계는 api 안에서만 잰다: 화면·훅의 `withClockSample` 제거, fakeApi 도 `clock` 옵션으로 같은 자리에서(`serverClock.test` 가 재발을 막는다). `LbLiveBackend` 에 `requireSession`·`refreshSession?` 추가.
 - **2026-09-19 [P2 통합] 서버 없이 할 수 있는 P2 전부 완료 — 아래 'P2 상태' 절.** live 백엔드(supabaseApi·supabase.native), 로컬 PG 대조 0 불일치, OTA 가드 보강 + beta 채널 OTA(`npm run ota:beta`), 번들 검사, 로컬 PG 끔. 다음은 오너가 Supabase 프로젝트를 만든 날의 체크리스트.
@@ -710,3 +711,17 @@ P1 에서 네이티브 구현이 생겼다(위 'P1 상태'). 아래 P0 계약은
 - **번들 id `com.minheee.nbbang`** — 바꾸면 스토어에서 완전히 다른 앱이 된다(TestFlight·심사 이력 초기화). 영구히 이 값으로 간다.
 - **expo slug `nbbang`** — **바꿀 수 없다.** slug 는 EAS 프로젝트를 만들 때 정해지고 이후 변경 불가다(대시보드 Project settings 의 Display name 은 웹사이트 표시용일 뿐 slug 가 아니다 — 2026-09-22 오너가 mokkoji 로 바꿨지만 `eas project:info` 의 fullName 은 그대로 `@untitled98/nbbang`). 바꾸려면 새 EAS 프로젝트를 만들어야 하는데 projectId 가 바뀌어 **이미 설치된 빌드로 가는 OTA 가 끊기고 빌드 번호도 초기화**된다. 사용자에게 보이지 않는 값이므로 영구히 이대로 간다.
 - **App Store Connect 앱 이름** — 오너가 ASC 에서 직접 바꾼다. 홈 화면 런처 이름은 app.json `name` 이 결정하며 **OTA 로는 안 바뀌고 다음 스토어 빌드부터** 반영된다.
+
+## 지도 우선 장소 정하기 (2026-09-24)
+
+오너: "장소 정하기 할 때 지도로 정하게 해줘. 그래야 500m 든 몇 미터든 기준을 정할 수 있지." → 장소는 지도 핀이 기본이고, 도착 인정 거리는 지도 위 원을 보면서 정한다. 새 네이티브 모듈 없음(링크 5개 그대로) — TestFlight 0.4.0 (9) 에 OTA 로 나간다.
+
+- **약속 잡기(`app/late/new.tsx`)**: 핀이 없으면 이름 칸이 없고 [지도에서 장소 정하기] 하나. 핀이 생기면 미리보기 → 장소 이름(지도 결과로 채움·고칠 수 있음) → 메모 → "도착 인정 거리 N m" 요약 → [지도에서 다시 정하기]. 폼의 거리 칩 절은 없앴다. 차단 이유는 핀 없음(PIN_REQUIRED)이 이름보다 먼저.
+- **위치 정하기(`app/late/place.tsx`)**: 지도 아래 거리 칩(50·100·200·300·500m + 지금 값) — 고르면 원이 바로 바뀌고 잘리거나 점처럼 작으면 줌을 맞춘다(`radiusRefitRegion`). [거리 직접 적기] 30~1000m, 50m 이하 GPS 경고. 시작한 약속이면 칩 잠금(정책 동결) + 500m 한도 원(R2) 그대로.
+- **이름 출처** `nameSource`: 'search'(사람이 고른 이름 — 검색·프리셋·폴백에서 직접 적은 이름) / 'address'(핀 근처 주소) / 'none'. 지도를 움직이면 'none' 을 먼저 보내고 주소가 오면 'address' 로 한 번 더 보낸다. 폼은 `fillPlaceName`(직접 고친 이름은 지킨다)으로 채운다.
+- **계약 변경(호환 깨짐)**: `setPlaceResult`/`takePlaceResult` 가 `{ value, radiusM }` 을 주고받는다. `PlaceDraft` 에 `radiusM: number | null`, `radiusChoices?`, `radiusLocked?`, `radiusLockedReason?`. `PlacePickerProps.radiusM?: number | null`(null = 원 없음), `radiusOptions?: { choices, onChange, locked?, lockedReason? } | null`.
+- **MapPane**: `radiusM: number | null` — null(또는 0 이하)이면 원과 '도착 인정 거리' 문구를 그리지 않고, 확대 수준은 100m 기준(`mapGeometry.drawnRadiusM`, `NO_RADIUS_FRAMING_M`).
+- **모임 약속**(`app/session/new`, `app/session/[id]`, 신규 `app/session/place`, `src/ui/SessionPlaceField.tsx`): 지도가 뜨는 기기면 같은 PlacePicker 를 `radiusM={null}`·`radiusOptions={null}` 로 쓴다(도착 판정 없음). `Appointment.placeLat/placeLng`(선택 필드) 추가, [길찾기]는 핀이 있으면 좌표 링크(`appointmentDirectionsUrl`). 장소 없이도 모임은 만들어진다.
+- **지도가 없는 곳**(웹·앱인토스·구글 지도 키 없는 안드로이드): 약속 내기는 `PlacePickerFallback`(프리셋·좌표·이름 직접 입력 + 같은 거리 칩, 원 대신 문장, 키 없는 안드로이드는 "이 기기에서는 지도를 띄울 수 없어 목록으로 정해요"). 모임 약속은 예전 글자 칸 그대로(이름을 바꾸면 옛 핀은 버린다 — `pinAfterTextOnlyEdit`).
+- **new ↔ place 통로는 모듈에 하나** — late 와 모임이 같이 쓴다. `openPlaceDraft` 는 push 직전, `takePlaceResult` 는 포커스를 되찾을 때 한 번만(모임 쪽 훅은 자기가 연 지도에서 돌아올 때만 꺼낸다).
+- **기기에서만 확인할 것**: 지도에서 칩을 바꿀 때 원·줌, 주소가 오기 전에 확정하면 이름이 빈 채로 오는지(폼에서 적게 함), 수정 중 지도에 다녀와도 편집 상태 유지, 시작 후 칩 잠금, 키 없는 안드로이드 폴백.

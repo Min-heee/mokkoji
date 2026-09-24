@@ -109,6 +109,14 @@ export interface Appointment {
   place: string;
   /** 장소 메모 (예: '2번 출구에서 도보 3분') */
   placeNote: string;
+  /**
+   * 지도에서 정한 핀(위도·경도). 둘 다 유효할 때만 좌표 길찾기를 쓴다.
+   * 옛 데이터·글자로만 적은 장소(웹·앱인토스)엔 없다(필드가 없거나 null).
+   * 선택 필드인 이유: 약속 내기 → 정산 연결(toSession) 등 기존 생성 경로를 건드리지 않기 위해.
+   * normalizeAppointment 는 유효한 한 쌍일 때만 싣고, 쓰레기 좌표(범위 밖·NaN·한쪽만)는 버린다.
+   */
+  placeLat?: number | null;
+  placeLng?: number | null;
 }
 
 export interface Session {
