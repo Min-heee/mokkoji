@@ -1,6 +1,7 @@
 # 약속 내기 P0 — 진행 메모 (2026-09-18 2차 갱신)
 설계서: `docs/appointment-bet-design.md`. 이 파일은 P0 구현 워크플로의 인수인계 메모다. **설계서 §0-1(오너 확정 흐름 2026-09-18 — 주최자 [시작하기] 모델)이 본문보다 우선한다** — 아래 계약서는 그 흐름을 반영한 판이다.
 ## 상태
+- **2026-09-24 [탭 구조]** 아래 탭바 친구 · 모임 · 마이(JS 탭, OTA 가능) — 맨 아래 '탭 구조 (2026-09-24)' 절.
 - **2026-09-24 [지도로 장소 정하기 — 리뷰 결함 4건 수정]** ① 지도 없는 폴백의 이름 칸: 첫 값은 폼의 지금 이름(draft.placeName) 우선, 폴백이 보내는 핀엔 늘 `nameConfirmed:true` → `fillPlaceName`·`applyPickedPlace` 가 '고친 이름 지키기'보다 앞세워 그 이름으로 바꾼다. ② 지도를 움직인 핀은 주소를 찾는 동안 `nameSource 'none' + namePending:true` → late/place·session/place 의 확정 버튼이 '주소 찾는 중…'으로 막힘, 조회가 끝나면(성공 'address' / 실패 표시만 뗀 'none', `settleNearestName`) 풀림 + 안전판 타이머. ③ 거리 직접 적기를 footer → 칩 줄 아래 인라인(`PlaceRadiusOptions.custom`, 경고는 `warning`)으로, 적는 동안 안내·검색창·주소 줄·footer(키보드가 떠 있을 때) 접음, `Screen tightBottom`. ④ 결과에 `owner: 'late' | 'session'`, `takePlaceResult(owner)` 는 자기 것만, session/place 는 돌아갈 곳이 없으면 결과를 남기지 않는다.
 - **2026-09-19 [공정성 규칙 R1~R4] 완료 — 아래 '공정성 규칙 R1~R4' 절.** 적대 리뷰가 찾은 '주최자가 친구 포인트를 부당하게 가져가는 경로' 4개를 오너 결정대로 막았다(SQL·fakeApi·화면). 게이트: typecheck 0 · npm test 708 · test:sql ok 523 · parity 0 · conformance 0(408걸음) · check:native 5개 그대로 · 웹 export(--clear)·ait build supabase 0건.
 - **2026-09-19 [P2 적대 리뷰 클라이언트 5건 수정]** ① 생성 멱등 키: `LbCreateInput.requestId`(uuid, `src/lateBet/requestId.ts`) → `lb_create_appointment(…, p_request_id uuid default null)` + `appointments.request_id`·unique(host_id, request_id). 같은 주최자·같은 키 재시도는 검사·에스크로 없이 그때 만든 약속을 돌려준다(fakeApi 도 같다). 새 약속 폼은 화면당 키 하나, 타임아웃·오프라인이면 목록을 다시 읽는다. ② 세션 로직을 순수 모듈 `authSession.ts`로 분리: 진행 중인 익명 가입은 8초 타임아웃이 나도 버리지 않는다(재시도는 그 요청을 기다린다 — 계정 2개·세션 덮어쓰기 없음). ③ 서버가 JWT 를 거부(PGRST301/303·401)하면 supabaseApi 가 `refreshSession` 1회 → 같은 호출 1회 재시도. refresh 토큰 무효면 로컬 signOut + `LB_NOT_SIGNED_IN`. ④ 일반 RPC 는 `requireSession`(없으면 `LB_NOT_SIGNED_IN`) — 익명 가입은 `ensureSignedIn` 에서만. GoTrue refresh 오류 코드도 `LB_NOT_SIGNED_IN` 로 매핑. 다시 로그인해 계정이 바뀌면 컨텍스트가 상태를 비우고 `accountReset`(홈 `ACCOUNT_RESET_NOTICE`). ⑤ 서버 시계는 api 안에서만 잰다: 화면·훅의 `withClockSample` 제거, fakeApi 도 `clock` 옵션으로 같은 자리에서(`serverClock.test` 가 재발을 막는다). `LbLiveBackend` 에 `requireSession`·`refreshSession?` 추가.
@@ -725,3 +726,23 @@ P1 에서 네이티브 구현이 생겼다(위 'P1 상태'). 아래 P0 계약은
 - **지도가 없는 곳**(웹·앱인토스·구글 지도 키 없는 안드로이드): 약속 내기는 `PlacePickerFallback`(프리셋·좌표·이름 직접 입력 + 같은 거리 칩, 원 대신 문장, 키 없는 안드로이드는 "이 기기에서는 지도를 띄울 수 없어 목록으로 정해요"). 모임 약속은 예전 글자 칸 그대로(이름을 바꾸면 옛 핀은 버린다 — `pinAfterTextOnlyEdit`).
 - **new ↔ place 통로는 모듈에 하나** — late 와 모임이 같이 쓴다. `openPlaceDraft` 는 push 직전, `takePlaceResult` 는 포커스를 되찾을 때 한 번만(모임 쪽 훅은 자기가 연 지도에서 돌아올 때만 꺼낸다).
 - **기기에서만 확인할 것**: 지도에서 칩을 바꿀 때 원·줌, 주소가 오기 전에 확정하면 이름이 빈 채로 오는지(폼에서 적게 함), 수정 중 지도에 다녀와도 편집 상태 유지, 시작 후 칩 잠금, 키 없는 안드로이드 폴백.
+
+## 탭 구조 (2026-09-24)
+
+오너: "아래 네비게이션 바 만들어서 친구 · 모임 · 마이 세 개 탭. 친구 탭에는 친구 목록, 오른쪽 위에는 친구 추가." → JS 탭(expo-router `Tabs` = @react-navigation/bottom-tabs, NativeTabs 아님). 새 네이티브 모듈 없음(링크 5개 그대로) — 0.4.0 바이너리에 OTA 로 나간다.
+
+| URL | 파일 | 비고 |
+|---|---|---|
+| `/` | `app/(tabs)/index.tsx` | 모임 탭(처음 열리는 탭, 헤더 제목 '모꼬지'). 옛 `app/index.tsx`. [친구 목록] 버튼 제거 |
+| `/friends` | `app/(tabs)/friends.tsx` | 친구 탭. 옛 `app/friends/index.tsx`. 목록 안 입력칸 제거 → 헤더 오른쪽 '친구 추가' |
+| `/my` | `app/(tabs)/my.tsx` | 마이 탭: 요약(모임·친구 수), 약속 기능 on 이면 내 이름·내 포인트, 네이티브 ∧ on 이면 권한(읽기만), 앱 정보(버전·빌드·업데이트 id 8자). 표시 규칙은 `src/ui/myTabModel.ts` |
+| `/friends/add` | `app/friends/add.tsx` | 친구 추가(iOS 모달). 이름 규칙 `checkFriendName`: trim 후 1~20자, 동명이인 허용. 딥링크로 들어오면 추가 뒤 `/friends` 로 replace |
+| `/friends/[friendId]` | 그대로 | |
+| `/late/name` | `app/late/name.tsx` | 내 이름 정하기·바꾸기(`ensureReady` → `ensureProfile`, 서버가 없으면 만들며 1,000P) |
+
+- 탭 순서 친구 · 모임 · 마이, 아이콘 Ionicons 선/채움(`@expo/vector-icons` + `expo-font ~14.0.12` 를 package.json 에 명시 — expo 안에만 있어 앱 코드에서 못 불렀다. 네이티브 모듈 목록 변화 없음 확인).
+- 안드로이드 뒤로가기는 모임 탭으로(`backBehavior="initialRoute"`). 탭을 옮길 때 루트 Stack 의 `(tabs)` 제목을 떠나온 탭 이름으로 맞춰 iOS 뒤로 버튼이 '(tabs)' 로 안 보이게 한다.
+- 탭 위 화면은 `Screen aboveTabBar` — 하단 안전영역은 탭바가 맡는다(footer 여백 이중 방지). 탭바 높이 56 + 안전영역.
+- `router.replace('/')` 는 모임 탭으로 간다(기존 호출 그대로).
+- 검증(9/24): typecheck 0 · npm test 795 · check:native 5개 그대로 · export(--clear) web·ios·android 성공, 웹 번들에 react-native-maps·expo-location·expo-updates·supabase 0건 · ait build 성공 · 웹 미리보기 375폭 실좌표 클릭(탭 전환, 친구 추가 버튼·엔터, 딥링크 추가, 상세·뒤로, 새 모임·약속 잡기 진입·뒤로, 마이 이름 정하기).
+- **기기에서만 확인할 것**: 안드로이드 뒤로가기 → 모임 탭, iOS 모달 친구 추가, 홈 인디케이터 위 탭바 여백, 아이콘 폰트 첫 로드 깜빡임, iOS 뒤로 버튼 글자.

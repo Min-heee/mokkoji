@@ -30,6 +30,7 @@ import { useArrivalReporter } from '@/lateBet/useArrivalReporter';
 import { useLateReminders, type NotifyPrompt } from '@/lateBet/useLateReminders';
 import { useLive } from '@/lateBet/useLive';
 import { EmptyState, LoadingState, PrimaryButton, Screen } from '@/ui/components';
+import { goHomeWith } from '@/ui/homeNav';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 export default function LateAppointmentScreen() {
@@ -61,9 +62,8 @@ function Inner() {
 
   const goHome = useCallback(() => {
     void refreshHome();
-    // 스택에 홈이 있으면 거기까지 걷어 내고, 딥링크로 바로 들어온 경우에는 홈으로 바꾼다
-    if (router.canGoBack()) router.dismissAll();
-    else router.replace('/');
+    // 모임 탭으로(쌓인 화면은 걷어 낸다 — 규칙은 src/ui/homeNav)
+    goHomeWith(router);
   }, [refreshHome, router]);
 
   const onLeft = useCallback(() => {

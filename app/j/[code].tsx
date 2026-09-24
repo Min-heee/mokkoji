@@ -43,6 +43,7 @@ import { markSeenVersion } from '@/lateBet/useLive';
 import { useServerNow } from '@/lateBet/useServerNow';
 import { Card, Chip, EmptyState, LoadingState, PrimaryButton, Row, Screen, SectionTitle } from '@/ui/components';
 import { alertDialog } from '@/ui/dialogs';
+import { goHomeWith } from '@/ui/homeNav';
 import { MapPane } from '@/ui/MapPane';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
@@ -235,8 +236,7 @@ function Inner() {
   }, [alreadyMemberId, router]);
 
   const goHome = useCallback(() => {
-    if (router.canGoBack()) router.dismissAll();
-    else router.replace('/');
+    goHomeWith(router);
   }, [router]);
 
   const reenter = useCallback(() => {

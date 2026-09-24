@@ -23,12 +23,14 @@
     "ota:beta": "bash scripts/ota.sh --beta"
   },
   "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.116.0",
     "expo": "~54.0.37",
     "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.14",
     "expo-crypto": "~15.0.9",
+    "expo-font": "~14.0.12",
     "expo-haptics": "~15.0.8",
     "expo-linking": "~8.0.8",
     "expo-localization": "~17.0.9",

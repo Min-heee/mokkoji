@@ -24,10 +24,16 @@ export function Screen({
   scroll = true,
   footer,
   tightBottom,
+  aboveTabBar,
 }: {
   children: React.ReactNode;
   scroll?: boolean;
   footer?: React.ReactNode;
+  /**
+   * 아래 탭바 위에 놓인 화면(app/(tabs)/*). 하단 안전영역은 탭바가 이미 차지하므로 footer 가 그 여백을 또 더하지 않는다
+   * (더하면 버튼과 탭바 사이가 이중으로 벌어진다). 기본 false = 기존 화면 그대로
+   */
+  aboveTabBar?: boolean;
   /**
    * 본문 아래 여백을 줄인다(48 → 16). 스크롤 없이 화면을 채우는 본문(지도 등)에서 — 스크롤 끝 여백이 필요 없고,
    * 키보드가 올라와 본문이 줄 때 그만큼 지도·칩 자리가 남는다
@@ -59,7 +65,7 @@ export function Screen({
         <View
           style={[
             styles.footer,
-            { paddingBottom: Math.max(spacing.xl, insets.bottom + spacing.sm) },
+            { paddingBottom: aboveTabBar ? spacing.lg : Math.max(spacing.xl, insets.bottom + spacing.sm) },
           ]}
         >
           {footer}
@@ -184,6 +190,7 @@ export function TextField({
   onSubmitEditing,
   suffix,
   keepFocusOnSubmit,
+  maxLength,
 }: {
   label?: string;
   value: string;
@@ -195,6 +202,8 @@ export function TextField({
   suffix?: string;
   /** 리턴 키로 제출해도 키보드를 닫지 않는다 (연속 입력용) */
   keepFocusOnSubmit?: boolean;
+  /** 입력 최대 글자 수(없으면 제한 없음) */
+  maxLength?: number;
 }) {
   return (
     <View style={{ gap: spacing.xs }}>
@@ -210,6 +219,7 @@ export function TextField({
           autoFocus={autoFocus}
           onSubmitEditing={onSubmitEditing}
           submitBehavior={keepFocusOnSubmit ? 'submit' : undefined}
+          maxLength={maxLength}
         />
         {suffix ? <Text style={styles.inputSuffix}>{suffix}</Text> : null}
       </View>
@@ -294,6 +304,38 @@ export function EmptyState({
   );
 }
 
+/**
+ * 헤더의 글자 버튼(친구 탭 오른쪽 위 '친구 추가', iOS 친구 추가 모달 왼쪽 위 '취소').
+ * side 는 헤더 가장자리 여백만 정한다.
+ */
+export function HeaderTextButton({
+  label,
+  onPress,
+  side,
+  accessibilityLabel,
+}: {
+  label: string;
+  onPress: () => void;
+  side: 'left' | 'right';
+  accessibilityLabel?: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={16}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
+      style={({ pressed }) => [
+        styles.headerButton,
+        side === 'right' ? styles.headerButtonRight : styles.headerButtonLeft,
+        pressed && { opacity: 0.6 },
+      ]}
+    >
+      <Text style={styles.headerButtonText}>{label}</Text>
+    </Pressable>
+  );
+}
+
 export function LoadingState() {
   return (
     <View style={styles.empty}>
@@ -303,6 +345,21 @@ export function LoadingState() {
 }
 
 const styles = StyleSheet.create({
+  headerButton: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+  },
+  headerButtonRight: {
+    marginRight: spacing.xs,
+  },
+  headerButtonLeft: {
+    marginLeft: spacing.xs,
+  },
+  headerButtonText: {
+    fontSize: fontSize.md,
+    fontWeight: '800',
+    color: colors.text,
+  },
   screen: {
     flex: 1,
     backgroundColor: colors.bg,

@@ -10,7 +10,7 @@ import React, {
 import { AppState } from 'react-native';
 
 import { genId } from '@/domain/format';
-import type { Friend, LedgerEntry, LedgerType } from '@/domain/friends';
+import { checkFriendName, type Friend, type LedgerEntry, type LedgerType } from '@/domain/friends';
 import {
   EMPTY_FRIENDS_STATE,
   loadFriendsState,
@@ -23,7 +23,7 @@ export interface FriendsApi {
   entries: LedgerEntry[];
   loading: boolean;
   getFriend(id: string): Friend | undefined;
-  /** 이름으로 친구 추가. 빈 이름이면 무시하고 undefined */
+  /** 이름으로 친구 추가. 이름이 비었거나 너무 길면(checkFriendName) 무시하고 undefined. 같은 이름은 막지 않는다 */
   addFriend(name: string): Friend | undefined;
   /** 친구 삭제 — 그 친구의 장부 항목도 함께 지운다 */
   removeFriend(id: string): void;
@@ -102,11 +102,11 @@ export function FriendsProvider({ children }: { children: React.ReactNode }) {
   );
 
   const addFriend = useCallback((name: string): Friend | undefined => {
-    const trimmed = name.trim();
-    if (!trimmed) return undefined;
+    const checked = checkFriendName(name);
+    if (!checked.ok) return undefined;
     const friend: Friend = {
       id: genId('f'),
-      name: trimmed,
+      name: checked.name,
       createdAt: new Date().toISOString(),
     };
     setState((prev) => ({ ...prev, friends: [...prev.friends, friend] }));

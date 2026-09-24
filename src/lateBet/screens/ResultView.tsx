@@ -24,6 +24,7 @@ import { formatKoreanDateTime, formatKoreanTime, SEOUL_TZ, tzLabel } from '@/dom
 import { useSessions } from '@/state/SessionsContext';
 import { Card, EmptyState, PrimaryButton, Screen } from '@/ui/components';
 import { alertDialog, confirmDialog } from '@/ui/dialogs';
+import { goHomeWith } from '@/ui/homeNav';
 import { colors, fontSize, radius, spacing } from '@/ui/theme';
 
 import { describeChanges } from '../changes';
@@ -62,9 +63,8 @@ export function ResultView({ live, phase, isHost, settleDelayed, unseenChanges, 
   const myRow = model.rows.find((r) => r.isMe) ?? null;
 
   const goHome = () => {
-    // 스택에 홈이 있으면 거기까지 걷어 내고, 딥링크로 바로 들어온 경우에는 홈으로 바꾼다(컨테이너와 같은 규칙)
-    if (router.canGoBack()) router.dismissAll();
-    else router.replace('/');
+    // 모임 탭으로 — 컨테이너(app/late/[id])와 같은 규칙(src/ui/homeNav)
+    goHomeWith(router);
   };
 
   const onStart = () => {

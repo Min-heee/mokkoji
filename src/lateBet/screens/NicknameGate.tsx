@@ -20,16 +20,20 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { START_BALANCE } from '@/domain/latePresets';
 import { EmptyState, LoadingState, PrimaryButton, Screen, TextField } from '@/ui/components';
+import { goHomeWith } from '@/ui/homeNav';
 import { colors, fontSize, spacing } from '@/ui/theme';
 
 import { LateBetError, REPEATED_FAILURE_MESSAGE, toLateBetError } from '../errors';
 import { useLateBet } from '../LateBetContext';
 
-/** 모드 off(또는 이 버전에서 못 쓰는 기능)일 때의 안내 화면 */
+/**
+ * 모드 off(또는 이 버전에서 못 쓰는 기능)일 때의 안내 화면.
+ * [홈으로]는 다른 화면과 같은 규칙(goHomeWith) — 스택이 있을 때 replace('/') 하면 루트에 (tabs) 가 하나 더 쌓인다.
+ */
 export function LateBetUnavailable() {
   const router = useRouter();
   return (
-    <Screen footer={<PrimaryButton label="홈으로" onPress={() => router.replace('/')} />}>
+    <Screen footer={<PrimaryButton label="홈으로" onPress={() => goHomeWith(router)} />}>
       <EmptyState title="이 버전에서는 약속 기능을 쓸 수 없어요" hint="앱을 최신 버전으로 업데이트해 주세요." />
     </Screen>
   );

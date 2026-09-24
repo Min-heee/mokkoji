@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { entriesByFriend, friendBalance, type LedgerEntry } from './friends';
+import { checkFriendName, entriesByFriend, friendBalance, FRIEND_NAME_INPUT_MAX, FRIEND_NAME_MAX, type LedgerEntry } from './friends';
 
 const entry = (
   id: string,
@@ -54,5 +54,47 @@ describe('entriesByFriend', () => {
     assert.deepEqual(Object.keys(grouped).sort(), ['f1', 'f2']);
     assert.equal(grouped.f1.length, 2);
     assert.equal(grouped.f2.length, 1);
+  });
+});
+
+describe('checkFriendName', () => {
+  it('앞뒤 공백을 떼고 통과시킨다', () => {
+    assert.deepEqual(checkFriendName('  민수 '), { ok: true, name: '민수' });
+  });
+  it('빈 이름·공백만은 empty', () => {
+    assert.deepEqual(checkFriendName(''), { ok: false, reason: 'empty' });
+    assert.deepEqual(checkFriendName('   '), { ok: false, reason: 'empty' });
+  });
+  it('최대 글자 수까지 통과, 넘으면 tooLong', () => {
+    const max = '가'.repeat(FRIEND_NAME_MAX);
+    assert.deepEqual(checkFriendName(max), { ok: true, name: max });
+    assert.deepEqual(checkFriendName(max + '나'), { ok: false, reason: 'tooLong' });
+  });
+  it('글자 수는 코드 포인트로 센다(서로게이트 쌍 = 1자)', () => {
+    const astral = '\u{20BB7}'.repeat(FRIEND_NAME_MAX);
+    assert.equal(checkFriendName(astral).ok, true);
+  });
+  it('내부 공백은 그대로 둔다', () => {
+    assert.deepEqual(checkFriendName('김 민수'), { ok: true, name: '김 민수' });
+  });
+});
+
+describe('FRIEND_NAME_INPUT_MAX(입력칸 maxLength, UTF-16 단위)', () => {
+  it('통과하는 이름은 입력칸에서 잘리지 않는다 — 이모지·확장 한자 20자(40 단위) + 앞뒤 공백', () => {
+    const astral = '\u{1F600}'.repeat(FRIEND_NAME_MAX); // 이모지 20개
+    assert.equal(astral.length, FRIEND_NAME_MAX * 2);
+    assert.equal(checkFriendName(astral).ok, true);
+    assert.ok(astral.length <= FRIEND_NAME_INPUT_MAX);
+    const cjkExt = '\u{20000}'.repeat(FRIEND_NAME_MAX); // 확장 한자 20자
+    assert.equal(checkFriendName(cjkExt).ok, true);
+    assert.ok(('  ' + cjkExt + '  ').length <= FRIEND_NAME_INPUT_MAX);
+  });
+  it("21자는 입력칸에 들어가서 '20자까지' 안내(tooLong)에 닿는다", () => {
+    const over = '가'.repeat(FRIEND_NAME_MAX + 1);
+    assert.ok(over.length <= FRIEND_NAME_INPUT_MAX);
+    assert.deepEqual(checkFriendName(over), { ok: false, reason: 'tooLong' });
+    const overEmoji = '\u{1F600}'.repeat(FRIEND_NAME_MAX + 1);
+    assert.ok(overEmoji.length <= FRIEND_NAME_INPUT_MAX);
+    assert.deepEqual(checkFriendName(overEmoji), { ok: false, reason: 'tooLong' });
   });
 });

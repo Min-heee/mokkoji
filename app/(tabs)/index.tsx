@@ -1,4 +1,4 @@
-import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { Tabs, useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -68,7 +68,7 @@ export default function HomeScreen() {
 
   if (loading) {
     return (
-      <Screen>
+      <Screen aboveTabBar>
         <LoadingState />
       </Screen>
     );
@@ -158,16 +158,12 @@ export default function HomeScreen() {
   if (!lateEnabled) {
     return (
       <Screen
+        aboveTabBar
         footer={
           <View style={styles.footerButtons}>
             <PrimaryButton
               label="새 모임 만들기"
               onPress={() => router.push('/session/new')}
-            />
-            <PrimaryButton
-              label="친구 목록"
-              variant="ghost"
-              onPress={() => router.push('/friends')}
             />
           </View>
         }
@@ -180,9 +176,10 @@ export default function HomeScreen() {
   // ── 약속 내기가 켜진 홈 (설계서 §5.3-A): 잔액 칩 + '약속' 섹션 + [약속 잡기] primary + 코드 입력 ──
   return (
     <View style={styles.fill}>
-      <Stack.Screen options={{ headerRight: () => <BalanceHeaderButton /> }} />
+      <Tabs.Screen options={{ headerRight: () => <BalanceHeaderButton /> }} />
       <FakeDevPanel />
       <Screen
+        aboveTabBar
         footer={
           <View style={styles.footerButtons}>
             <PrimaryButton label="약속 잡기" onPress={() => router.push('/late/new')} />
@@ -190,11 +187,6 @@ export default function HomeScreen() {
               label="새 모임 만들기"
               variant="ghost"
               onPress={() => router.push('/session/new')}
-            />
-            <PrimaryButton
-              label="친구 목록"
-              variant="ghost"
-              onPress={() => router.push('/friends')}
             />
             <Pressable
               onPress={() => router.push('/j')}

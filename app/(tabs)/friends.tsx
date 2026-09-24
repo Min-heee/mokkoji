@@ -1,3 +1,7 @@
+/**
+ * 친구 탭(URL '/friends'): 친구 목록 + 잔액 요약. 누르면 친구 장부(/friends/[id]).
+ * 추가는 헤더 오른쪽 위 '친구 추가'((tabs)/_layout) → /friends/add (목록 안의 입력칸은 없앴다).
+ */
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -6,33 +10,20 @@ import { formatKrw } from '@/domain/format';
 import { friendBalance, type Friend } from '@/domain/friends';
 import { useFriends } from '@/state/FriendsContext';
 import { confirmDialog } from '@/ui/dialogs';
-import {
-  Card,
-  EmptyState,
-  LoadingState,
-  PrimaryButton,
-  Screen,
-  TextField,
-} from '@/ui/components';
+import { Card, EmptyState, LoadingState, Screen } from '@/ui/components';
 import { colors, fontSize, spacing } from '@/ui/theme';
 
 export default function FriendsScreen() {
   const router = useRouter();
-  const { friends, loading, addFriend, removeFriend, entriesOf } = useFriends();
-  const [name, setName] = React.useState('');
+  const { friends, loading, removeFriend, entriesOf } = useFriends();
 
   if (loading) {
     return (
-      <Screen>
+      <Screen aboveTabBar>
         <LoadingState />
       </Screen>
     );
   }
-
-  const handleAdd = () => {
-    const added = addFriend(name);
-    if (added) setName('');
-  };
 
   const confirmDelete = (friend: Friend) => {
     confirmDialog(
@@ -44,23 +35,11 @@ export default function FriendsScreen() {
   };
 
   return (
-    <Screen>
-      <Card>
-        <TextField
-          label="이름"
-          value={name}
-          onChangeText={setName}
-          placeholder="친구 이름"
-          keepFocusOnSubmit
-          onSubmitEditing={handleAdd}
-        />
-        <PrimaryButton label="추가" variant="ghost" onPress={handleAdd} />
-      </Card>
-
+    <Screen aboveTabBar>
       {friends.length === 0 ? (
         <EmptyState
           title="아직 친구가 없어요"
-          hint="친구를 추가하면 모임에 빠르게 넣고 주고받을 돈을 기록할 수 있어요"
+          hint="오른쪽 위 '친구 추가'로 친구를 넣어 보세요"
         />
       ) : (
         friends.map((friend) => {

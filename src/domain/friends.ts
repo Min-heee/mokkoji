@@ -54,3 +54,29 @@ export function entriesByFriend(
   }
   return map;
 }
+
+/** 친구 이름 최대 글자 수(이모지·한글 한 글자 = 1) */
+export const FRIEND_NAME_MAX = 20;
+
+/**
+ * 입력칸 maxLength(UTF-16 코드 유닛 — RN TextInput·웹 maxlength 가 세는 단위). 판정은 checkFriendName(코드 포인트)이 한다.
+ * 코드 포인트 FRIEND_NAME_MAX 개는 UTF-16 으로 최대 FRIEND_NAME_MAX*2 단위 + 앞뒤 공백 여유.
+ * FRIEND_NAME_MAX 를 그대로 maxLength 로 주면 이모지·확장 한자 이름이 10자에서 잘리고 '20자까지' 안내는 영영 안 뜬다.
+ */
+export const FRIEND_NAME_INPUT_MAX = FRIEND_NAME_MAX * 2 + 4;
+
+export type FriendNameCheck =
+  | { ok: true; name: string }
+  | { ok: false; reason: 'empty' | 'tooLong' };
+
+/**
+ * 친구 이름 검증 — 앞뒤 공백을 떼고 1~FRIEND_NAME_MAX 자면 통과.
+ * 같은 이름은 막지 않는다(기존 규칙: 동명이인도 따로 넣을 수 있다).
+ */
+export function checkFriendName(raw: string): FriendNameCheck {
+  const name = (typeof raw === 'string' ? raw : '').trim();
+  const len = Array.from(name).length;
+  if (len === 0) return { ok: false, reason: 'empty' };
+  if (len > FRIEND_NAME_MAX) return { ok: false, reason: 'tooLong' };
+  return { ok: true, name };
+}
